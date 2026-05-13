@@ -19,6 +19,6 @@ WHERE workspace_id = $1
   AND route = $3
   AND key = $4;
 
--- name: DeleteExpiredIdempotencyKeys :exec
+-- name: DeleteExpiredIdempotencyKeys :execrows
 DELETE FROM idempotency_keys
 WHERE expires_at < now();

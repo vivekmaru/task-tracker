@@ -552,3 +552,60 @@ func (q *Queries) ListAttemptsByTicket(ctx context.Context, ticketID pgtype.UUID
 	}
 	return items, nil
 }
+
+const listExpiredRunningAttempts = `-- name: ListExpiredRunningAttempts :many
+SELECT id, workspace_id, project_id, ticket_id, agent_id, harness, model, status, lease_expires_at, last_heartbeat_at, progress_percent, current_summary, next_step, output, output_schema, failure_reason, failure_category, blocker, trace_id, checkpoint_ref, started_at, completed_at
+FROM attempts
+WHERE status = 'running'
+  AND lease_expires_at < $1::timestamptz
+ORDER BY lease_expires_at ASC
+LIMIT $2::integer
+`
+
+type ListExpiredRunningAttemptsParams struct {
+	Now        pgtype.Timestamptz `db:"now" json:"now"`
+	BatchLimit int32              `db:"batch_limit" json:"batch_limit"`
+}
+
+func (q *Queries) ListExpiredRunningAttempts(ctx context.Context, arg ListExpiredRunningAttemptsParams) ([]Attempt, error) {
+	rows, err := q.db.Query(ctx, listExpiredRunningAttempts, arg.Now, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Attempt{}
+	for rows.Next() {
+		var i Attempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.TicketID,
+			&i.AgentID,
+			&i.Harness,
+			&i.Model,
+			&i.Status,
+			&i.LeaseExpiresAt,
+			&i.LastHeartbeatAt,
+			&i.ProgressPercent,
+			&i.CurrentSummary,
+			&i.NextStep,
+			&i.Output,
+			&i.OutputSchema,
+			&i.FailureReason,
+			&i.FailureCategory,
+			&i.Blocker,
+			&i.TraceID,
+			&i.CheckpointRef,
+			&i.StartedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

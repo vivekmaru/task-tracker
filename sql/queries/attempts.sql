@@ -38,6 +38,14 @@ FROM attempts
 WHERE ticket_id = $1
 ORDER BY started_at DESC;
 
+-- name: ListExpiredRunningAttempts :many
+SELECT *
+FROM attempts
+WHERE status = 'running'
+  AND lease_expires_at < sqlc.arg(now)::timestamptz
+ORDER BY lease_expires_at ASC
+LIMIT sqlc.arg(batch_limit)::integer;
+
 -- name: HeartbeatAttempt :one
 WITH updated_attempt AS (
     UPDATE attempts a

@@ -60,14 +60,17 @@ func (q *Queries) CreateIdempotencyKey(ctx context.Context, arg CreateIdempotenc
 	return i, err
 }
 
-const deleteExpiredIdempotencyKeys = `-- name: DeleteExpiredIdempotencyKeys :exec
+const deleteExpiredIdempotencyKeys = `-- name: DeleteExpiredIdempotencyKeys :execrows
 DELETE FROM idempotency_keys
 WHERE expires_at < now()
 `
 
-func (q *Queries) DeleteExpiredIdempotencyKeys(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, deleteExpiredIdempotencyKeys)
-	return err
+func (q *Queries) DeleteExpiredIdempotencyKeys(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredIdempotencyKeys)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getIdempotencyKey = `-- name: GetIdempotencyKey :one
