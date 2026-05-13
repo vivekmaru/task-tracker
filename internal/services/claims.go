@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,9 +25,11 @@ const (
 )
 
 var ErrNoClaimableTickets = errors.New("no claimable tickets")
+var ErrIdempotencyConflict = errors.New("idempotency key reused with a different request")
 
 type ClaimStore interface {
 	ClaimNextTicket(context.Context, db.ClaimNextTicketParams) (db.ClaimNextTicketRow, error)
+	GetIdempotencyKey(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
@@ -69,6 +73,9 @@ type ClaimNextRequest struct {
 	AgentID      string
 	Model        string
 	Lease        time.Duration
+
+	IdempotencyKey string
+	IdempotencyTTL time.Duration
 }
 
 type ClaimNextResult struct {
@@ -100,17 +107,38 @@ func (s *ClaimService) ClaimNext(ctx context.Context, req ClaimNextRequest) (Cla
 	}
 
 	now := s.now().UTC()
+	requestHash, err := claimRequestHash(req)
+	if err != nil {
+		return ClaimNextResult{}, fmt.Errorf("hash claim request: %w", err)
+	}
+	if req.IdempotencyKey != "" {
+		replayed, ok, err := s.replayClaim(ctx, req, requestHash)
+		if err != nil {
+			return ClaimNextResult{}, err
+		}
+		if ok {
+			return replayed, nil
+		}
+	}
+
+	idempotencyTTL := req.IdempotencyTTL
+	if idempotencyTTL == 0 {
+		idempotencyTTL = 24 * time.Hour
+	}
 	row, err := s.store.ClaimNextTicket(ctx, db.ClaimNextTicketParams{
-		WorkspaceID:     req.WorkspaceID,
-		ProjectID:       req.ProjectID,
-		TicketType:      optionalText(req.Type),
-		Tags:            req.Tags,
-		Harness:         req.Harness,
-		Capabilities:    req.Capabilities,
-		AgentID:         req.AgentID,
-		Model:           req.Model,
-		LeaseExpiresAt:  timestamptz(now.Add(req.Lease)),
-		LastHeartbeatAt: timestamptz(now),
+		WorkspaceID:          req.WorkspaceID,
+		ProjectID:            req.ProjectID,
+		TicketType:           optionalText(req.Type),
+		Tags:                 req.Tags,
+		Harness:              req.Harness,
+		Capabilities:         req.Capabilities,
+		AgentID:              req.AgentID,
+		Model:                req.Model,
+		LeaseExpiresAt:       timestamptz(now.Add(req.Lease)),
+		LastHeartbeatAt:      timestamptz(now),
+		IdempotencyKey:       optionalText(req.IdempotencyKey),
+		RequestHash:          optionalText(requestHash),
+		IdempotencyExpiresAt: timestamptz(now.Add(idempotencyTTL)),
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -119,11 +147,43 @@ func (s *ClaimService) ClaimNext(ctx context.Context, req ClaimNextRequest) (Cla
 		return ClaimNextResult{}, fmt.Errorf("claim next ticket: %w", err)
 	}
 
-	ticket, err := s.store.GetTicket(ctx, row.TicketID)
+	return s.hydrateClaim(ctx, row.TicketID, row.AttemptID)
+}
+
+func (s *ClaimService) replayClaim(ctx context.Context, req ClaimNextRequest, requestHash string) (ClaimNextResult, bool, error) {
+	record, err := s.store.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{
+		WorkspaceID: req.WorkspaceID,
+		ActorID:     req.AgentID,
+		Route:       "claim-next",
+		Key:         req.IdempotencyKey,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ClaimNextResult{}, false, nil
+		}
+		return ClaimNextResult{}, false, fmt.Errorf("get idempotency key: %w", err)
+	}
+	if record.RequestHash != requestHash {
+		return ClaimNextResult{}, false, ErrIdempotencyConflict
+	}
+
+	response, err := decodeClaimIdempotencyResponse(record.ResponseBody)
+	if err != nil {
+		return ClaimNextResult{}, false, fmt.Errorf("decode claim idempotency response: %w", err)
+	}
+	result, err := s.hydrateClaim(ctx, response.TicketID, response.AttemptID)
+	if err != nil {
+		return ClaimNextResult{}, false, err
+	}
+	return result, true, nil
+}
+
+func (s *ClaimService) hydrateClaim(ctx context.Context, ticketID, attemptID pgtype.UUID) (ClaimNextResult, error) {
+	ticket, err := s.store.GetTicket(ctx, ticketID)
 	if err != nil {
 		return ClaimNextResult{}, fmt.Errorf("get claimed ticket: %w", err)
 	}
-	attempt, err := s.store.GetAttempt(ctx, row.AttemptID)
+	attempt, err := s.store.GetAttempt(ctx, attemptID)
 	if err != nil {
 		return ClaimNextResult{}, fmt.Errorf("get claimed attempt: %w", err)
 	}
@@ -137,6 +197,71 @@ func (s *ClaimService) ClaimNext(ctx context.Context, req ClaimNextRequest) (Cla
 		Attempt: attempt,
 		Context: contextBundle,
 	}, nil
+}
+
+type claimIdempotencyResponse struct {
+	TicketID  pgtype.UUID
+	AttemptID pgtype.UUID
+}
+
+func decodeClaimIdempotencyResponse(raw []byte) (claimIdempotencyResponse, error) {
+	var payload struct {
+		TicketID  string `json:"ticket_id"`
+		AttemptID string `json:"attempt_id"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return claimIdempotencyResponse{}, err
+	}
+	ticketID, err := parseUUID(payload.TicketID)
+	if err != nil {
+		return claimIdempotencyResponse{}, fmt.Errorf("ticket_id: %w", err)
+	}
+	attemptID, err := parseUUID(payload.AttemptID)
+	if err != nil {
+		return claimIdempotencyResponse{}, fmt.Errorf("attempt_id: %w", err)
+	}
+	return claimIdempotencyResponse{TicketID: ticketID, AttemptID: attemptID}, nil
+}
+
+func claimRequestHash(req ClaimNextRequest) (string, error) {
+	payload := struct {
+		WorkspaceID  pgtype.UUID `json:"workspace_id"`
+		ProjectID    pgtype.UUID `json:"project_id"`
+		Type         string      `json:"type"`
+		Tags         []string    `json:"tags"`
+		Harness      string      `json:"harness"`
+		Capabilities []string    `json:"capabilities"`
+		AgentID      string      `json:"agent_id"`
+		Model        string      `json:"model"`
+		LeaseSeconds int64       `json:"lease_seconds"`
+	}{
+		WorkspaceID:  req.WorkspaceID,
+		ProjectID:    req.ProjectID,
+		Type:         req.Type,
+		Tags:         req.Tags,
+		Harness:      req.Harness,
+		Capabilities: req.Capabilities,
+		AgentID:      req.AgentID,
+		Model:        req.Model,
+		LeaseSeconds: int64(req.Lease.Seconds()),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func parseUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if value == "" {
+		return id, errors.New("uuid is required")
+	}
+	if err := id.Scan(value); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return id, nil
 }
 
 func (s *ClaimService) contextBundle(ctx context.Context, ticket db.Ticket, attempt db.Attempt) (ClaimContextBundle, error) {
@@ -200,6 +325,9 @@ func validateClaimNextRequest(req ClaimNextRequest) []string {
 	if req.Lease <= 0 {
 		problems = append(problems, "lease must be positive")
 	}
+	if req.IdempotencyTTL < 0 {
+		problems = append(problems, "idempotency_ttl must be non-negative")
+	}
 	if req.Type != "" && !isAllowedTicketType(req.Type) {
 		problems = append(problems, "type filter is not valid")
 	}
@@ -211,6 +339,7 @@ func trimClaimNextRequest(req ClaimNextRequest) ClaimNextRequest {
 	req.Harness = strings.TrimSpace(req.Harness)
 	req.AgentID = strings.TrimSpace(req.AgentID)
 	req.Model = strings.TrimSpace(req.Model)
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
 	req.Tags = compactStrings(req.Tags)
 	req.Capabilities = compactStrings(req.Capabilities)
 	return req

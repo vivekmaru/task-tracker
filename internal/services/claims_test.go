@@ -60,15 +60,17 @@ func TestClaimNextReturnsTicketAttemptAndContextBundle(t *testing.T) {
 	service := NewClaimService(store, WithClaimClock(func() time.Time { return now }))
 
 	result, err := service.ClaimNext(context.Background(), ClaimNextRequest{
-		WorkspaceID:  testUUID(1),
-		ProjectID:    testUUID(2),
-		Type:         TicketTypeBug,
-		Tags:         []string{" backend ", ""},
-		Harness:      "codex",
-		Capabilities: []string{"codegen", "testing"},
-		AgentID:      "codex",
-		Model:        "gpt-5",
-		Lease:        30 * time.Minute,
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		Type:           TicketTypeBug,
+		Tags:           []string{" backend ", ""},
+		Harness:        "codex",
+		Capabilities:   []string{"codegen", "testing"},
+		AgentID:        "codex",
+		Model:          "gpt-5",
+		Lease:          30 * time.Minute,
+		IdempotencyKey: "claim-auth-retry",
+		IdempotencyTTL: time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("claim next: %v", err)
@@ -83,6 +85,12 @@ func TestClaimNextReturnsTicketAttemptAndContextBundle(t *testing.T) {
 	}
 	if !params.LeaseExpiresAt.Time.Equal(now.Add(30 * time.Minute)) {
 		t.Fatalf("expected lease expiry %v, got %v", now.Add(30*time.Minute), params.LeaseExpiresAt.Time)
+	}
+	if !params.IdempotencyKey.Valid || params.IdempotencyKey.String != "claim-auth-retry" {
+		t.Fatalf("expected idempotency key, got %#v", params.IdempotencyKey)
+	}
+	if !params.RequestHash.Valid || params.RequestHash.String == "" {
+		t.Fatalf("expected request hash, got %#v", params.RequestHash)
 	}
 	if result.Ticket.ID != ticketID {
 		t.Fatalf("expected ticket %v, got %v", ticketID, result.Ticket.ID)
@@ -101,6 +109,69 @@ func TestClaimNextReturnsTicketAttemptAndContextBundle(t *testing.T) {
 	}
 	if len(result.Context.Checkpoints) != 1 || len(result.Context.Artifacts) != 1 {
 		t.Fatalf("expected checkpoint and artifact context, got %#v %#v", result.Context.Checkpoints, result.Context.Artifacts)
+	}
+}
+
+func TestClaimNextReplaysStoredIdempotencyResponse(t *testing.T) {
+	ticketID := testUUID(15)
+	attemptID := testUUID(16)
+	req := ClaimNextRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		Harness:        "codex",
+		AgentID:        "codex",
+		Lease:          time.Minute,
+		IdempotencyKey: "stable-key",
+	}
+	req = trimClaimNextRequest(req)
+	requestHash, err := claimRequestHash(req)
+	if err != nil {
+		t.Fatalf("hash claim request: %v", err)
+	}
+	store := &fakeClaimStore{
+		idempotency: db.IdempotencyKey{
+			RequestHash:  requestHash,
+			ResponseBody: claimResponseJSON(t, ticketID, attemptID),
+		},
+		ticket: db.Ticket{ID: ticketID},
+		attempt: db.Attempt{
+			ID:       attemptID,
+			TicketID: ticketID,
+		},
+	}
+	service := NewClaimService(store)
+
+	result, err := service.ClaimNext(context.Background(), req)
+	if err != nil {
+		t.Fatalf("claim replay: %v", err)
+	}
+
+	if len(store.claimParams) != 0 {
+		t.Fatalf("expected replay without a fresh claim, got %#v", store.claimParams)
+	}
+	if result.Ticket.ID != ticketID || result.Attempt.ID != attemptID {
+		t.Fatalf("unexpected replay result: %#v", result)
+	}
+}
+
+func TestClaimNextRejectsIdempotencyConflict(t *testing.T) {
+	service := NewClaimService(&fakeClaimStore{
+		idempotency: db.IdempotencyKey{
+			RequestHash:  "different-hash",
+			ResponseBody: claimResponseJSON(t, testUUID(15), testUUID(16)),
+		},
+	})
+
+	_, err := service.ClaimNext(context.Background(), ClaimNextRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		Harness:        "codex",
+		AgentID:        "codex",
+		Lease:          time.Minute,
+		IdempotencyKey: "stable-key",
+	})
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("expected idempotency conflict, got %v", err)
 	}
 }
 
@@ -148,6 +219,8 @@ type fakeClaimStore struct {
 	claimParams []db.ClaimNextTicketParams
 	claimRow    db.ClaimNextTicketRow
 	claimErr    error
+	idempotency db.IdempotencyKey
+	idemErr     error
 	ticket      db.Ticket
 	attempt     db.Attempt
 	attempts    []db.Attempt
@@ -158,6 +231,16 @@ type fakeClaimStore struct {
 func (s *fakeClaimStore) ClaimNextTicket(_ context.Context, params db.ClaimNextTicketParams) (db.ClaimNextTicketRow, error) {
 	s.claimParams = append(s.claimParams, params)
 	return s.claimRow, s.claimErr
+}
+
+func (s *fakeClaimStore) GetIdempotencyKey(_ context.Context, _ db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
+	if s.idemErr != nil {
+		return db.IdempotencyKey{}, s.idemErr
+	}
+	if len(s.idempotency.ResponseBody) == 0 && s.idempotency.RequestHash == "" {
+		return db.IdempotencyKey{}, pgx.ErrNoRows
+	}
+	return s.idempotency, nil
 }
 
 func (s *fakeClaimStore) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
@@ -212,4 +295,27 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func claimResponseJSON(t *testing.T, ticketID, attemptID pgtype.UUID) []byte {
+	t.Helper()
+
+	return mustJSON(t, map[string]string{
+		"ticket_id":  uuidString(t, ticketID),
+		"attempt_id": uuidString(t, attemptID),
+	})
+}
+
+func uuidString(t *testing.T, id pgtype.UUID) string {
+	t.Helper()
+
+	value, err := id.Value()
+	if err != nil {
+		t.Fatalf("uuid value: %v", err)
+	}
+	text, ok := value.(string)
+	if !ok {
+		t.Fatalf("expected uuid value string, got %T", value)
+	}
+	return text
 }

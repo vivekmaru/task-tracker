@@ -110,6 +110,32 @@ claimed_event AS (
     FROM updated_ticket t
     JOIN created_attempt a ON a.ticket_id = t.id
     RETURNING id
+),
+stored_idempotency AS (
+    INSERT INTO idempotency_keys (
+        workspace_id,
+        actor_id,
+        key,
+        route,
+        request_hash,
+        response_body,
+        expires_at
+    )
+    SELECT
+        t.workspace_id,
+        $7::text,
+        $11::text,
+        'claim-next',
+        $12::text,
+        jsonb_build_object(
+            'ticket_id', t.id,
+            'attempt_id', a.id
+        ),
+        $13::timestamptz
+    FROM updated_ticket t
+    JOIN created_attempt a ON a.ticket_id = t.id
+    WHERE $11::text IS NOT NULL
+    RETURNING id
 )
 SELECT
     t.id AS ticket_id,
@@ -119,16 +145,19 @@ JOIN created_attempt a ON a.ticket_id = t.id
 `
 
 type ClaimNextTicketParams struct {
-	WorkspaceID     pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
-	ProjectID       pgtype.UUID        `db:"project_id" json:"project_id"`
-	TicketType      pgtype.Text        `db:"ticket_type" json:"ticket_type"`
-	Tags            []string           `db:"tags" json:"tags"`
-	Harness         string             `db:"harness" json:"harness"`
-	Capabilities    []string           `db:"capabilities" json:"capabilities"`
-	AgentID         string             `db:"agent_id" json:"agent_id"`
-	Model           string             `db:"model" json:"model"`
-	LeaseExpiresAt  pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-	LastHeartbeatAt pgtype.Timestamptz `db:"last_heartbeat_at" json:"last_heartbeat_at"`
+	WorkspaceID          pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID            pgtype.UUID        `db:"project_id" json:"project_id"`
+	TicketType           pgtype.Text        `db:"ticket_type" json:"ticket_type"`
+	Tags                 []string           `db:"tags" json:"tags"`
+	Harness              string             `db:"harness" json:"harness"`
+	Capabilities         []string           `db:"capabilities" json:"capabilities"`
+	AgentID              string             `db:"agent_id" json:"agent_id"`
+	Model                string             `db:"model" json:"model"`
+	LeaseExpiresAt       pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	LastHeartbeatAt      pgtype.Timestamptz `db:"last_heartbeat_at" json:"last_heartbeat_at"`
+	IdempotencyKey       pgtype.Text        `db:"idempotency_key" json:"idempotency_key"`
+	RequestHash          pgtype.Text        `db:"request_hash" json:"request_hash"`
+	IdempotencyExpiresAt pgtype.Timestamptz `db:"idempotency_expires_at" json:"idempotency_expires_at"`
 }
 
 type ClaimNextTicketRow struct {
@@ -148,6 +177,9 @@ func (q *Queries) ClaimNextTicket(ctx context.Context, arg ClaimNextTicketParams
 		arg.Model,
 		arg.LeaseExpiresAt,
 		arg.LastHeartbeatAt,
+		arg.IdempotencyKey,
+		arg.RequestHash,
+		arg.IdempotencyExpiresAt,
 	)
 	var i ClaimNextTicketRow
 	err := row.Scan(&i.TicketID, &i.AttemptID)

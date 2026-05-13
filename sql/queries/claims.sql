@@ -97,6 +97,32 @@ claimed_event AS (
     FROM updated_ticket t
     JOIN created_attempt a ON a.ticket_id = t.id
     RETURNING id
+),
+stored_idempotency AS (
+    INSERT INTO idempotency_keys (
+        workspace_id,
+        actor_id,
+        key,
+        route,
+        request_hash,
+        response_body,
+        expires_at
+    )
+    SELECT
+        t.workspace_id,
+        sqlc.arg(agent_id)::text,
+        sqlc.narg(idempotency_key)::text,
+        'claim-next',
+        sqlc.narg(request_hash)::text,
+        jsonb_build_object(
+            'ticket_id', t.id,
+            'attempt_id', a.id
+        ),
+        sqlc.narg(idempotency_expires_at)::timestamptz
+    FROM updated_ticket t
+    JOIN created_attempt a ON a.ticket_id = t.id
+    WHERE sqlc.narg(idempotency_key)::text IS NOT NULL
+    RETURNING id
 )
 SELECT
     t.id AS ticket_id,

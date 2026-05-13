@@ -21,6 +21,8 @@ func TestClaimNextQueryKeepsCorrectnessInPostgres(t *testing.T) {
 		"any(t.allowed_harnesses)",
 		"insert into attempts",
 		"insert into ticket_events",
+		"insert into idempotency_keys",
+		"jsonb_build_object",
 		"set status = 'in_progress'",
 	} {
 		if !strings.Contains(sql, want) {
