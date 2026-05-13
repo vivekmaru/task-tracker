@@ -58,3 +58,9 @@ SELECT *
 FROM attempt_checkpoints
 WHERE attempt_id = $1
 ORDER BY created_at ASC;
+
+-- name: ListAttemptCheckpointsByTicket :many
+SELECT *
+FROM attempt_checkpoints
+WHERE ticket_id = $1
+ORDER BY created_at ASC;

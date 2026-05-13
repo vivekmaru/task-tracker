@@ -247,6 +247,45 @@ func (q *Queries) ListAttemptCheckpointsByAttempt(ctx context.Context, attemptID
 	return items, nil
 }
 
+const listAttemptCheckpointsByTicket = `-- name: ListAttemptCheckpointsByTicket :many
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, summary, files_touched, commands_run, next_step, risk, created_at
+FROM attempt_checkpoints
+WHERE ticket_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListAttemptCheckpointsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]AttemptCheckpoint, error) {
+	rows, err := q.db.Query(ctx, listAttemptCheckpointsByTicket, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AttemptCheckpoint{}
+	for rows.Next() {
+		var i AttemptCheckpoint
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.TicketID,
+			&i.AttemptID,
+			&i.Summary,
+			&i.FilesTouched,
+			&i.CommandsRun,
+			&i.NextStep,
+			&i.Risk,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAttemptsByTicket = `-- name: ListAttemptsByTicket :many
 SELECT id, workspace_id, project_id, ticket_id, agent_id, harness, model, status, lease_expires_at, last_heartbeat_at, progress_percent, current_summary, next_step, output, output_schema, failure_reason, failure_category, blocker, trace_id, checkpoint_ref, started_at, completed_at
 FROM attempts

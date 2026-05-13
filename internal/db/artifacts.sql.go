@@ -79,3 +79,45 @@ func (q *Queries) CreateArtifact(ctx context.Context, arg CreateArtifactParams) 
 	)
 	return i, err
 }
+
+const listArtifactsByTicket = `-- name: ListArtifactsByTicket :many
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, role, name, url, storage_backend, size_bytes, mime_type, metadata, created_at
+FROM artifacts
+WHERE ticket_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListArtifactsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]Artifact, error) {
+	rows, err := q.db.Query(ctx, listArtifactsByTicket, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Artifact{}
+	for rows.Next() {
+		var i Artifact
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.TicketID,
+			&i.AttemptID,
+			&i.Type,
+			&i.Role,
+			&i.Name,
+			&i.Url,
+			&i.StorageBackend,
+			&i.SizeBytes,
+			&i.MimeType,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

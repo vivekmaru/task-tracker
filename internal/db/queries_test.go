@@ -15,8 +15,10 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.CreateAttempt
 	_ = q.GetAttempt
 	_ = q.ListAttemptsByTicket
+	_ = q.ClaimNextTicket
 	_ = q.CreateAttemptCheckpoint
 	_ = q.ListAttemptCheckpointsByAttempt
+	_ = q.ListAttemptCheckpointsByTicket
 	_ = q.CreateTicketEvent
 	_ = q.ListTicketEventsByTicket
 	_ = q.CreateIdempotencyKey
@@ -25,4 +27,5 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.CreateAttemptMetrics
 	_ = q.GetAttemptMetrics
 	_ = q.CreateArtifact
+	_ = q.ListArtifactsByTicket
 }
