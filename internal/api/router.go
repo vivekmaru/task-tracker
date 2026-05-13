@@ -6,18 +6,24 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 )
 
 const basePath = "/api/v1"
 
 func NewRouter() http.Handler {
+	return NewRouterWithRuntime(nil)
+}
+
+func NewRouterWithRuntime(rt *forgeruntime.Runtime) http.Handler {
 	mux := http.NewServeMux()
 	api := humago.NewWithPrefix(mux, basePath, huma.DefaultConfig("Forge API", "0.1.0"))
-	RegisterPhaseOneRoutes(api)
+	RegisterPhaseOneRoutes(api, rt)
 	return mux
 }
 
-func RegisterPhaseOneRoutes(api huma.API) {
+func RegisterPhaseOneRoutes(api huma.API, rt *forgeruntime.Runtime) {
+	_ = rt
 	register[bodyInput](api, http.MethodPost, "/tickets", "create-ticket", "Create ticket")
 	register[bodyInput](api, http.MethodPost, "/tickets/propose", "propose-ticket", "Propose ticket")
 	register[listTicketsInput](api, http.MethodGet, "/tickets", "list-tickets", "List tickets")

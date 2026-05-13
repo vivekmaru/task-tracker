@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/vivek/agent-task-tracker/internal/db"
+	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 )
 
 func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
@@ -57,5 +60,17 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		if _, ok := methods[route.method]; !ok {
 			t.Fatalf("expected OpenAPI operation %s %s", route.method, route.path)
 		}
+	}
+}
+
+func TestNewRouterWithRuntimeKeepsOpenAPIRoutes(t *testing.T) {
+	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected openapi status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

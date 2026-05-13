@@ -2,10 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vivek/agent-task-tracker/internal/config"
 )
 
 func TestRunPrintsTopLevelHelp(t *testing.T) {
@@ -113,15 +117,52 @@ func TestRunWorkerLoadsConfigFile(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 
-	code := Run([]string{"worker", "--config", path}, &stdout, &stderr)
+	var opened config.Config
+	code := RunWithDependencies([]string{"worker", "--config", path}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(_ context.Context, cfg config.Config) (RuntimeHandle, error) {
+			opened = cfg
+			return noopRuntime{}, nil
+		},
+	})
 
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "worker startup configuration ok") {
+	if opened.DatabaseURL != "postgres://db" {
+		t.Fatalf("expected runtime opener to receive database URL, got %#v", opened)
+	}
+	if opened.WorkerConcurrency != 3 {
+		t.Fatalf("expected runtime opener to receive worker concurrency, got %#v", opened)
+	}
+	if !strings.Contains(stdout.String(), "worker runtime configuration ok") {
 		t.Fatalf("expected worker startup message, got %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())
 	}
 }
+
+func TestRunServerReportsRuntimeOpenError(t *testing.T) {
+	t.Setenv("FORGE_DATABASE_URL", "postgres://db")
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{"server"}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			return nil, errors.New("dial failed")
+		},
+	})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "server runtime error: dial failed") {
+		t.Fatalf("expected runtime error, got %q", stderr.String())
+	}
+}
+
+type noopRuntime struct{}
+
+func (noopRuntime) Close() {}

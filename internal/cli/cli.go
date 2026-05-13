@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/vivek/agent-task-tracker/internal/config"
+	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 )
 
 type command struct {
@@ -32,8 +34,22 @@ var commands = []command{
 	{"codex", "Codex harness convenience commands."},
 }
 
+type RuntimeHandle interface {
+	Close()
+}
+
+type Dependencies struct {
+	OpenRuntime func(context.Context, config.Config) (RuntimeHandle, error)
+}
+
 // Run executes the Forge CLI and returns a process-style exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
+	return RunWithDependencies(args, stdout, stderr, Dependencies{
+		OpenRuntime: openRuntime,
+	})
+}
+
+func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependencies) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		printHelp(stdout)
 		return 0
@@ -52,14 +68,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if name == "server" || name == "worker" {
-		return runProcess(name, args[1:], stdout, stderr)
+		return runProcess(name, args[1:], stdout, stderr, deps)
 	}
 
 	fmt.Fprintf(stderr, "command %q is not implemented yet\n", name)
 	return 1
 }
 
-func runProcess(name string, args []string, stdout, stderr io.Writer) int {
+func runProcess(name string, args []string, stdout, stderr io.Writer, deps Dependencies) int {
 	opts, ok := parseProcessOptions(args, stderr)
 	if !ok {
 		return 2
@@ -70,6 +86,9 @@ func runProcess(name string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s configuration error: %v\n", name, err)
 		return 2
 	}
+	if deps.OpenRuntime == nil {
+		deps.OpenRuntime = openRuntime
+	}
 
 	switch name {
 	case "server":
@@ -77,15 +96,31 @@ func runProcess(name string, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "server configuration error: %v\n", err)
 			return 2
 		}
-		fmt.Fprintln(stdout, "server startup configuration ok; server runtime not implemented yet")
+		rt, err := deps.OpenRuntime(context.Background(), cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "server runtime error: %v\n", err)
+			return 1
+		}
+		defer rt.Close()
+		fmt.Fprintln(stdout, "server runtime configuration ok; HTTP serving not implemented yet")
 	case "worker":
 		if err := cfg.ValidateWorker(); err != nil {
 			fmt.Fprintf(stderr, "worker configuration error: %v\n", err)
 			return 2
 		}
-		fmt.Fprintln(stdout, "worker startup configuration ok; worker runtime not implemented yet")
+		rt, err := deps.OpenRuntime(context.Background(), cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "worker runtime error: %v\n", err)
+			return 1
+		}
+		defer rt.Close()
+		fmt.Fprintln(stdout, "worker runtime configuration ok; River worker loop not implemented yet")
 	}
 	return 0
+}
+
+func openRuntime(ctx context.Context, cfg config.Config) (RuntimeHandle, error) {
+	return forgeruntime.Open(ctx, cfg)
 }
 
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
