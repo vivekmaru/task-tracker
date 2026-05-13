@@ -11,6 +11,123 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const checkpointAttempt = `-- name: CheckpointAttempt :one
+WITH updated_attempt AS (
+    UPDATE attempts a
+    SET progress_percent = $1::integer,
+        current_summary = $2::text,
+        next_step = $3::text
+    WHERE a.id = $4::uuid
+      AND a.status = 'running'
+    RETURNING id, workspace_id, project_id, ticket_id, agent_id, harness, model, status, lease_expires_at, last_heartbeat_at, progress_percent, current_summary, next_step, output, output_schema, failure_reason, failure_category, blocker, trace_id, checkpoint_ref, started_at, completed_at
+),
+created_checkpoint AS (
+    INSERT INTO attempt_checkpoints (
+        workspace_id,
+        project_id,
+        ticket_id,
+        attempt_id,
+        summary,
+        files_touched,
+        commands_run,
+        next_step,
+        risk
+    )
+    SELECT
+        a.workspace_id,
+        a.project_id,
+        a.ticket_id,
+        a.id,
+        $2::text,
+        $5::text[],
+        $6::text[],
+        $3::text,
+        $7::text
+    FROM updated_attempt a
+    RETURNING id, workspace_id, project_id, ticket_id, attempt_id, summary, files_touched, commands_run, next_step, risk, created_at
+),
+checkpoint_event AS (
+    INSERT INTO ticket_events (
+        workspace_id,
+        project_id,
+        ticket_id,
+        attempt_id,
+        type,
+        actor_type,
+        actor_id,
+        data
+    )
+    SELECT
+        a.workspace_id,
+        a.project_id,
+        a.ticket_id,
+        a.id,
+        'checkpointed',
+        'agent',
+        a.agent_id,
+        jsonb_build_object(
+            'checkpoint_id', c.id,
+            'progress_percent', a.progress_percent
+        )
+    FROM updated_attempt a
+    JOIN created_checkpoint c ON c.attempt_id = a.id
+    RETURNING id
+)
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, summary, files_touched, commands_run, next_step, risk, created_at
+FROM created_checkpoint
+`
+
+type CheckpointAttemptParams struct {
+	ProgressPercent int32       `db:"progress_percent" json:"progress_percent"`
+	Summary         string      `db:"summary" json:"summary"`
+	NextStep        pgtype.Text `db:"next_step" json:"next_step"`
+	AttemptID       pgtype.UUID `db:"attempt_id" json:"attempt_id"`
+	FilesTouched    []string    `db:"files_touched" json:"files_touched"`
+	CommandsRun     []string    `db:"commands_run" json:"commands_run"`
+	Risk            pgtype.Text `db:"risk" json:"risk"`
+}
+
+type CheckpointAttemptRow struct {
+	ID           pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID  pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID    pgtype.UUID        `db:"project_id" json:"project_id"`
+	TicketID     pgtype.UUID        `db:"ticket_id" json:"ticket_id"`
+	AttemptID    pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	Summary      string             `db:"summary" json:"summary"`
+	FilesTouched []string           `db:"files_touched" json:"files_touched"`
+	CommandsRun  []string           `db:"commands_run" json:"commands_run"`
+	NextStep     pgtype.Text        `db:"next_step" json:"next_step"`
+	Risk         pgtype.Text        `db:"risk" json:"risk"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) CheckpointAttempt(ctx context.Context, arg CheckpointAttemptParams) (CheckpointAttemptRow, error) {
+	row := q.db.QueryRow(ctx, checkpointAttempt,
+		arg.ProgressPercent,
+		arg.Summary,
+		arg.NextStep,
+		arg.AttemptID,
+		arg.FilesTouched,
+		arg.CommandsRun,
+		arg.Risk,
+	)
+	var i CheckpointAttemptRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ProjectID,
+		&i.TicketID,
+		&i.AttemptID,
+		&i.Summary,
+		&i.FilesTouched,
+		&i.CommandsRun,
+		&i.NextStep,
+		&i.Risk,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createAttempt = `-- name: CreateAttempt :one
 INSERT INTO attempts (
     workspace_id,
@@ -181,6 +298,106 @@ WHERE id = $1
 func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (Attempt, error) {
 	row := q.db.QueryRow(ctx, getAttempt, id)
 	var i Attempt
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ProjectID,
+		&i.TicketID,
+		&i.AgentID,
+		&i.Harness,
+		&i.Model,
+		&i.Status,
+		&i.LeaseExpiresAt,
+		&i.LastHeartbeatAt,
+		&i.ProgressPercent,
+		&i.CurrentSummary,
+		&i.NextStep,
+		&i.Output,
+		&i.OutputSchema,
+		&i.FailureReason,
+		&i.FailureCategory,
+		&i.Blocker,
+		&i.TraceID,
+		&i.CheckpointRef,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const heartbeatAttempt = `-- name: HeartbeatAttempt :one
+WITH updated_attempt AS (
+    UPDATE attempts a
+    SET lease_expires_at = $1::timestamptz,
+        last_heartbeat_at = $2::timestamptz
+    WHERE a.id = $3::uuid
+      AND a.status = 'running'
+    RETURNING id, workspace_id, project_id, ticket_id, agent_id, harness, model, status, lease_expires_at, last_heartbeat_at, progress_percent, current_summary, next_step, output, output_schema, failure_reason, failure_category, blocker, trace_id, checkpoint_ref, started_at, completed_at
+),
+heartbeat_event AS (
+    INSERT INTO ticket_events (
+        workspace_id,
+        project_id,
+        ticket_id,
+        attempt_id,
+        type,
+        actor_type,
+        actor_id,
+        data
+    )
+    SELECT
+        a.workspace_id,
+        a.project_id,
+        a.ticket_id,
+        a.id,
+        'heartbeat',
+        'agent',
+        a.agent_id,
+        jsonb_build_object(
+            'lease_expires_at', a.lease_expires_at,
+            'heartbeat_at', a.last_heartbeat_at
+        )
+    FROM updated_attempt a
+    RETURNING id
+)
+SELECT id, workspace_id, project_id, ticket_id, agent_id, harness, model, status, lease_expires_at, last_heartbeat_at, progress_percent, current_summary, next_step, output, output_schema, failure_reason, failure_category, blocker, trace_id, checkpoint_ref, started_at, completed_at
+FROM updated_attempt
+`
+
+type HeartbeatAttemptParams struct {
+	LeaseExpiresAt pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	HeartbeatAt    pgtype.Timestamptz `db:"heartbeat_at" json:"heartbeat_at"`
+	AttemptID      pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+}
+
+type HeartbeatAttemptRow struct {
+	ID              pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID     pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID       pgtype.UUID        `db:"project_id" json:"project_id"`
+	TicketID        pgtype.UUID        `db:"ticket_id" json:"ticket_id"`
+	AgentID         string             `db:"agent_id" json:"agent_id"`
+	Harness         string             `db:"harness" json:"harness"`
+	Model           string             `db:"model" json:"model"`
+	Status          string             `db:"status" json:"status"`
+	LeaseExpiresAt  pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	LastHeartbeatAt pgtype.Timestamptz `db:"last_heartbeat_at" json:"last_heartbeat_at"`
+	ProgressPercent int32              `db:"progress_percent" json:"progress_percent"`
+	CurrentSummary  pgtype.Text        `db:"current_summary" json:"current_summary"`
+	NextStep        pgtype.Text        `db:"next_step" json:"next_step"`
+	Output          []byte             `db:"output" json:"output"`
+	OutputSchema    pgtype.Text        `db:"output_schema" json:"output_schema"`
+	FailureReason   pgtype.Text        `db:"failure_reason" json:"failure_reason"`
+	FailureCategory pgtype.Text        `db:"failure_category" json:"failure_category"`
+	Blocker         []byte             `db:"blocker" json:"blocker"`
+	TraceID         pgtype.Text        `db:"trace_id" json:"trace_id"`
+	CheckpointRef   pgtype.Text        `db:"checkpoint_ref" json:"checkpoint_ref"`
+	StartedAt       pgtype.Timestamptz `db:"started_at" json:"started_at"`
+	CompletedAt     pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+}
+
+func (q *Queries) HeartbeatAttempt(ctx context.Context, arg HeartbeatAttemptParams) (HeartbeatAttemptRow, error) {
+	row := q.db.QueryRow(ctx, heartbeatAttempt, arg.LeaseExpiresAt, arg.HeartbeatAt, arg.AttemptID)
+	var i HeartbeatAttemptRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
