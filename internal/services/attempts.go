@@ -17,6 +17,11 @@ var ErrAttemptNotRunning = errors.New("attempt is not running")
 type AttemptStore interface {
 	HeartbeatAttempt(context.Context, db.HeartbeatAttemptParams) (db.HeartbeatAttemptRow, error)
 	CheckpointAttempt(context.Context, db.CheckpointAttemptParams) (db.CheckpointAttemptRow, error)
+	CompleteAttempt(context.Context, db.CompleteAttemptParams) (db.CompleteAttemptRow, error)
+	FailAttempt(context.Context, db.FailAttemptParams) (db.FailAttemptRow, error)
+	BlockAttempt(context.Context, db.BlockAttemptParams) (db.BlockAttemptRow, error)
+	CancelAttempt(context.Context, db.CancelAttemptParams) (db.CancelAttemptRow, error)
+	ExpireAttempt(context.Context, db.ExpireAttemptParams) (db.ExpireAttemptRow, error)
 }
 
 var _ AttemptStore = (*db.Queries)(nil)
@@ -63,6 +68,42 @@ type CheckpointRequest struct {
 type CheckpointResult struct {
 	Checkpoint      db.AttemptCheckpoint
 	ProgressPercent int32
+}
+
+type CompleteAttemptRequest struct {
+	AttemptID    pgtype.UUID
+	Output       map[string]any
+	OutputSchema string
+}
+
+type FailAttemptRequest struct {
+	AttemptID       pgtype.UUID
+	FailureReason   string
+	FailureCategory string
+	Output          map[string]any
+}
+
+type BlockAttemptRequest struct {
+	AttemptID       pgtype.UUID
+	BlockerReason   string
+	FailureCategory string
+	Blocker         map[string]any
+}
+
+type CancelAttemptRequest struct {
+	AttemptID pgtype.UUID
+	Reason    string
+}
+
+type ExpireAttemptRequest struct {
+	AttemptID pgtype.UUID
+}
+
+type AttemptTransitionResult struct {
+	AttemptID     pgtype.UUID
+	TicketID      pgtype.UUID
+	AttemptStatus string
+	TicketStatus  string
 }
 
 func (s *AttemptService) Heartbeat(ctx context.Context, req HeartbeatRequest) (db.Attempt, error) {
@@ -114,11 +155,110 @@ func (s *AttemptService) Checkpoint(ctx context.Context, req CheckpointRequest) 
 	}, nil
 }
 
+func (s *AttemptService) Complete(ctx context.Context, req CompleteAttemptRequest) (AttemptTransitionResult, error) {
+	if problems := validateAttemptID(req.AttemptID); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
+	output, err := encodeJSONObject(req.Output)
+	if err != nil {
+		return AttemptTransitionResult{}, fmt.Errorf("marshal completion output: %w", err)
+	}
+
+	row, err := s.store.CompleteAttempt(ctx, db.CompleteAttemptParams{
+		AttemptID:    req.AttemptID,
+		Output:       output,
+		OutputSchema: optionalText(strings.TrimSpace(req.OutputSchema)),
+		CompletedAt:  timestamptz(s.now().UTC()),
+	})
+	if err != nil {
+		return AttemptTransitionResult{}, transitionError("complete attempt", err)
+	}
+	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
+}
+
+func (s *AttemptService) Fail(ctx context.Context, req FailAttemptRequest) (AttemptTransitionResult, error) {
+	req.FailureReason = strings.TrimSpace(req.FailureReason)
+	req.FailureCategory = strings.TrimSpace(req.FailureCategory)
+	if problems := validateFailAttemptRequest(req); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
+	output, err := encodeJSONObject(req.Output)
+	if err != nil {
+		return AttemptTransitionResult{}, fmt.Errorf("marshal failure output: %w", err)
+	}
+
+	row, err := s.store.FailAttempt(ctx, db.FailAttemptParams{
+		AttemptID:       req.AttemptID,
+		FailureReason:   req.FailureReason,
+		FailureCategory: optionalText(req.FailureCategory),
+		Output:          output,
+		CompletedAt:     timestamptz(s.now().UTC()),
+	})
+	if err != nil {
+		return AttemptTransitionResult{}, transitionError("fail attempt", err)
+	}
+	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
+}
+
+func (s *AttemptService) Block(ctx context.Context, req BlockAttemptRequest) (AttemptTransitionResult, error) {
+	req.BlockerReason = strings.TrimSpace(req.BlockerReason)
+	req.FailureCategory = strings.TrimSpace(req.FailureCategory)
+	if problems := validateBlockAttemptRequest(req); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
+	blocker, err := encodeJSONObject(req.Blocker)
+	if err != nil {
+		return AttemptTransitionResult{}, fmt.Errorf("marshal blocker: %w", err)
+	}
+
+	row, err := s.store.BlockAttempt(ctx, db.BlockAttemptParams{
+		AttemptID:       req.AttemptID,
+		BlockerReason:   req.BlockerReason,
+		FailureCategory: optionalText(req.FailureCategory),
+		Blocker:         blocker,
+		CompletedAt:     timestamptz(s.now().UTC()),
+	})
+	if err != nil {
+		return AttemptTransitionResult{}, transitionError("block attempt", err)
+	}
+	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
+}
+
+func (s *AttemptService) Cancel(ctx context.Context, req CancelAttemptRequest) (AttemptTransitionResult, error) {
+	req.Reason = strings.TrimSpace(req.Reason)
+	if problems := validateAttemptID(req.AttemptID); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
+
+	row, err := s.store.CancelAttempt(ctx, db.CancelAttemptParams{
+		AttemptID:   req.AttemptID,
+		Reason:      optionalText(req.Reason),
+		CompletedAt: timestamptz(s.now().UTC()),
+	})
+	if err != nil {
+		return AttemptTransitionResult{}, transitionError("cancel attempt", err)
+	}
+	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
+}
+
+func (s *AttemptService) Expire(ctx context.Context, req ExpireAttemptRequest) (AttemptTransitionResult, error) {
+	if problems := validateAttemptID(req.AttemptID); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
+
+	row, err := s.store.ExpireAttempt(ctx, db.ExpireAttemptParams{
+		AttemptID:   req.AttemptID,
+		CompletedAt: timestamptz(s.now().UTC()),
+	})
+	if err != nil {
+		return AttemptTransitionResult{}, transitionError("expire attempt", err)
+	}
+	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
+}
+
 func validateHeartbeatRequest(req HeartbeatRequest) []string {
 	var problems []string
-	if !req.AttemptID.Valid {
-		problems = append(problems, "attempt_id is required")
-	}
+	problems = append(problems, validateAttemptID(req.AttemptID)...)
 	if req.Lease <= 0 {
 		problems = append(problems, "lease must be positive")
 	}
@@ -127,9 +267,7 @@ func validateHeartbeatRequest(req HeartbeatRequest) []string {
 
 func validateCheckpointRequest(req CheckpointRequest) []string {
 	var problems []string
-	if !req.AttemptID.Valid {
-		problems = append(problems, "attempt_id is required")
-	}
+	problems = append(problems, validateAttemptID(req.AttemptID)...)
 	if req.Summary == "" {
 		problems = append(problems, "summary is required")
 	}
@@ -137,6 +275,31 @@ func validateCheckpointRequest(req CheckpointRequest) []string {
 		problems = append(problems, "progress_percent must be between 0 and 100")
 	}
 	return problems
+}
+
+func validateFailAttemptRequest(req FailAttemptRequest) []string {
+	var problems []string
+	problems = append(problems, validateAttemptID(req.AttemptID)...)
+	if req.FailureReason == "" {
+		problems = append(problems, "failure_reason is required")
+	}
+	return problems
+}
+
+func validateBlockAttemptRequest(req BlockAttemptRequest) []string {
+	var problems []string
+	problems = append(problems, validateAttemptID(req.AttemptID)...)
+	if req.BlockerReason == "" {
+		problems = append(problems, "blocker_reason is required")
+	}
+	return problems
+}
+
+func validateAttemptID(attemptID pgtype.UUID) []string {
+	if !attemptID.Valid {
+		return []string{"attempt_id is required"}
+	}
+	return nil
 }
 
 func trimCheckpointRequest(req CheckpointRequest) CheckpointRequest {
@@ -189,4 +352,20 @@ func checkpointFromCheckpointRow(row db.CheckpointAttemptRow) db.AttemptCheckpoi
 		Risk:         row.Risk,
 		CreatedAt:    row.CreatedAt,
 	}
+}
+
+func transitionResult(attemptID, ticketID pgtype.UUID, attemptStatus, ticketStatus string) AttemptTransitionResult {
+	return AttemptTransitionResult{
+		AttemptID:     attemptID,
+		TicketID:      ticketID,
+		AttemptStatus: attemptStatus,
+		TicketStatus:  ticketStatus,
+	}
+}
+
+func transitionError(operation string, err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrAttemptNotRunning
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }

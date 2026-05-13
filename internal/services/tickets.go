@@ -26,8 +26,14 @@ const (
 	TicketTypeIntegration   = "integration"
 	TicketTypeCustom        = "custom"
 
-	TicketStatusBacklog = "backlog"
-	TicketStatusTodo    = "todo"
+	TicketStatusBacklog     = "backlog"
+	TicketStatusTodo        = "todo"
+	TicketStatusInProgress  = "in_progress"
+	TicketStatusBlocked     = "blocked"
+	TicketStatusNeedsReview = "needs_review"
+	TicketStatusDone        = "done"
+	TicketStatusFailed      = "failed"
+	TicketStatusArchived    = "archived"
 
 	EventTicketCreated  = "created"
 	EventTicketProposed = "proposed"

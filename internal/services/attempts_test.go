@@ -119,6 +119,21 @@ type fakeAttemptStore struct {
 	checkpointParams []db.CheckpointAttemptParams
 	checkpoint       db.CheckpointAttemptRow
 	checkpointErr    error
+	completeParams   []db.CompleteAttemptParams
+	complete         db.CompleteAttemptRow
+	completeErr      error
+	failParams       []db.FailAttemptParams
+	fail             db.FailAttemptRow
+	failErr          error
+	blockParams      []db.BlockAttemptParams
+	block            db.BlockAttemptRow
+	blockErr         error
+	cancelParams     []db.CancelAttemptParams
+	cancel           db.CancelAttemptRow
+	cancelErr        error
+	expireParams     []db.ExpireAttemptParams
+	expire           db.ExpireAttemptRow
+	expireErr        error
 }
 
 func (s *fakeAttemptStore) HeartbeatAttempt(_ context.Context, params db.HeartbeatAttemptParams) (db.HeartbeatAttemptRow, error) {
@@ -129,4 +144,29 @@ func (s *fakeAttemptStore) HeartbeatAttempt(_ context.Context, params db.Heartbe
 func (s *fakeAttemptStore) CheckpointAttempt(_ context.Context, params db.CheckpointAttemptParams) (db.CheckpointAttemptRow, error) {
 	s.checkpointParams = append(s.checkpointParams, params)
 	return s.checkpoint, s.checkpointErr
+}
+
+func (s *fakeAttemptStore) CompleteAttempt(_ context.Context, params db.CompleteAttemptParams) (db.CompleteAttemptRow, error) {
+	s.completeParams = append(s.completeParams, params)
+	return s.complete, s.completeErr
+}
+
+func (s *fakeAttemptStore) FailAttempt(_ context.Context, params db.FailAttemptParams) (db.FailAttemptRow, error) {
+	s.failParams = append(s.failParams, params)
+	return s.fail, s.failErr
+}
+
+func (s *fakeAttemptStore) BlockAttempt(_ context.Context, params db.BlockAttemptParams) (db.BlockAttemptRow, error) {
+	s.blockParams = append(s.blockParams, params)
+	return s.block, s.blockErr
+}
+
+func (s *fakeAttemptStore) CancelAttempt(_ context.Context, params db.CancelAttemptParams) (db.CancelAttemptRow, error) {
+	s.cancelParams = append(s.cancelParams, params)
+	return s.cancel, s.cancelErr
+}
+
+func (s *fakeAttemptStore) ExpireAttempt(_ context.Context, params db.ExpireAttemptParams) (db.ExpireAttemptRow, error) {
+	s.expireParams = append(s.expireParams, params)
+	return s.expire, s.expireErr
 }

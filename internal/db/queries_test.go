@@ -18,6 +18,11 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.ClaimNextTicket
 	_ = q.HeartbeatAttempt
 	_ = q.CheckpointAttempt
+	_ = q.CompleteAttempt
+	_ = q.FailAttempt
+	_ = q.BlockAttempt
+	_ = q.CancelAttempt
+	_ = q.ExpireAttempt
 	_ = q.CreateAttemptCheckpoint
 	_ = q.ListAttemptCheckpointsByAttempt
 	_ = q.ListAttemptCheckpointsByTicket

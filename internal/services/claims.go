@@ -13,7 +13,14 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/db"
 )
 
-const AttemptStatusRunning = "running"
+const (
+	AttemptStatusRunning   = "running"
+	AttemptStatusSucceeded = "succeeded"
+	AttemptStatusFailed    = "failed"
+	AttemptStatusBlocked   = "blocked"
+	AttemptStatusExpired   = "expired"
+	AttemptStatusCancelled = "cancelled"
+)
 
 var ErrNoClaimableTickets = errors.New("no claimable tickets")
 
