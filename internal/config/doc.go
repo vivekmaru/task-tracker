@@ -1,2 +1,2 @@
-// Package config will load Forge configuration.
+// Package config loads Forge process configuration.
 package config

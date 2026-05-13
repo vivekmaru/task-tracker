@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -80,5 +82,46 @@ func TestRunAdvertisesPhaseOneCommandSkeletons(t *testing.T) {
 		if !strings.Contains(out, command) {
 			t.Fatalf("expected command %q in help output:\n%s", command, out)
 		}
+	}
+}
+
+func TestRunServerReportsClearConfigValidationError(t *testing.T) {
+	t.Setenv("FORGE_DATABASE_URL", "")
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"server"}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "server configuration error: database_url is required") {
+		t.Fatalf("expected clear validation error, got %q", stderr.String())
+	}
+}
+
+func TestRunWorkerLoadsConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{
+		"database_url": "postgres://db",
+		"worker_concurrency": 3
+	}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"worker", "--config", path}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "worker startup configuration ok") {
+		t.Fatalf("expected worker startup message, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
 	}
 }
