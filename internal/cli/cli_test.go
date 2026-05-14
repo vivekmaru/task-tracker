@@ -148,6 +148,39 @@ func TestRunWorkerLoadsConfigFile(t *testing.T) {
 	}
 }
 
+func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	var opened config.Config
+	code := RunWithDependencies([]string{"mcp", "--config", path}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(_ context.Context, cfg config.Config) (RuntimeHandle, error) {
+			opened = cfg
+			return &noopRuntime{}, nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if opened.DatabaseURL != "postgres://db" {
+		t.Fatalf("expected runtime opener to receive database URL, got %#v", opened)
+	}
+	if !strings.Contains(stdout.String(), "mcp runtime configuration ok") {
+		t.Fatalf("expected MCP startup message, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "registered 15 tools") {
+		t.Fatalf("expected registered tool count, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
 func TestRunServerReportsRuntimeOpenError(t *testing.T) {
 	t.Setenv("FORGE_DATABASE_URL", "postgres://db")
 	var stdout, stderr bytes.Buffer

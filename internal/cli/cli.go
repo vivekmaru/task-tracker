@@ -11,7 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/config"
+	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
+	forgemcp "github.com/vivek/agent-task-tracker/internal/mcp"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 	"github.com/vivek/agent-task-tracker/internal/services"
 )
@@ -87,7 +89,7 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 		return 0
 	}
 
-	if name == "server" || name == "worker" {
+	if name == "server" || name == "worker" || name == "mcp" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
 	}
 	if isRuntimeCommand(name) {
@@ -159,6 +161,23 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		}
 		defer rt.Close()
 		fmt.Fprintln(stdout, "server runtime configuration ok; HTTP serving not implemented yet")
+	case "mcp":
+		if err := cfg.ValidateServer(); err != nil {
+			fmt.Fprintf(stderr, "mcp configuration error: %v\n", err)
+			return 2
+		}
+		rt, err := deps.OpenRuntime(context.Background(), cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp runtime error: %v\n", err)
+			return 1
+		}
+		defer rt.Close()
+		server, err := forgemcp.NewServer(rt, contracts.AllOperations())
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp startup error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "mcp runtime configuration ok; registered %d tools; protocol serving not implemented yet\n", len(server.Tools()))
 	case "worker":
 		if err := cfg.ValidateWorker(); err != nil {
 			fmt.Fprintf(stderr, "worker configuration error: %v\n", err)
