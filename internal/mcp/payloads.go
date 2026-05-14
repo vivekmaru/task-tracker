@@ -40,7 +40,6 @@ type createTicketInput struct {
 	CreatedByID          string         `json:"created_by_id"`
 	CreationReason       string         `json:"creation_reason"`
 	Enqueue              bool           `json:"enqueue"`
-	CanEnqueue           bool           `json:"can_enqueue"`
 }
 
 func (p createTicketInput) request() (services.CreateTicketRequest, error) {
@@ -106,7 +105,6 @@ func (p createTicketInput) request() (services.CreateTicketRequest, error) {
 		CreatedByID:          p.CreatedByID,
 		CreationReason:       p.CreationReason,
 		Enqueue:              p.Enqueue,
-		CanEnqueue:           p.CanEnqueue,
 	}, nil
 }
 
@@ -133,8 +131,6 @@ type createFromAttemptInput struct {
 	Input                map[string]any `json:"input"`
 	CreatedByID          string         `json:"created_by_id"`
 	CreationReason       string         `json:"creation_reason"`
-	Enqueue              bool           `json:"enqueue"`
-	CanEnqueue           bool           `json:"can_enqueue"`
 }
 
 func (p createFromAttemptInput) request() (services.CreateTicketFromAttemptRequest, error) {
@@ -180,8 +176,6 @@ func (p createFromAttemptInput) request() (services.CreateTicketFromAttemptReque
 		Input:                p.Input,
 		CreatedByID:          p.CreatedByID,
 		CreationReason:       p.CreationReason,
-		Enqueue:              p.Enqueue,
-		CanEnqueue:           p.CanEnqueue,
 	}, nil
 }
 

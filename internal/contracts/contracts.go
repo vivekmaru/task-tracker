@@ -347,7 +347,7 @@ var operations = []Operation{
 			RESTOperationID: RESTDecomposeTicket,
 			MCPTool:         OperationDecomposeTicket,
 		},
-		InputSchema: objectSchema("Decompose ticket input", []string{"workspace_id", "project_id", "ticket_id", "children"}, map[string]any{
+		InputSchema: objectSchema("Decompose ticket input", []string{"workspace_id", "project_id", "ticket_id", "can_enqueue", "creation_reason", "children"}, map[string]any{
 			"workspace_id":    uuidSchema("Workspace ID"),
 			"project_id":      uuidSchema("Project ID"),
 			"ticket_id":       uuidSchema("Parent ticket ID"),

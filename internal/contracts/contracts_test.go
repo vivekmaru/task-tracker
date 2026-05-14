@@ -142,6 +142,16 @@ func TestCreateFromAttemptSchemaTypeEnumMatchesSupportedTemplates(t *testing.T) 
 
 func TestDecomposeSchemaExposesRuntimeRequiredFields(t *testing.T) {
 	operation := MustOperation(OperationDecomposeTicket)
+	required := map[string]bool{}
+	for _, field := range operation.InputSchema["required"].([]string) {
+		required[field] = true
+	}
+	for _, field := range []string{"can_enqueue", "creation_reason"} {
+		if !required[field] {
+			t.Fatalf("decompose schema should require %q", field)
+		}
+	}
+
 	props := operation.InputSchema["properties"].(map[string]any)
 	for _, field := range []string{"can_enqueue", "created_by", "created_by_id", "creation_reason"} {
 		if _, ok := props[field]; !ok {
@@ -151,7 +161,7 @@ func TestDecomposeSchemaExposesRuntimeRequiredFields(t *testing.T) {
 
 	children := props["children"].(Schema)
 	child := children["items"].(Schema)
-	required := map[string]bool{}
+	required = map[string]bool{}
 	for _, field := range child["required"].([]string) {
 		required[field] = true
 	}

@@ -85,6 +85,38 @@ func TestServerCallCreateTicketDelegatesToRuntime(t *testing.T) {
 	}
 }
 
+func TestServerCallCreateTicketDoesNotTrustHiddenCanEnqueue(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationCreateTicket, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"title":"Hidden authority",
+		"description":"Hidden can_enqueue should not be trusted.",
+		"type":"feature",
+		"acceptance_criteria":["Hidden can_enqueue is ignored"],
+		"created_by":"agent",
+		"created_by_id":"codex",
+		"creation_reason":"permission boundary regression test",
+		"enqueue":true,
+		"can_enqueue":true
+	}`))
+	if err != nil {
+		t.Fatalf("call create_ticket: %v", err)
+	}
+
+	if !rt.createReq.Enqueue {
+		t.Fatalf("expected enqueue intent to be forwarded, got %#v", rt.createReq)
+	}
+	if rt.createReq.CanEnqueue {
+		t.Fatalf("MCP create_ticket should not trust hidden can_enqueue, got %#v", rt.createReq)
+	}
+}
+
 func TestServerCallRejectsOperationsOutsideConfiguredAllowlist(t *testing.T) {
 	server, err := NewServer(&fakeRuntime{}, []contracts.Operation{
 		contracts.MustOperation(contracts.OperationCreateTicket),
@@ -236,6 +268,33 @@ func TestServerCallRejectsMalformedOptionalUUID(t *testing.T) {
 	}`))
 	if err == nil {
 		t.Fatal("expected malformed UUID validation error")
+	}
+}
+
+func TestServerCallCreateFromAttemptDoesNotTrustHiddenEnqueueFlags(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationCreateTicketFromAttempt, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"attempt_id":"00000000-0000-0000-0000-000000000003",
+		"title":"Follow up",
+		"type":"bug",
+		"acceptance_criteria":["Hidden enqueue authority is ignored"],
+		"creation_reason":"permission boundary regression test",
+		"enqueue":true,
+		"can_enqueue":true
+	}`))
+	if err != nil {
+		t.Fatalf("call create_ticket_from_attempt: %v", err)
+	}
+
+	if rt.createFromAttemptReq.Enqueue || rt.createFromAttemptReq.CanEnqueue {
+		t.Fatalf("MCP create_ticket_from_attempt should ignore hidden enqueue flags, got %#v", rt.createFromAttemptReq)
 	}
 }
 
