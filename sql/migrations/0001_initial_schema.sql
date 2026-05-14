@@ -225,7 +225,7 @@ CREATE TABLE attempt_metrics (
 CREATE INDEX idx_projects_workspace_id ON projects(workspace_id);
 
 CREATE INDEX idx_tickets_claim_queue
-    ON tickets(workspace_id, project_id, status, priority DESC, created_at ASC)
+    ON tickets(workspace_id, project_id, status, priority ASC, created_at ASC)
     WHERE status = 'todo';
 CREATE INDEX idx_tickets_tags ON tickets USING gin(tags);
 CREATE INDEX idx_tickets_required_capabilities ON tickets USING gin(required_capabilities);

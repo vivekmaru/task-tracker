@@ -397,6 +397,50 @@ func TestDecomposeTicketRejectsUnknownChildDependency(t *testing.T) {
 	}
 }
 
+func TestDecomposeTicketRejectsCyclicChildDependencies(t *testing.T) {
+	service := NewTicketService(&fakeTicketStore{})
+
+	_, err := service.DecomposeTicket(context.Background(), DecomposeTicketRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		ParentID:       testUUID(8),
+		Mode:           DecomposeModePropose,
+		CreatedBy:      ActorAgent,
+		CreatedByID:    "planner",
+		CreationReason: "Planner decomposition",
+		Children: []DecomposeChildRequest{
+			{
+				Key:                "api",
+				Title:              "Add API surface",
+				Description:        "Expose the API.",
+				Type:               TicketTypeFeature,
+				AcceptanceCriteria: []string{"API tests pass"},
+				RelevantPaths:      []string{"internal/api"},
+				DependsOn:          []string{"docs"},
+			},
+			{
+				Key:                "docs",
+				Title:              "Document API surface",
+				Description:        "Document the API.",
+				Type:               TicketTypeDocumentation,
+				AcceptanceCriteria: []string{"Docs exist"},
+				RelevantPaths:      []string{"docs"},
+				DependsOn:          []string{"api"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %T", err)
+	}
+	if !strings.Contains(strings.Join(validationErr.Problems, "\n"), "children dependencies contain a cycle") {
+		t.Fatalf("unexpected validation problems: %#v", validationErr.Problems)
+	}
+}
+
 func TestValidateTicketRequiresQualityFields(t *testing.T) {
 	service := NewTicketService(&fakeTicketStore{})
 

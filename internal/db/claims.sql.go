@@ -41,7 +41,7 @@ WITH candidate AS (
           WHERE a.ticket_id = t.id
             AND a.status IN ('failed', 'expired')
       ) < COALESCE((t.retry_policy->>'max_attempts')::integer, 3)
-    ORDER BY t.priority DESC, t.created_at ASC
+    ORDER BY t.priority ASC, t.created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 ),
