@@ -124,7 +124,9 @@ var operations = []Operation{
 		Bindings: SurfaceBinding{
 			MCPTool: OperationCreateTicketFromAttempt,
 		},
-		InputSchema: objectSchema("Create ticket from attempt input", []string{"attempt_id", "title", "type", "acceptance_criteria", "creation_reason"}, map[string]any{
+		InputSchema: objectSchema("Create ticket from attempt input", []string{"workspace_id", "project_id", "attempt_id", "title", "type", "acceptance_criteria", "creation_reason"}, map[string]any{
+			"workspace_id":        uuidSchema("Workspace ID"),
+			"project_id":          uuidSchema("Project ID"),
 			"attempt_id":          uuidSchema("Source attempt ID"),
 			"source_artifact_id":  optionalUUIDSchema("Evidence artifact that explains the discovered work"),
 			"title":               stringSchema("Short imperative ticket title"),
@@ -344,9 +346,12 @@ var operations = []Operation{
 			RESTOperationID: RESTDecomposeTicket,
 			MCPTool:         OperationDecomposeTicket,
 		},
-		InputSchema: objectSchema("Decompose ticket input", []string{"ticket_id", "children"}, map[string]any{
-			"ticket_id": uuidSchema("Parent ticket ID"),
-			"mode":      enumSchema("Creation mode", "propose", "create"),
+		InputSchema: objectSchema("Decompose ticket input", []string{"workspace_id", "project_id", "ticket_id", "children"}, map[string]any{
+			"workspace_id": uuidSchema("Workspace ID"),
+			"project_id":   uuidSchema("Project ID"),
+			"ticket_id":    uuidSchema("Parent ticket ID"),
+			"root_id":      optionalUUIDSchema("Root ticket ID for nested decomposition"),
+			"mode":         enumSchema("Creation mode", "propose", "create"),
 			"children": arraySchema("Child ticket proposals", objectSchema("Child ticket proposal", []string{"title", "type", "acceptance_criteria"}, map[string]any{
 				"title":                 stringSchema("Child title"),
 				"description":           stringSchema("Child context"),
@@ -367,7 +372,9 @@ var operations = []Operation{
 		Bindings: SurfaceBinding{
 			MCPTool: OperationRegisterAgentCapabilities,
 		},
-		InputSchema: objectSchema("Register agent capabilities input", []string{"agent_id", "harness", "capabilities"}, map[string]any{
+		InputSchema: objectSchema("Register agent capabilities input", []string{"workspace_id", "project_id", "agent_id", "harness", "capabilities"}, map[string]any{
+			"workspace_id":    uuidSchema("Workspace ID"),
+			"project_id":      uuidSchema("Project ID"),
 			"agent_id":        stringSchema("Stable agent or worker identifier"),
 			"harness":         stringSchema("Harness name, such as codex"),
 			"model":           stringSchema("Model or runtime label"),

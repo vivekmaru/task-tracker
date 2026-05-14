@@ -9,6 +9,7 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.CreateProject
 	_ = q.CreateTicket
 	_ = q.GetTicket
+	_ = q.UpdateTicket
 	_ = q.ListTickets
 	_ = q.CreateTicketDependency
 	_ = q.ListTicketDependencies

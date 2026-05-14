@@ -336,3 +336,72 @@ func (q *Queries) ListTickets(ctx context.Context, arg ListTicketsParams) ([]Tic
 	}
 	return items, nil
 }
+
+const updateTicket = `-- name: UpdateTicket :one
+UPDATE tickets
+SET title = $2,
+    description = $3,
+    tags = $4,
+    acceptance_criteria = $5,
+    verification_commands = $6,
+    relevant_paths = $7,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, project_id, parent_id, root_id, source_attempt_id, source_artifact_id, title, description, type, status, priority, tags, acceptance_criteria, verification_commands, expected_artifacts, relevant_paths, required_tools, required_permissions, environment, input, input_schema, required_capabilities, allowed_harnesses, retry_policy, created_by, created_by_id, creation_reason, created_at, updated_at
+`
+
+type UpdateTicketParams struct {
+	ID                   pgtype.UUID `db:"id" json:"id"`
+	Title                string      `db:"title" json:"title"`
+	Description          string      `db:"description" json:"description"`
+	Tags                 []string    `db:"tags" json:"tags"`
+	AcceptanceCriteria   []string    `db:"acceptance_criteria" json:"acceptance_criteria"`
+	VerificationCommands []byte      `db:"verification_commands" json:"verification_commands"`
+	RelevantPaths        []string    `db:"relevant_paths" json:"relevant_paths"`
+}
+
+func (q *Queries) UpdateTicket(ctx context.Context, arg UpdateTicketParams) (Ticket, error) {
+	row := q.db.QueryRow(ctx, updateTicket,
+		arg.ID,
+		arg.Title,
+		arg.Description,
+		arg.Tags,
+		arg.AcceptanceCriteria,
+		arg.VerificationCommands,
+		arg.RelevantPaths,
+	)
+	var i Ticket
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ProjectID,
+		&i.ParentID,
+		&i.RootID,
+		&i.SourceAttemptID,
+		&i.SourceArtifactID,
+		&i.Title,
+		&i.Description,
+		&i.Type,
+		&i.Status,
+		&i.Priority,
+		&i.Tags,
+		&i.AcceptanceCriteria,
+		&i.VerificationCommands,
+		&i.ExpectedArtifacts,
+		&i.RelevantPaths,
+		&i.RequiredTools,
+		&i.RequiredPermissions,
+		&i.Environment,
+		&i.Input,
+		&i.InputSchema,
+		&i.RequiredCapabilities,
+		&i.AllowedHarnesses,
+		&i.RetryPolicy,
+		&i.CreatedBy,
+		&i.CreatedByID,
+		&i.CreationReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

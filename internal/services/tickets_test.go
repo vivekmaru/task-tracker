@@ -160,6 +160,49 @@ func TestTicketTemplatesCoverAgentCreatedWorkTypes(t *testing.T) {
 	}
 }
 
+func TestUpdateTicketPatchesMutableFieldsAndCreatesEvent(t *testing.T) {
+	existing := db.Ticket{
+		ID:                   testUUID(3),
+		WorkspaceID:          testUUID(1),
+		ProjectID:            testUUID(2),
+		Title:                "Old title",
+		Description:          "Old description",
+		Type:                 TicketTypeFeature,
+		Status:               TicketStatusTodo,
+		Tags:                 []string{"backend"},
+		AcceptanceCriteria:   []string{"Old acceptance"},
+		VerificationCommands: []byte(`["go test ./old"]`),
+		RelevantPaths:        []string{"old.go"},
+	}
+	tags := []string{"backend", "mcp"}
+	verificationCommands := []string{"go test ./internal/mcp"}
+	store := &fakeTicketStore{ticket: existing}
+	service := NewTicketService(store)
+
+	ticket, err := service.UpdateTicket(context.Background(), UpdateTicketRequest{
+		TicketID:             existing.ID,
+		Title:                stringPtr("  New title  "),
+		Tags:                 &tags,
+		VerificationCommands: &verificationCommands,
+		ActorType:            ActorAgent,
+		ActorID:              "codex",
+	})
+	if err != nil {
+		t.Fatalf("update ticket: %v", err)
+	}
+
+	if ticket.Title != "New title" {
+		t.Fatalf("expected patched title, got %q", ticket.Title)
+	}
+	if store.updatedTickets[0].Description != existing.Description {
+		t.Fatalf("expected existing description to be preserved, got %#v", store.updatedTickets[0])
+	}
+	assertJSONStrings(t, store.updatedTickets[0].VerificationCommands, []string{"go test ./internal/mcp"})
+	if len(store.createdEvents) != 1 || store.createdEvents[0].Type != EventTicketUpdated {
+		t.Fatalf("expected updated event, got %#v", store.createdEvents)
+	}
+}
+
 func TestCreateTicketFromAttemptDefaultsToProposedBacklogWork(t *testing.T) {
 	store := &fakeTicketStore{}
 	service := NewTicketService(store)
@@ -502,9 +545,11 @@ func TestListTicketsDefaultsPaginationAndFilters(t *testing.T) {
 
 type fakeTicketStore struct {
 	createdTickets      []db.CreateTicketParams
+	updatedTickets      []db.UpdateTicketParams
 	createdDependencies []db.CreateTicketDependencyParams
 	createdEvents       []db.CreateTicketEventParams
 	listParams          []db.ListTicketsParams
+	ticket              db.Ticket
 }
 
 func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicketParams) (db.Ticket, error) {
@@ -538,6 +583,30 @@ func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicket
 		CreatedBy:            params.CreatedBy,
 		CreatedByID:          params.CreatedByID,
 		CreationReason:       params.CreationReason,
+	}, nil
+}
+
+func (s *fakeTicketStore) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
+	if s.ticket.ID.Valid {
+		return s.ticket, nil
+	}
+	return db.Ticket{ID: id, WorkspaceID: testUUID(1), ProjectID: testUUID(2)}, nil
+}
+
+func (s *fakeTicketStore) UpdateTicket(_ context.Context, params db.UpdateTicketParams) (db.Ticket, error) {
+	s.updatedTickets = append(s.updatedTickets, params)
+	return db.Ticket{
+		ID:                   params.ID,
+		WorkspaceID:          s.ticket.WorkspaceID,
+		ProjectID:            s.ticket.ProjectID,
+		Title:                params.Title,
+		Description:          params.Description,
+		Type:                 s.ticket.Type,
+		Status:               s.ticket.Status,
+		Tags:                 params.Tags,
+		AcceptanceCriteria:   params.AcceptanceCriteria,
+		VerificationCommands: params.VerificationCommands,
+		RelevantPaths:        params.RelevantPaths,
 	}, nil
 }
 
@@ -577,6 +646,10 @@ func testUUID(seed byte) pgtype.UUID {
 }
 
 func int32Ptr(value int32) *int32 {
+	return &value
+}
+
+func stringPtr(value string) *string {
 	return &value
 }
 

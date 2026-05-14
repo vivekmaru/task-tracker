@@ -40,6 +40,18 @@ SELECT *
 FROM tickets
 WHERE id = $1;
 
+-- name: UpdateTicket :one
+UPDATE tickets
+SET title = $2,
+    description = $3,
+    tags = $4,
+    acceptance_criteria = $5,
+    verification_commands = $6,
+    relevant_paths = $7,
+    updated_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: ListTickets :many
 SELECT *
 FROM tickets

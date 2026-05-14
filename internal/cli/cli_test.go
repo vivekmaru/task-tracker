@@ -352,6 +352,14 @@ func (f *fakeRuntime) ProposeTicket(_ context.Context, req services.CreateTicket
 	return f.proposeTicket, nil
 }
 
+func (f *fakeRuntime) CreateTicketFromAttempt(context.Context, services.CreateTicketFromAttemptRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) UpdateTicket(context.Context, services.UpdateTicketRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
 func (f *fakeRuntime) ClaimNext(_ context.Context, req services.ClaimNextRequest) (services.ClaimNextResult, error) {
 	f.claimReq = req
 	return f.claimResult, nil
@@ -396,6 +404,14 @@ func (f *fakeRuntime) GetAttempt(context.Context, pgtype.UUID) (db.Attempt, erro
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	f.artifactReq = req
 	return f.artifact, nil
+}
+
+func (f *fakeRuntime) DecomposeTicket(context.Context, services.DecomposeTicketRequest) (services.DecomposeTicketResult, error) {
+	return services.DecomposeTicketResult{}, nil
+}
+
+func (f *fakeRuntime) RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
+	return db.AgentCapability{}, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {
