@@ -131,6 +131,138 @@ func TestProposeTicketCreatesBacklogProposedEventWithSourceAttribution(t *testin
 	}
 }
 
+func TestTicketTemplatesCoverAgentCreatedWorkTypes(t *testing.T) {
+	templates := TicketTemplates()
+	seen := map[string]TicketTemplate{}
+	for _, template := range templates {
+		seen[template.Kind] = template
+	}
+
+	for _, kind := range []string{
+		TemplateBug,
+		TemplateFeature,
+		TemplateDocumentation,
+		TemplateReview,
+		TemplateInvestigation,
+		TemplateCleanup,
+		TemplateFollowUp,
+	} {
+		template, ok := seen[kind]
+		if !ok {
+			t.Fatalf("missing template %q", kind)
+		}
+		if len(template.RequiredFields) == 0 {
+			t.Fatalf("template %q should declare required fields", kind)
+		}
+		if len(template.AcceptanceHints) == 0 {
+			t.Fatalf("template %q should include acceptance hints", kind)
+		}
+	}
+}
+
+func TestCreateTicketFromAttemptDefaultsToProposedBacklogWork(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+	sourceAttemptID := testUUID(9)
+
+	ticket, err := service.CreateTicketFromAttempt(context.Background(), CreateTicketFromAttemptRequest{
+		WorkspaceID:          testUUID(1),
+		ProjectID:            testUUID(2),
+		SourceAttemptID:      sourceAttemptID,
+		TemplateKind:         TemplateBug,
+		Title:                "Stabilize failing migration smoke test",
+		Description:          "The migration smoke test failed while Codex was validating the current task.",
+		AcceptanceCriteria:   []string{"Migration smoke test passes locally"},
+		VerificationCommands: []string{"go test ./internal/db"},
+		RelevantPaths:        []string{"sql/migrations/0001_initial_schema.sql"},
+		CreatedByID:          "codex",
+		CreationReason:       "Follow-up from blocked attempt evidence",
+	})
+	if err != nil {
+		t.Fatalf("create ticket from attempt: %v", err)
+	}
+
+	if ticket.Status != TicketStatusBacklog {
+		t.Fatalf("expected backlog proposed work, got %q", ticket.Status)
+	}
+	if store.createdTickets[0].Type != TicketTypeBug {
+		t.Fatalf("expected bug template type, got %q", store.createdTickets[0].Type)
+	}
+	if store.createdTickets[0].SourceAttemptID != sourceAttemptID {
+		t.Fatalf("expected source attempt attribution")
+	}
+	if store.createdTickets[0].CreatedBy != ActorAgent {
+		t.Fatalf("expected agent-created ticket, got %q", store.createdTickets[0].CreatedBy)
+	}
+	if len(store.createdEvents) != 1 || store.createdEvents[0].Type != EventTicketProposed {
+		t.Fatalf("expected proposed event, got %#v", store.createdEvents)
+	}
+}
+
+func TestCreateTicketFromAttemptCanCreateClaimableWorkWhenAllowed(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+
+	ticket, err := service.CreateTicketFromAttempt(context.Background(), CreateTicketFromAttemptRequest{
+		WorkspaceID:          testUUID(1),
+		ProjectID:            testUUID(2),
+		SourceAttemptID:      testUUID(9),
+		TemplateKind:         TemplateCleanup,
+		Title:                "Remove stale generated files",
+		Description:          "Generated files were left stale after regeneration.",
+		AcceptanceCriteria:   []string{"Generated files are refreshed"},
+		VerificationCommands: []string{"go test ./..."},
+		CreatedByID:          "codex",
+		CreationReason:       "Cleanup discovered while validating generated code",
+		Enqueue:              true,
+		CanEnqueue:           true,
+	})
+	if err != nil {
+		t.Fatalf("create claimable ticket from attempt: %v", err)
+	}
+
+	if ticket.Status != TicketStatusTodo {
+		t.Fatalf("expected todo work when enqueue is allowed, got %q", ticket.Status)
+	}
+	if store.createdTickets[0].Type != TicketTypeCleanup {
+		t.Fatalf("expected cleanup template type, got %q", store.createdTickets[0].Type)
+	}
+	if len(store.createdEvents) != 1 || store.createdEvents[0].Type != EventTicketCreated {
+		t.Fatalf("expected created event, got %#v", store.createdEvents)
+	}
+}
+
+func TestCreateTicketFromAttemptRejectsWeakAgentTicket(t *testing.T) {
+	service := NewTicketService(&fakeTicketStore{})
+
+	_, err := service.CreateTicketFromAttempt(context.Background(), CreateTicketFromAttemptRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		TemplateKind:   TemplateBug,
+		Title:          "Follow up",
+		CreatedByID:    "codex",
+		CreationReason: "",
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %T", err)
+	}
+	got := strings.Join(validationErr.Problems, "\n")
+	for _, want := range []string{
+		"source_attempt_id is required",
+		"acceptance_criteria is required",
+		"useful context is required",
+		"creation_reason is required",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected validation problem %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestValidateTicketRequiresQualityFields(t *testing.T) {
 	service := NewTicketService(&fakeTicketStore{})
 

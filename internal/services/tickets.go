@@ -24,6 +24,9 @@ const (
 	TicketTypePlanning      = "planning"
 	TicketTypeReview        = "review"
 	TicketTypeIntegration   = "integration"
+	TicketTypeInvestigation = "investigation"
+	TicketTypeCleanup       = "cleanup"
+	TicketTypeFollowUp      = "follow_up"
 	TicketTypeCustom        = "custom"
 
 	TicketStatusBacklog     = "backlog"
@@ -292,7 +295,7 @@ func validateCreateTicketRequest(req CreateTicketRequest) []string {
 	if req.Type == "" {
 		problems = append(problems, "type is required")
 	} else if !isAllowedTicketType(req.Type) {
-		problems = append(problems, "type must be one of feature, bug, documentation, research, analysis, planning, review, integration, custom")
+		problems = append(problems, "type must be one of feature, bug, documentation, research, analysis, planning, review, integration, investigation, cleanup, follow_up, custom")
 	}
 	if req.Status == "" {
 		problems = append(problems, "status is required")
@@ -439,6 +442,9 @@ func isAllowedTicketType(value string) bool {
 		TicketTypePlanning,
 		TicketTypeReview,
 		TicketTypeIntegration,
+		TicketTypeInvestigation,
+		TicketTypeCleanup,
+		TicketTypeFollowUp,
 		TicketTypeCustom:
 		return true
 	default:

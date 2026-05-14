@@ -49,7 +49,7 @@ CREATE TABLE tickets (
     creation_reason text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (type IN ('feature', 'bug', 'documentation', 'research', 'analysis', 'planning', 'review', 'integration', 'custom')),
+    CHECK (type IN ('feature', 'bug', 'documentation', 'research', 'analysis', 'planning', 'review', 'integration', 'investigation', 'cleanup', 'follow_up', 'custom')),
     CHECK (status IN ('backlog', 'todo', 'in_progress', 'blocked', 'needs_review', 'done', 'failed', 'archived')),
     CHECK (priority BETWEEN 0 AND 4),
     CHECK (created_by IN ('human', 'agent', 'system'))

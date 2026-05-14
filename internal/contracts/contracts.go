@@ -129,7 +129,7 @@ var operations = []Operation{
 			"source_artifact_id":  optionalUUIDSchema("Evidence artifact that explains the discovered work"),
 			"title":               stringSchema("Short imperative ticket title"),
 			"description":         stringSchema("Context captured from the attempt"),
-			"type":                enumSchema("Ticket type", "feature", "bug", "documentation", "review", "investigation", "cleanup", "follow_up", "custom"),
+			"type":                enumSchema("Ticket type", "feature", "bug", "documentation", "research", "analysis", "planning", "review", "integration", "investigation", "cleanup", "follow_up", "custom"),
 			"acceptance_criteria": stringArraySchema("Observable conditions that make the follow-up done"),
 			"verification_commands": stringArraySchema(
 				"Commands or checks a future agent should run when completing the ticket",
@@ -395,7 +395,7 @@ func ticketInputSchema(title string, required []string) Schema {
 		"source_artifact_id":    optionalUUIDSchema("Artifact that supports this ticket"),
 		"title":                 stringSchema("Short imperative title"),
 		"description":           stringSchema("Useful context for the worker"),
-		"type":                  enumSchema("Ticket type", "feature", "bug", "documentation", "research", "analysis", "planning", "review", "integration", "custom"),
+		"type":                  enumSchema("Ticket type", "feature", "bug", "documentation", "research", "analysis", "planning", "review", "integration", "investigation", "cleanup", "follow_up", "custom"),
 		"status":                enumSchema("Initial status", "backlog", "todo"),
 		"priority":              integerSchema("Priority from 0 highest to 4 lowest", 0, 4),
 		"tags":                  stringArraySchema("Search and routing tags"),
