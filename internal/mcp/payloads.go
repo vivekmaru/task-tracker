@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -33,6 +34,8 @@ type createTicketInput struct {
 	InputSchema          string         `json:"input_schema"`
 	RequiredCapabilities []string       `json:"required_capabilities"`
 	AllowedHarnesses     []string       `json:"allowed_harnesses"`
+	RetryPolicy          map[string]any `json:"retry_policy"`
+	Dependencies         []string       `json:"dependencies"`
 	CreatedBy            string         `json:"created_by"`
 	CreatedByID          string         `json:"created_by_id"`
 	CreationReason       string         `json:"creation_reason"`
@@ -65,6 +68,14 @@ func (p createTicketInput) request() (services.CreateTicketRequest, error) {
 	if err != nil {
 		return services.CreateTicketRequest{}, err
 	}
+	retryPolicy, err := optionalJSONField("retry_policy", p.RetryPolicy)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
+	dependencies, err := optionalUUIDListField("dependencies", p.Dependencies)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
 	return services.CreateTicketRequest{
 		WorkspaceID:          workspaceID,
 		ProjectID:            projectID,
@@ -89,6 +100,8 @@ func (p createTicketInput) request() (services.CreateTicketRequest, error) {
 		InputSchema:          p.InputSchema,
 		RequiredCapabilities: p.RequiredCapabilities,
 		AllowedHarnesses:     p.AllowedHarnesses,
+		RetryPolicy:          retryPolicy,
+		Dependencies:         dependencies,
 		CreatedBy:            p.CreatedBy,
 		CreatedByID:          p.CreatedByID,
 		CreationReason:       p.CreationReason,
@@ -477,12 +490,38 @@ func optionalUUIDField(name, value string) (pgtype.UUID, error) {
 	return parseUUIDField(name, value)
 }
 
+func optionalUUIDListField(name string, values []string) ([]pgtype.UUID, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make([]pgtype.UUID, 0, len(values))
+	for i, value := range values {
+		id, err := requiredUUIDField(fmt.Sprintf("%s[%d]", name, i), value)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 func parseUUIDField(name, value string) (pgtype.UUID, error) {
 	var id pgtype.UUID
 	if err := id.Scan(value); err != nil {
 		return pgtype.UUID{}, services.ValidationError{Problems: []string{fmt.Sprintf("%s must be a valid UUID", name)}}
 	}
 	return id, nil
+}
+
+func optionalJSONField(name string, value map[string]any) ([]byte, error) {
+	if len(value) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be valid JSON: %w", name, err)
+	}
+	return data, nil
 }
 
 func uuidText(id pgtype.UUID) string {
@@ -583,10 +622,9 @@ func objectValue(value map[string]any) map[string]any {
 }
 
 func artifactPayload(artifact db.Artifact) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"id":              uuidText(artifact.ID),
 		"ticket_id":       uuidText(artifact.TicketID),
-		"attempt_id":      uuidText(artifact.AttemptID),
 		"type":            artifact.Type,
 		"role":            artifact.Role,
 		"name":            artifact.Name,
@@ -595,4 +633,8 @@ func artifactPayload(artifact db.Artifact) map[string]any {
 		"size_bytes":      artifact.SizeBytes,
 		"mime_type":       artifact.MimeType,
 	}
+	if artifact.AttemptID.Valid {
+		payload["attempt_id"] = uuidText(artifact.AttemptID)
+	}
+	return payload
 }

@@ -176,3 +176,11 @@ func TestRegisterCapabilitiesSchemaRequiresTransports(t *testing.T) {
 		t.Fatalf("register capabilities schema should require transports")
 	}
 }
+
+func TestUpdateTicketSchemaExposesActorID(t *testing.T) {
+	operation := MustOperation(OperationUpdateTicket)
+	props := operation.InputSchema["properties"].(map[string]any)
+	if _, ok := props["actor_id"]; !ok {
+		t.Fatalf("update ticket schema should expose actor_id for event attribution")
+	}
+}

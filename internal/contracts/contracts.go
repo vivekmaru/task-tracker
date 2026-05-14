@@ -218,6 +218,7 @@ var operations = []Operation{
 		},
 		InputSchema: objectSchema("Update ticket input", []string{"ticket_id", "patch"}, map[string]any{
 			"ticket_id": uuidSchema("Ticket ID"),
+			"actor_id":  stringSchema("Actor ID for ticket-event attribution"),
 			"patch": objectSchema("Patch fields", nil, map[string]any{
 				"title":                 stringSchema("Updated title"),
 				"description":           stringSchema("Updated description"),

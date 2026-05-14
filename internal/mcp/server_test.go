@@ -59,6 +59,8 @@ func TestServerCallCreateTicketDelegatesToRuntime(t *testing.T) {
 		"type":"feature",
 		"acceptance_criteria":["MCP create calls runtime"],
 		"verification_commands":["go test ./internal/mcp"],
+		"retry_policy":{"max_attempts":1},
+		"dependencies":["00000000-0000-0000-0000-00000000000b"],
 		"created_by":"agent",
 		"created_by_id":"codex",
 		"creation_reason":"Phase 2 MCP integration"
@@ -69,6 +71,9 @@ func TestServerCallCreateTicketDelegatesToRuntime(t *testing.T) {
 
 	if rt.createReq.Title != "Add MCP handlers" || rt.createReq.CreatedBy != services.ActorAgent {
 		t.Fatalf("unexpected create request: %#v", rt.createReq)
+	}
+	if len(rt.createReq.RetryPolicy) == 0 || len(rt.createReq.Dependencies) != 1 {
+		t.Fatalf("expected retry policy and dependencies to be forwarded: %#v", rt.createReq)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(out, &body); err != nil {
@@ -231,6 +236,21 @@ func TestServerCallRejectsMalformedOptionalUUID(t *testing.T) {
 	}`))
 	if err == nil {
 		t.Fatal("expected malformed UUID validation error")
+	}
+}
+
+func TestArtifactPayloadOmitsTicketScopedAttemptID(t *testing.T) {
+	payload := artifactPayload(db.Artifact{
+		ID:       testUUID(1),
+		TicketID: testUUID(2),
+		Type:     services.ArtifactTypeDocument,
+		Role:     services.ArtifactRoleEvidence,
+		Name:     "notes.md",
+		Url:      "local://notes.md",
+	})
+
+	if _, ok := payload["attempt_id"]; ok {
+		t.Fatalf("ticket-scoped artifact should omit attempt_id, got %#v", payload)
 	}
 }
 
