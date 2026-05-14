@@ -47,6 +47,7 @@ type RuntimeHandle interface {
 	Close()
 	CreateTicket(context.Context, services.CreateTicketRequest) (db.Ticket, error)
 	ProposeTicket(context.Context, services.CreateTicketRequest) (db.Ticket, error)
+	CreateTicketFromAttempt(context.Context, services.CreateTicketFromAttemptRequest) (db.Ticket, error)
 	ClaimNext(context.Context, services.ClaimNextRequest) (services.ClaimNextResult, error)
 	Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error)
 	Checkpoint(context.Context, services.CheckpointRequest) (services.CheckpointResult, error)
@@ -91,6 +92,9 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 
 	if name == "server" || name == "worker" || name == "mcp" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
+	}
+	if name == "codex" {
+		return runCodexCommand(context.Background(), args[1:], stdout, stderr, deps)
 	}
 	if isRuntimeCommand(name) {
 		return runRuntimeCommand(name, args[1:], stdout, stderr, deps)
@@ -280,13 +284,7 @@ func runClaimNextCommand(ctx context.Context, args []string, stdout, stderr io.W
 		fmt.Fprintf(stderr, "claim-next error: %v\n", err)
 		return 1
 	}
-	return writeJSON(stdout, stderr, map[string]any{
-		"ticket":     ticketPayload(result.Ticket),
-		"attempt":    attemptPayload(result.Attempt),
-		"context":    result.Context,
-		"ticket_id":  uuidText(result.Ticket.ID),
-		"attempt_id": uuidText(result.Attempt.ID),
-	})
+	return writeJSON(stdout, stderr, claimPayload(result))
 }
 
 func runListCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -437,12 +435,7 @@ func runCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.
 		fmt.Fprintf(stderr, "checkpoint error: %v\n", err)
 		return 1
 	}
-	return writeJSON(stdout, stderr, map[string]any{
-		"checkpoint_id": uuidText(result.Checkpoint.ID),
-		"attempt_id":    uuidText(result.Checkpoint.AttemptID),
-		"summary":       result.Checkpoint.Summary,
-		"progress":      result.ProgressPercent,
-	})
+	return writeJSON(stdout, stderr, checkpointPayload(result))
 }
 
 func runCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -599,6 +592,316 @@ func runAttachCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	return writeJSON(stdout, stderr, artifactPayload(artifact))
+}
+
+func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		printCodexHelp(stdout)
+		return 0
+	}
+
+	subcommand := args[0]
+	switch subcommand {
+	case "claim":
+		return runCodexClaimCommand(ctx, args[1:], stdout, stderr, deps)
+	case "checkpoint":
+		return runCodexCheckpointCommand(ctx, args[1:], stdout, stderr, deps)
+	case "complete":
+		return runCodexCompleteCommand(ctx, args[1:], stdout, stderr, deps)
+	case "follow-up":
+		return runCodexFollowUpCommand(ctx, args[1:], stdout, stderr, deps)
+	case "block":
+		return runCodexBlockCommand(ctx, args[1:], stdout, stderr, deps)
+	default:
+		fmt.Fprintf(stderr, "unknown codex command %q\n\n", subcommand)
+		printCodexHelp(stderr)
+		return 2
+	}
+}
+
+func runCodexClaimCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("codex claim", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, ticketType, agentID, model, lease, idempotencyKey string
+	var tags, capabilities stringList
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&ticketType, "type", "", "ticket type filter")
+	flags.Var(&tags, "tag", "ticket tag filter")
+	flags.Var(&capabilities, "capability", "agent capability")
+	flags.StringVar(&agentID, "agent-id", "codex", "agent id")
+	flags.StringVar(&model, "model", "", "model")
+	flags.StringVar(&lease, "lease", "30m", "attempt lease duration")
+	flags.StringVar(&idempotencyKey, "idempotency-key", "", "idempotency key")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	duration, err := time.ParseDuration(lease)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim argument error: lease must be a duration: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.ClaimNext(ctx, services.ClaimNextRequest{
+		WorkspaceID:    mustUUID(workspaceID),
+		ProjectID:      mustUUID(projectID),
+		Type:           ticketType,
+		Tags:           tags,
+		Harness:        "codex",
+		Capabilities:   capabilities,
+		AgentID:        agentID,
+		Model:          model,
+		Lease:          duration,
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, claimPayload(result))
+}
+
+func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("codex checkpoint", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, summary, nextStep, risk string
+	var progress int
+	var files, commands stringList
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&summary, "summary", "", "checkpoint summary")
+	flags.IntVar(&progress, "progress", 0, "progress percent")
+	flags.Var(&files, "file", "file touched")
+	flags.Var(&commands, "command", "command run")
+	flags.StringVar(&nextStep, "next", "", "next step")
+	flags.StringVar(&risk, "risk", "", "risk")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Checkpoint(ctx, services.CheckpointRequest{
+		AttemptID:       mustUUID(attemptID),
+		Summary:         summary,
+		ProgressPercent: int32(progress),
+		FilesTouched:    files,
+		CommandsRun:     commands,
+		NextStep:        nextStep,
+		Risk:            risk,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex checkpoint error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, checkpointPayload(result))
+}
+
+func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("codex complete", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var proof codexProofFlags
+	proof.bind(flags)
+	var attemptID, summary string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&summary, "summary", "", "output summary")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	if !proof.validate("codex complete", stderr) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Complete(ctx, services.CompleteAttemptRequest{
+		AttemptID: mustUUID(attemptID),
+		Output: map[string]any{
+			"summary": summary,
+			"proofs":  []string(proof.Proofs),
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex complete error: %v\n", err)
+		return 1
+	}
+	artifacts, err := registerCodexProofs(ctx, rt, proof, result.TicketID, result.AttemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex complete artifact error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{
+		"transition": transitionPayload(result),
+		"artifacts":  artifacts,
+	})
+}
+
+func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("codex follow-up", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, attemptID, artifactID, kind, title, description, reason string
+	var acceptance, verify, paths, tags stringList
+	var enqueue bool
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&attemptID, "attempt-id", "", "source attempt id")
+	flags.StringVar(&artifactID, "artifact-id", "", "source artifact id")
+	flags.StringVar(&kind, "type", services.TemplateFollowUp, "ticket template/type")
+	flags.StringVar(&title, "title", "", "ticket title")
+	flags.StringVar(&description, "description", "", "ticket description")
+	flags.Var(&acceptance, "acceptance", "acceptance criterion")
+	flags.Var(&verify, "verify", "verification command")
+	flags.Var(&paths, "path", "relevant path")
+	flags.Var(&tags, "tag", "ticket tag")
+	flags.StringVar(&reason, "reason", "", "creation reason")
+	flags.BoolVar(&enqueue, "enqueue", false, "create directly in todo when permitted")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	ticket, err := rt.CreateTicketFromAttempt(ctx, services.CreateTicketFromAttemptRequest{
+		WorkspaceID:          mustUUID(workspaceID),
+		ProjectID:            mustUUID(projectID),
+		SourceAttemptID:      mustUUID(attemptID),
+		SourceArtifactID:     mustUUID(artifactID),
+		TemplateKind:         kind,
+		Title:                title,
+		Description:          description,
+		Tags:                 tags,
+		AcceptanceCriteria:   acceptance,
+		VerificationCommands: verify,
+		RelevantPaths:        paths,
+		CreatedByID:          "codex",
+		CreationReason:       reason,
+		Enqueue:              enqueue,
+		CanEnqueue:           enqueue,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{"ticket": ticketPayload(ticket)})
+}
+
+func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("codex block", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var proof codexProofFlags
+	proof.bind(flags)
+	var attemptID, reason, category string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&reason, "reason", "", "blocker reason")
+	flags.StringVar(&category, "category", "", "failure category")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	if !proof.validate("codex block", stderr) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Block(ctx, services.BlockAttemptRequest{
+		AttemptID:       mustUUID(attemptID),
+		BlockerReason:   reason,
+		FailureCategory: category,
+		Blocker: map[string]any{
+			"reason": reason,
+			"proofs": []string(proof.Proofs),
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex block error: %v\n", err)
+		return 1
+	}
+	artifacts, err := registerCodexProofs(ctx, rt, proof, result.TicketID, result.AttemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex block artifact error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{
+		"transition": transitionPayload(result),
+		"artifacts":  artifacts,
+	})
+}
+
+type codexProofFlags struct {
+	WorkspaceID string
+	ProjectID   string
+	Proofs      stringList
+	ProofType   string
+	ProofRole   string
+	MimeType    string
+}
+
+func (f *codexProofFlags) bind(flags *flag.FlagSet) {
+	flags.StringVar(&f.WorkspaceID, "workspace-id", "", "workspace id for proof artifacts")
+	flags.StringVar(&f.ProjectID, "project-id", "", "project id for proof artifacts")
+	flags.Var(&f.Proofs, "proof", "proof artifact URL or local reference")
+	flags.StringVar(&f.ProofType, "proof-type", services.ArtifactTypeOther, "proof artifact type")
+	flags.StringVar(&f.ProofRole, "proof-role", services.ArtifactRoleEvidence, "proof artifact role")
+	flags.StringVar(&f.MimeType, "mime-type", "", "proof artifact MIME type")
+}
+
+func (f codexProofFlags) validate(commandName string, stderr io.Writer) bool {
+	if len(f.Proofs) == 0 {
+		return true
+	}
+	if f.WorkspaceID == "" || f.ProjectID == "" {
+		fmt.Fprintf(stderr, "%s argument error: --workspace-id and --project-id are required when --proof is provided\n", commandName)
+		return false
+	}
+	return true
+}
+
+func registerCodexProofs(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, ticketID, attemptID pgtype.UUID) ([]map[string]any, error) {
+	artifacts := make([]map[string]any, 0, len(flags.Proofs))
+	for _, proof := range flags.Proofs {
+		artifact, err := rt.RegisterArtifact(ctx, services.RegisterArtifactRequest{
+			WorkspaceID:    mustUUID(flags.WorkspaceID),
+			ProjectID:      mustUUID(flags.ProjectID),
+			TicketID:       ticketID,
+			AttemptID:      attemptID,
+			Type:           flags.ProofType,
+			Role:           flags.ProofRole,
+			Name:           proofName(proof),
+			URL:            proof,
+			StorageBackend: services.ArtifactStorageLocal,
+			MimeType:       flags.MimeType,
+		})
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifactPayload(artifact))
+	}
+	return artifacts, nil
 }
 
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
@@ -775,6 +1078,25 @@ func transitionPayload(result services.AttemptTransitionResult) map[string]any {
 	}
 }
 
+func claimPayload(result services.ClaimNextResult) map[string]any {
+	return map[string]any{
+		"ticket":     ticketPayload(result.Ticket),
+		"attempt":    attemptPayload(result.Attempt),
+		"context":    result.Context,
+		"ticket_id":  uuidText(result.Ticket.ID),
+		"attempt_id": uuidText(result.Attempt.ID),
+	}
+}
+
+func checkpointPayload(result services.CheckpointResult) map[string]any {
+	return map[string]any{
+		"checkpoint_id": uuidText(result.Checkpoint.ID),
+		"attempt_id":    uuidText(result.Checkpoint.AttemptID),
+		"summary":       result.Checkpoint.Summary,
+		"progress":      result.ProgressPercent,
+	}
+}
+
 func artifactPayload(artifact db.Artifact) map[string]any {
 	return map[string]any{
 		"id":              uuidText(artifact.ID),
@@ -788,6 +1110,18 @@ func artifactPayload(artifact db.Artifact) map[string]any {
 		"size_bytes":      artifact.SizeBytes,
 		"mime_type":       artifact.MimeType,
 	}
+}
+
+func proofName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "proof"
+	}
+	value = strings.TrimRight(value, "/")
+	if index := strings.LastIndex(value, "/"); index >= 0 && index < len(value)-1 {
+		return value[index+1:]
+	}
+	return value
 }
 
 func writeJSON(stdout, stderr io.Writer, value any) int {
@@ -842,10 +1176,26 @@ func printHelp(w io.Writer) {
 }
 
 func printCommandHelp(w io.Writer, name string) {
+	if name == "codex" {
+		printCodexHelp(w)
+		return
+	}
 	for _, cmd := range commands {
 		if cmd.name == name {
 			fmt.Fprintf(w, "Usage:\n  forge %s [flags]\n\n%s\n", cmd.name, strings.TrimSuffix(cmd.description, "."))
 			return
 		}
 	}
+}
+
+func printCodexHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge codex <command> [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  claim       Claim the next Codex-ready ticket")
+	fmt.Fprintln(w, "  checkpoint  Record resumable progress")
+	fmt.Fprintln(w, "  complete    Complete an attempt and attach proof artifacts")
+	fmt.Fprintln(w, "  follow-up   Create structured follow-up from an attempt")
+	fmt.Fprintln(w, "  block       Mark an attempt blocked with captured context")
 }

@@ -64,6 +64,10 @@ func (r *Runtime) ProposeTicket(ctx context.Context, req services.CreateTicketRe
 	return r.Tickets.ProposeTicket(ctx, req)
 }
 
+func (r *Runtime) CreateTicketFromAttempt(ctx context.Context, req services.CreateTicketFromAttemptRequest) (db.Ticket, error) {
+	return r.Tickets.CreateTicketFromAttempt(ctx, req)
+}
+
 func (r *Runtime) ClaimNext(ctx context.Context, req services.ClaimNextRequest) (services.ClaimNextResult, error) {
 	return r.Claims.ClaimNext(ctx, req)
 }
