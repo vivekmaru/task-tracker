@@ -170,11 +170,19 @@ CREATE TABLE idempotency_keys (
 CREATE TABLE agent_capabilities (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+    project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     agent_id text NOT NULL,
     harness text NOT NULL,
+    model text NOT NULL DEFAULT '',
+    transports text[] NOT NULL DEFAULT '{}'::text[],
     capabilities text[] NOT NULL DEFAULT '{}'::text[],
+    tool_names text[] NOT NULL DEFAULT '{}'::text[],
+    artifact_roles text[] NOT NULL DEFAULT '{}'::text[],
+    preferred_claim jsonb NOT NULL DEFAULT '{}'::jsonb,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     last_seen_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, project_id, agent_id, harness)
 );
 

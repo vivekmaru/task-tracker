@@ -13,13 +13,14 @@ import (
 )
 
 type Runtime struct {
-	Pool        *pgxpool.Pool
-	Queries     *db.Queries
-	Tickets     *services.TicketService
-	Claims      *services.ClaimService
-	Attempts    *services.AttemptService
-	Artifacts   *services.ArtifactService
-	Maintenance *jobs.MaintenanceWorker
+	Pool         *pgxpool.Pool
+	Queries      *db.Queries
+	Tickets      *services.TicketService
+	Claims       *services.ClaimService
+	Attempts     *services.AttemptService
+	Artifacts    *services.ArtifactService
+	Capabilities *services.CapabilityService
+	Maintenance  *jobs.MaintenanceWorker
 }
 
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
@@ -39,12 +40,13 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 
 func New(queries *db.Queries) *Runtime {
 	return &Runtime{
-		Queries:     queries,
-		Tickets:     services.NewTicketService(queries),
-		Claims:      services.NewClaimService(queries),
-		Attempts:    services.NewAttemptService(queries),
-		Artifacts:   services.NewArtifactService(queries),
-		Maintenance: jobs.NewMaintenanceWorker(queries),
+		Queries:      queries,
+		Tickets:      services.NewTicketService(queries),
+		Claims:       services.NewClaimService(queries),
+		Attempts:     services.NewAttemptService(queries),
+		Artifacts:    services.NewArtifactService(queries),
+		Capabilities: services.NewCapabilityService(queries),
+		Maintenance:  jobs.NewMaintenanceWorker(queries),
 	}
 }
 
@@ -116,4 +118,16 @@ func (r *Runtime) ListArtifactsByAttempt(ctx context.Context, attemptID pgtype.U
 
 func (r *Runtime) GetArtifact(ctx context.Context, id pgtype.UUID) (db.Artifact, error) {
 	return r.Artifacts.GetArtifact(ctx, id)
+}
+
+func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
+	return r.Capabilities.Register(ctx, req)
+}
+
+func (r *Runtime) GetCapabilities(ctx context.Context, req services.GetCapabilitiesRequest) (db.AgentCapability, error) {
+	return r.Capabilities.Get(ctx, req)
+}
+
+func (r *Runtime) ListCapabilities(ctx context.Context, req services.ListCapabilitiesRequest) ([]db.AgentCapability, error) {
+	return r.Capabilities.List(ctx, req)
 }

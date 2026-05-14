@@ -9,13 +9,21 @@ import (
 )
 
 type AgentCapability struct {
-	ID           pgtype.UUID        `db:"id" json:"id"`
-	WorkspaceID  pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
-	ProjectID    pgtype.UUID        `db:"project_id" json:"project_id"`
-	AgentID      string             `db:"agent_id" json:"agent_id"`
-	Harness      string             `db:"harness" json:"harness"`
-	Capabilities []string           `db:"capabilities" json:"capabilities"`
-	LastSeenAt   pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	ID             pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID    pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID      pgtype.UUID        `db:"project_id" json:"project_id"`
+	AgentID        string             `db:"agent_id" json:"agent_id"`
+	Harness        string             `db:"harness" json:"harness"`
+	Model          string             `db:"model" json:"model"`
+	Transports     []string           `db:"transports" json:"transports"`
+	Capabilities   []string           `db:"capabilities" json:"capabilities"`
+	ToolNames      []string           `db:"tool_names" json:"tool_names"`
+	ArtifactRoles  []string           `db:"artifact_roles" json:"artifact_roles"`
+	PreferredClaim []byte             `db:"preferred_claim" json:"preferred_claim"`
+	Metadata       []byte             `db:"metadata" json:"metadata"`
+	LastSeenAt     pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 type ApiKey struct {
