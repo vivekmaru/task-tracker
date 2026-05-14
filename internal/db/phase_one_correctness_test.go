@@ -49,6 +49,18 @@ func TestPhaseOneCorrectnessEligibilityFilters(t *testing.T) {
 	}
 }
 
+func TestPhaseOneCorrectnessClaimOrdersHighestPriorityFirst(t *testing.T) {
+	claimSQL := readSQLFile(t, "../../sql/queries/claims.sql")
+	migrationSQL := readSQLFile(t, "../../sql/migrations/0001_initial_schema.sql")
+
+	if !strings.Contains(claimSQL, "order by t.priority asc, t.created_at asc") {
+		t.Fatalf("claim query must order by priority ASC because priority 0 is highest")
+	}
+	if !strings.Contains(migrationSQL, "status, priority asc, created_at asc") {
+		t.Fatalf("claim queue index must match priority ASC claim order")
+	}
+}
+
 func TestPhaseOneCorrectnessLeaseExpiryAndBlockedWork(t *testing.T) {
 	transitionsSQL := readSQLFile(t, "../../sql/queries/transitions.sql")
 

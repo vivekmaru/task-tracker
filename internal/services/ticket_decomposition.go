@@ -212,10 +212,51 @@ func validateDecomposeTicketRequest(req DecomposeTicketRequest, children []Creat
 			}
 		}
 	}
+	if len(problems) == 0 && hasDependencyCycle(req.Children) {
+		problems = append(problems, "children dependencies contain a cycle")
+	}
 	for i, childReq := range children {
 		for _, problem := range validateCreateTicketRequest(childReq) {
 			problems = append(problems, fmt.Sprintf("children[%d].%s", i, problem))
 		}
 	}
 	return problems
+}
+
+func hasDependencyCycle(children []DecomposeChildRequest) bool {
+	dependencies := make(map[string][]string, len(children))
+	for _, child := range children {
+		dependencies[child.Key] = child.DependsOn
+	}
+
+	const (
+		unvisited = 0
+		visiting  = 1
+		visited   = 2
+	)
+	state := make(map[string]int, len(children))
+	var visit func(string) bool
+	visit = func(key string) bool {
+		switch state[key] {
+		case visiting:
+			return true
+		case visited:
+			return false
+		}
+		state[key] = visiting
+		for _, dependency := range dependencies[key] {
+			if visit(dependency) {
+				return true
+			}
+		}
+		state[key] = visited
+		return false
+	}
+
+	for _, child := range children {
+		if state[child.Key] == unvisited && visit(child.Key) {
+			return true
+		}
+	}
+	return false
 }
