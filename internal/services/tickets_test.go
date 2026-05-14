@@ -194,6 +194,35 @@ func TestUpdateTicketPatchesMutableFieldsAndCreatesEvent(t *testing.T) {
 	}
 }
 
+func TestUpdateTicketPreservesExplicitEmptyArrays(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+	tags := []string{}
+	acceptanceCriteria := []string{"still required"}
+	verificationCommands := []string{}
+	relevantPaths := []string{}
+
+	_, err := service.UpdateTicket(context.Background(), UpdateTicketRequest{
+		TicketID:             testUUID(3),
+		Tags:                 &tags,
+		AcceptanceCriteria:   &acceptanceCriteria,
+		VerificationCommands: &verificationCommands,
+		RelevantPaths:        &relevantPaths,
+	})
+	if err != nil {
+		t.Fatalf("update ticket: %v", err)
+	}
+
+	params := store.updatedTickets[0]
+	if params.Tags == nil || len(params.Tags) != 0 {
+		t.Fatalf("expected explicit empty tags slice, got %#v", params.Tags)
+	}
+	if params.RelevantPaths == nil || len(params.RelevantPaths) != 0 {
+		t.Fatalf("expected explicit empty relevant paths slice, got %#v", params.RelevantPaths)
+	}
+	assertJSONStrings(t, params.VerificationCommands, []string{})
+}
+
 func TestCreateTicketFromAttemptDefaultsToProposedBacklogWork(t *testing.T) {
 	store := &fakeTicketStore{}
 	service := NewTicketService(store)

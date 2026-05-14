@@ -139,3 +139,40 @@ func TestCreateFromAttemptSchemaTypeEnumMatchesSupportedTemplates(t *testing.T) 
 		}
 	}
 }
+
+func TestDecomposeSchemaExposesRuntimeRequiredFields(t *testing.T) {
+	operation := MustOperation(OperationDecomposeTicket)
+	props := operation.InputSchema["properties"].(map[string]any)
+	for _, field := range []string{"can_enqueue", "created_by", "created_by_id", "creation_reason"} {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("decompose schema should expose %q", field)
+		}
+	}
+
+	children := props["children"].(Schema)
+	child := children["items"].(Schema)
+	required := map[string]bool{}
+	for _, field := range child["required"].([]string) {
+		required[field] = true
+	}
+	if !required["key"] {
+		t.Fatalf("decompose child schema should require key for dependency wiring")
+	}
+	childProps := child["properties"].(map[string]any)
+	for _, field := range []string{"key", "required_capabilities", "allowed_harnesses", "depends_on"} {
+		if _, ok := childProps[field]; !ok {
+			t.Fatalf("decompose child schema should expose %q", field)
+		}
+	}
+}
+
+func TestRegisterCapabilitiesSchemaRequiresTransports(t *testing.T) {
+	operation := MustOperation(OperationRegisterAgentCapabilities)
+	required := map[string]bool{}
+	for _, field := range operation.InputSchema["required"].([]string) {
+		required[field] = true
+	}
+	if !required["transports"] {
+		t.Fatalf("register capabilities schema should require transports")
+	}
+}

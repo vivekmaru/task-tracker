@@ -134,6 +134,11 @@ func TestServerCallClaimNextConvertsLeaseSeconds(t *testing.T) {
 	if _, ok := contextBundle["acceptance_criteria"]; !ok {
 		t.Fatalf("context should expose schema-compatible field names: %#v", contextBundle)
 	}
+	checkpoints := contextBundle["checkpoints"].([]any)
+	checkpoint := checkpoints[0].(map[string]any)
+	if _, ok := checkpoint["progress_percent"]; ok {
+		t.Fatalf("checkpoint should omit progress_percent when unavailable, got %#v", checkpoint)
+	}
 }
 
 func TestServerCallRegisterCapabilitiesDelegatesToRuntime(t *testing.T) {

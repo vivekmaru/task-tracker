@@ -347,18 +347,32 @@ var operations = []Operation{
 			MCPTool:         OperationDecomposeTicket,
 		},
 		InputSchema: objectSchema("Decompose ticket input", []string{"workspace_id", "project_id", "ticket_id", "children"}, map[string]any{
-			"workspace_id": uuidSchema("Workspace ID"),
-			"project_id":   uuidSchema("Project ID"),
-			"ticket_id":    uuidSchema("Parent ticket ID"),
-			"root_id":      optionalUUIDSchema("Root ticket ID for nested decomposition"),
-			"mode":         enumSchema("Creation mode", "propose", "create"),
-			"children": arraySchema("Child ticket proposals", objectSchema("Child ticket proposal", []string{"title", "type", "acceptance_criteria"}, map[string]any{
+			"workspace_id":    uuidSchema("Workspace ID"),
+			"project_id":      uuidSchema("Project ID"),
+			"ticket_id":       uuidSchema("Parent ticket ID"),
+			"root_id":         optionalUUIDSchema("Root ticket ID for nested decomposition"),
+			"mode":            enumSchema("Creation mode", "propose", "create"),
+			"can_enqueue":     booleanSchema("Whether this caller may create claimable todo children when mode is create"),
+			"created_by":      enumSchema("Creator type", "human", "agent", "system"),
+			"created_by_id":   stringSchema("Creator identifier"),
+			"creation_reason": stringSchema("Why this decomposition is being created"),
+			"children": arraySchema("Child ticket proposals", objectSchema("Child ticket proposal", []string{"key", "title", "type", "acceptance_criteria"}, map[string]any{
+				"key":                   stringSchema("Stable child key used for dependency wiring"),
 				"title":                 stringSchema("Child title"),
 				"description":           stringSchema("Child context"),
 				"type":                  stringSchema("Child ticket type"),
+				"tags":                  stringArraySchema("Child tags"),
 				"acceptance_criteria":   stringArraySchema("Child acceptance criteria"),
 				"verification_commands": stringArraySchema("Child verification commands"),
-				"depends_on":            stringArraySchema("Sibling titles or ticket IDs this child depends on"),
+				"expected_artifacts":    stringArraySchema("Expected child proof artifacts"),
+				"relevant_paths":        stringArraySchema("Relevant files, packages, docs, or external paths"),
+				"required_tools":        stringArraySchema("Required tools"),
+				"required_permissions":  stringArraySchema("Required permissions"),
+				"required_capabilities": stringArraySchema("Required claiming capabilities"),
+				"allowed_harnesses":     stringArraySchema("Harnesses allowed to claim this child"),
+				"environment":           objectSchema("Environment facts", nil, nil),
+				"input":                 objectSchema("Structured child input", nil, nil),
+				"depends_on":            stringArraySchema("Sibling child keys this child depends on"),
 			})),
 		}),
 		OutputSchema: objectSchema("Decompose ticket output", []string{"children"}, map[string]any{
@@ -372,7 +386,7 @@ var operations = []Operation{
 		Bindings: SurfaceBinding{
 			MCPTool: OperationRegisterAgentCapabilities,
 		},
-		InputSchema: objectSchema("Register agent capabilities input", []string{"workspace_id", "project_id", "agent_id", "harness", "capabilities"}, map[string]any{
+		InputSchema: objectSchema("Register agent capabilities input", []string{"workspace_id", "project_id", "agent_id", "harness", "transports", "capabilities"}, map[string]any{
 			"workspace_id":    uuidSchema("Workspace ID"),
 			"project_id":      uuidSchema("Project ID"),
 			"agent_id":        stringSchema("Stable agent or worker identifier"),

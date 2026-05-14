@@ -525,11 +525,10 @@ func claimContextPayload(bundle services.ClaimContextBundle) map[string]any {
 	checkpoints := make([]map[string]any, 0, len(bundle.Checkpoints))
 	for _, checkpoint := range bundle.Checkpoints {
 		checkpoints = append(checkpoints, map[string]any{
-			"id":               uuidText(checkpoint.ID),
-			"summary":          checkpoint.Summary,
-			"progress_percent": 0,
-			"next_step":        textValue(checkpoint.NextStep),
-			"risk":             textValue(checkpoint.Risk),
+			"id":        uuidText(checkpoint.ID),
+			"summary":   checkpoint.Summary,
+			"next_step": textValue(checkpoint.NextStep),
+			"risk":      textValue(checkpoint.Risk),
 		})
 	}
 	artifacts := make([]map[string]any, 0, len(bundle.Artifacts))

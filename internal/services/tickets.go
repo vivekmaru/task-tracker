@@ -512,19 +512,19 @@ func trimUpdateTicketRequest(req UpdateTicketRequest) UpdateTicketRequest {
 	req.ActorType = strings.TrimSpace(req.ActorType)
 	req.ActorID = strings.TrimSpace(req.ActorID)
 	if req.Tags != nil {
-		values := compactStrings(*req.Tags)
+		values := compactStringsPreserveEmpty(*req.Tags)
 		req.Tags = &values
 	}
 	if req.AcceptanceCriteria != nil {
-		values := compactStrings(*req.AcceptanceCriteria)
+		values := compactStringsPreserveEmpty(*req.AcceptanceCriteria)
 		req.AcceptanceCriteria = &values
 	}
 	if req.VerificationCommands != nil {
-		values := compactStrings(*req.VerificationCommands)
+		values := compactStringsPreserveEmpty(*req.VerificationCommands)
 		req.VerificationCommands = &values
 	}
 	if req.RelevantPaths != nil {
-		values := compactStrings(*req.RelevantPaths)
+		values := compactStringsPreserveEmpty(*req.RelevantPaths)
 		req.RelevantPaths = &values
 	}
 	return req
@@ -540,6 +540,14 @@ func compactStrings(values []string) []string {
 		if value != "" {
 			out = append(out, value)
 		}
+	}
+	return out
+}
+
+func compactStringsPreserveEmpty(values []string) []string {
+	out := compactStrings(values)
+	if out == nil {
+		return []string{}
 	}
 	return out
 }
