@@ -6,6 +6,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/vivek/agent-task-tracker/internal/contracts"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 )
 
@@ -24,29 +25,29 @@ func NewRouterWithRuntime(rt *forgeruntime.Runtime) http.Handler {
 
 func RegisterPhaseOneRoutes(api huma.API, rt *forgeruntime.Runtime) {
 	_ = rt
-	register[bodyInput](api, http.MethodPost, "/tickets", "create-ticket", "Create ticket")
-	register[bodyInput](api, http.MethodPost, "/tickets/propose", "propose-ticket", "Propose ticket")
-	register[listTicketsInput](api, http.MethodGet, "/tickets", "list-tickets", "List tickets")
-	register[idInput](api, http.MethodGet, "/tickets/{id}", "get-ticket", "Get ticket")
+	register[bodyInput](api, http.MethodPost, "/tickets", contracts.RESTCreateTicket, "Create ticket")
+	register[bodyInput](api, http.MethodPost, "/tickets/propose", contracts.RESTProposeTicket, "Propose ticket")
+	register[listTicketsInput](api, http.MethodGet, "/tickets", contracts.RESTListTickets, "List tickets")
+	register[idInput](api, http.MethodGet, "/tickets/{id}", contracts.RESTGetTicket, "Get ticket")
 	register[idBodyInput](api, http.MethodPatch, "/tickets/{id}", "update-ticket", "Update ticket")
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/decompose", "decompose-ticket", "Decompose ticket")
+	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/decompose", contracts.RESTDecomposeTicket, "Decompose ticket")
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/ready", "ready-ticket", "Move ticket to todo")
 
-	register[bodyInput](api, http.MethodPost, "/tickets/claim-next", "claim-next-ticket", "Claim next ticket")
+	register[bodyInput](api, http.MethodPost, "/tickets/claim-next", contracts.RESTClaimNextTicket, "Claim next ticket")
 
 	register[idInput](api, http.MethodGet, "/attempts/{id}", "get-attempt", "Get attempt")
 	register[idBodyInput](api, http.MethodPatch, "/attempts/{id}", "update-attempt", "Update attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/heartbeat", "heartbeat-attempt", "Heartbeat attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/checkpoint", "checkpoint-attempt", "Checkpoint attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/complete", "complete-attempt", "Complete attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/fail", "fail-attempt", "Fail attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/block", "block-attempt", "Block attempt")
+	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/heartbeat", contracts.RESTHeartbeat, "Heartbeat attempt")
+	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/checkpoint", contracts.RESTCheckpoint, "Checkpoint attempt")
+	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/complete", contracts.RESTCompleteAttempt, "Complete attempt")
+	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/fail", contracts.RESTFailAttempt, "Fail attempt")
+	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/block", contracts.RESTBlockAttempt, "Block attempt")
 	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/cancel", "cancel-attempt", "Cancel attempt")
 
 	register[idInput](api, http.MethodGet, "/tickets/{id}/events", "list-ticket-events", "List ticket events")
 	register[idInput](api, http.MethodGet, "/attempts/{id}/events", "list-attempt-events", "List attempt events")
 
-	register[bodyInput](api, http.MethodPost, "/artifacts", "create-artifact", "Register artifact")
+	register[bodyInput](api, http.MethodPost, "/artifacts", contracts.RESTAttachArtifact, "Register artifact")
 	register[idInput](api, http.MethodGet, "/artifacts/{id}", "get-artifact", "Get artifact")
 	register[idInput](api, http.MethodDelete, "/artifacts/{id}", "delete-artifact", "Delete artifact")
 }
