@@ -2,12 +2,18 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/config"
+	"github.com/vivek/agent-task-tracker/internal/db"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
+	"github.com/vivek/agent-task-tracker/internal/services"
 )
 
 type command struct {
@@ -28,6 +34,7 @@ var commands = []command{
 	{"complete", "Complete an attempt."},
 	{"fail", "Fail an attempt."},
 	{"block", "Mark an attempt blocked."},
+	{"cancel", "Cancel an attempt."},
 	{"attach", "Attach or register proof artifacts."},
 	{"list", "List tickets."},
 	{"get", "Show a ticket or attempt."},
@@ -36,6 +43,18 @@ var commands = []command{
 
 type RuntimeHandle interface {
 	Close()
+	CreateTicket(context.Context, services.CreateTicketRequest) (db.Ticket, error)
+	ProposeTicket(context.Context, services.CreateTicketRequest) (db.Ticket, error)
+	ClaimNext(context.Context, services.ClaimNextRequest) (services.ClaimNextResult, error)
+	Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error)
+	Checkpoint(context.Context, services.CheckpointRequest) (services.CheckpointResult, error)
+	Complete(context.Context, services.CompleteAttemptRequest) (services.AttemptTransitionResult, error)
+	Fail(context.Context, services.FailAttemptRequest) (services.AttemptTransitionResult, error)
+	Block(context.Context, services.BlockAttemptRequest) (services.AttemptTransitionResult, error)
+	Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error)
+	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
+	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
+	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 }
 
 type Dependencies struct {
@@ -70,7 +89,41 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 	if name == "server" || name == "worker" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
 	}
+	if isRuntimeCommand(name) {
+		return runRuntimeCommand(name, args[1:], stdout, stderr, deps)
+	}
 
+	fmt.Fprintf(stderr, "command %q is not implemented yet\n", name)
+	return 1
+}
+
+func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if deps.OpenRuntime == nil {
+		deps.OpenRuntime = openRuntime
+	}
+	ctx := context.Background()
+	switch name {
+	case "create", "propose":
+		return runCreateCommand(ctx, name, args, stdout, stderr, deps)
+	case "claim-next":
+		return runClaimNextCommand(ctx, args, stdout, stderr, deps)
+	case "list":
+		return runListCommand(ctx, args, stdout, stderr, deps)
+	case "get":
+		return runGetCommand(ctx, args, stdout, stderr, deps)
+	case "heartbeat":
+		return runHeartbeatCommand(ctx, args, stdout, stderr, deps)
+	case "checkpoint":
+		return runCheckpointCommand(ctx, args, stdout, stderr, deps)
+	case "complete":
+		return runCompleteCommand(ctx, args, stdout, stderr, deps)
+	case "fail":
+		return runFailCommand(ctx, args, stdout, stderr, deps)
+	case "block":
+		return runBlockCommand(ctx, args, stdout, stderr, deps)
+	case "cancel":
+		return runCancelCommand(ctx, args, stdout, stderr, deps)
+	}
 	fmt.Fprintf(stderr, "command %q is not implemented yet\n", name)
 	return 1
 }
@@ -123,6 +176,364 @@ func openRuntime(ctx context.Context, cfg config.Config) (RuntimeHandle, error) 
 	return forgeruntime.Open(ctx, cfg)
 }
 
+func runCreateCommand(ctx context.Context, name string, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet(name, stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var req createTicketFlags
+	req.bind(flags)
+	if !parseFlags(flags, args) {
+		return 2
+	}
+
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+
+	ticketReq, err := req.request()
+	if err != nil {
+		fmt.Fprintf(stderr, "%s argument error: %v\n", name, err)
+		return 2
+	}
+	var ticket db.Ticket
+	if name == "propose" {
+		ticketReq.CreatedBy = firstNonEmpty(ticketReq.CreatedBy, services.ActorAgent)
+		ticket, err = rt.ProposeTicket(ctx, ticketReq)
+	} else {
+		ticketReq.CreatedBy = firstNonEmpty(ticketReq.CreatedBy, services.ActorHuman)
+		ticket, err = rt.CreateTicket(ctx, ticketReq)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "%s error: %v\n", name, err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, ticketPayload(ticket))
+}
+
+func runClaimNextCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("claim-next", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, ticketType, harness, agentID, model, lease, idempotencyKey string
+	var tags, capabilities stringList
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&ticketType, "type", "", "ticket type filter")
+	flags.Var(&tags, "tag", "ticket tag filter")
+	flags.StringVar(&harness, "harness", "", "agent harness")
+	flags.Var(&capabilities, "capability", "agent capability")
+	flags.StringVar(&agentID, "agent-id", "", "agent id")
+	flags.StringVar(&model, "model", "", "model")
+	flags.StringVar(&lease, "lease", "30m", "attempt lease duration")
+	flags.StringVar(&idempotencyKey, "idempotency-key", "", "idempotency key")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+
+	duration, err := time.ParseDuration(lease)
+	if err != nil {
+		fmt.Fprintf(stderr, "claim-next argument error: lease must be a duration: %v\n", err)
+		return 2
+	}
+	result, err := rt.ClaimNext(ctx, services.ClaimNextRequest{
+		WorkspaceID:    mustUUID(workspaceID),
+		ProjectID:      mustUUID(projectID),
+		Type:           ticketType,
+		Tags:           tags,
+		Harness:        harness,
+		Capabilities:   capabilities,
+		AgentID:        agentID,
+		Model:          model,
+		Lease:          duration,
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "claim-next error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{
+		"ticket":     ticketPayload(result.Ticket),
+		"attempt":    attemptPayload(result.Attempt),
+		"context":    result.Context,
+		"ticket_id":  uuidText(result.Ticket.ID),
+		"attempt_id": uuidText(result.Attempt.ID),
+	})
+}
+
+func runListCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("list", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, status, ticketType string
+	var offset, limit int
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&status, "status", "", "status filter")
+	flags.StringVar(&ticketType, "type", "", "type filter")
+	flags.IntVar(&offset, "offset", 0, "offset")
+	flags.IntVar(&limit, "limit", 50, "limit")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	tickets, err := rt.ListTickets(ctx, services.ListTicketsRequest{
+		WorkspaceID: mustUUID(workspaceID),
+		ProjectID:   mustUUID(projectID),
+		Status:      status,
+		Type:        ticketType,
+		Offset:      int32(offset),
+		Limit:       int32(limit),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "list error: %v\n", err)
+		return 1
+	}
+	out := make([]map[string]any, 0, len(tickets))
+	for _, ticket := range tickets {
+		out = append(out, ticketPayload(ticket))
+	}
+	return writeJSON(stdout, stderr, map[string]any{"tickets": out})
+}
+
+func runGetCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("get", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var id, kind string
+	flags.StringVar(&id, "id", "", "resource id")
+	flags.StringVar(&kind, "kind", "ticket", "ticket or attempt")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if id == "" && flags.NArg() > 0 {
+		id = flags.Arg(0)
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	parsedID := mustUUID(id)
+	switch kind {
+	case "ticket":
+		ticket, err := rt.GetTicket(ctx, parsedID)
+		if err != nil {
+			fmt.Fprintf(stderr, "get error: %v\n", err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, ticketPayload(ticket))
+	case "attempt":
+		attempt, err := rt.GetAttempt(ctx, parsedID)
+		if err != nil {
+			fmt.Fprintf(stderr, "get error: %v\n", err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, attemptPayload(attempt))
+	default:
+		fmt.Fprintf(stderr, "get argument error: kind must be ticket or attempt\n")
+		return 2
+	}
+}
+
+func runHeartbeatCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("heartbeat", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, lease string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&lease, "lease", "30m", "lease duration")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	duration, err := time.ParseDuration(lease)
+	if err != nil {
+		fmt.Fprintf(stderr, "heartbeat argument error: lease must be a duration: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	attempt, err := rt.Heartbeat(ctx, services.HeartbeatRequest{AttemptID: mustUUID(attemptID), Lease: duration})
+	if err != nil {
+		fmt.Fprintf(stderr, "heartbeat error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, attemptPayload(attempt))
+}
+
+func runCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("checkpoint", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, summary, nextStep, risk string
+	var progress int
+	var files, commands stringList
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&summary, "summary", "", "checkpoint summary")
+	flags.IntVar(&progress, "progress", 0, "progress percent")
+	flags.Var(&files, "file", "file touched")
+	flags.Var(&commands, "command", "command run")
+	flags.StringVar(&nextStep, "next", "", "next step")
+	flags.StringVar(&risk, "risk", "", "risk")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Checkpoint(ctx, services.CheckpointRequest{
+		AttemptID:       mustUUID(attemptID),
+		Summary:         summary,
+		ProgressPercent: int32(progress),
+		FilesTouched:    files,
+		CommandsRun:     commands,
+		NextStep:        nextStep,
+		Risk:            risk,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "checkpoint error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{
+		"checkpoint_id": uuidText(result.Checkpoint.ID),
+		"attempt_id":    uuidText(result.Checkpoint.AttemptID),
+		"summary":       result.Checkpoint.Summary,
+		"progress":      result.ProgressPercent,
+	})
+}
+
+func runCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("complete", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, summary string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&summary, "summary", "", "output summary")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Complete(ctx, services.CompleteAttemptRequest{AttemptID: mustUUID(attemptID), Output: map[string]any{"summary": summary}})
+	if err != nil {
+		fmt.Fprintf(stderr, "complete error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transitionPayload(result))
+}
+
+func runFailCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("fail", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, reason, category string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&reason, "reason", "", "failure reason")
+	flags.StringVar(&category, "category", "", "failure category")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Fail(ctx, services.FailAttemptRequest{AttemptID: mustUUID(attemptID), FailureReason: reason, FailureCategory: category})
+	if err != nil {
+		fmt.Fprintf(stderr, "fail error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transitionPayload(result))
+}
+
+func runBlockCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("block", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, reason, category string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&reason, "reason", "", "blocker reason")
+	flags.StringVar(&category, "category", "", "failure category")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Block(ctx, services.BlockAttemptRequest{
+		AttemptID:       mustUUID(attemptID),
+		BlockerReason:   reason,
+		FailureCategory: category,
+		Blocker:         map[string]any{"reason": reason},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "block error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transitionPayload(result))
+}
+
+func runCancelCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("cancel", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, reason string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&reason, "reason", "", "cancel reason")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if attemptID == "" && flags.NArg() > 0 {
+		attemptID = flags.Arg(0)
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Cancel(ctx, services.CancelAttemptRequest{AttemptID: mustUUID(attemptID), Reason: reason})
+	if err != nil {
+		fmt.Fprintf(stderr, "cancel error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, transitionPayload(result))
+}
+
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
 	var opts config.Options
 	for i := 0; i < len(args); i++ {
@@ -149,6 +560,173 @@ func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool)
 	return opts, true
 }
 
+type commandOptions struct {
+	ConfigPath string
+	JSON       bool
+}
+
+func (o *commandOptions) bind(flags *flag.FlagSet) {
+	flags.StringVar(&o.ConfigPath, "config", "", "config path")
+	flags.BoolVar(&o.JSON, "json", false, "write JSON output")
+}
+
+type createTicketFlags struct {
+	WorkspaceID string
+	ProjectID   string
+	Title       string
+	Description string
+	Type        string
+	Priority    int
+	Tags        stringList
+	Acceptance  stringList
+	Verify      stringList
+	CreatedBy   string
+	CreatedByID string
+	Reason      string
+	Enqueue     bool
+}
+
+func (f *createTicketFlags) bind(flags *flag.FlagSet) {
+	flags.StringVar(&f.WorkspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&f.ProjectID, "project-id", "", "project id")
+	flags.StringVar(&f.Title, "title", "", "ticket title")
+	flags.StringVar(&f.Description, "description", "", "ticket description")
+	flags.StringVar(&f.Type, "type", "", "ticket type")
+	flags.IntVar(&f.Priority, "priority", 2, "priority 0-4")
+	flags.Var(&f.Tags, "tag", "ticket tag")
+	flags.Var(&f.Acceptance, "acceptance", "acceptance criterion")
+	flags.Var(&f.Verify, "verify", "verification command")
+	flags.StringVar(&f.CreatedBy, "created-by", "", "human, agent, or system")
+	flags.StringVar(&f.CreatedByID, "created-by-id", "", "creator id")
+	flags.StringVar(&f.Reason, "reason", "", "creation reason")
+	flags.BoolVar(&f.Enqueue, "enqueue", false, "create directly in todo when permitted")
+}
+
+func (f createTicketFlags) request() (services.CreateTicketRequest, error) {
+	priority := int32(f.Priority)
+	return services.CreateTicketRequest{
+		WorkspaceID:          mustUUID(f.WorkspaceID),
+		ProjectID:            mustUUID(f.ProjectID),
+		Title:                f.Title,
+		Description:          f.Description,
+		Type:                 f.Type,
+		Priority:             &priority,
+		Tags:                 f.Tags,
+		AcceptanceCriteria:   f.Acceptance,
+		VerificationCommands: f.Verify,
+		CreatedBy:            f.CreatedBy,
+		CreatedByID:          f.CreatedByID,
+		CreationReason:       f.Reason,
+		Enqueue:              f.Enqueue,
+		CanEnqueue:           f.Enqueue,
+	}, nil
+}
+
+type stringList []string
+
+func (l *stringList) String() string {
+	return strings.Join(*l, ",")
+}
+
+func (l *stringList) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
+func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	return flags
+}
+
+func parseFlags(flags *flag.FlagSet, args []string) bool {
+	return flags.Parse(args) == nil
+}
+
+func openCommandRuntime(ctx context.Context, commandName string, opts commandOptions, stderr io.Writer, deps Dependencies) (RuntimeHandle, bool) {
+	cfg, err := config.Load(config.Options{ConfigPath: opts.ConfigPath})
+	if err != nil {
+		fmt.Fprintf(stderr, "%s configuration error: %v\n", commandName, err)
+		return nil, false
+	}
+	rt, err := deps.OpenRuntime(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s runtime error: %v\n", commandName, err)
+		return nil, false
+	}
+	return rt, true
+}
+
+func mustUUID(value string) pgtype.UUID {
+	var id pgtype.UUID
+	if value == "" {
+		return id
+	}
+	_ = id.Scan(value)
+	return id
+}
+
+func uuidText(id pgtype.UUID) string {
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
+}
+
+func ticketPayload(ticket db.Ticket) map[string]any {
+	return map[string]any{
+		"id":           uuidText(ticket.ID),
+		"title":        ticket.Title,
+		"type":         ticket.Type,
+		"status":       ticket.Status,
+		"priority":     ticket.Priority,
+		"created_by":   ticket.CreatedBy,
+		"project_id":   uuidText(ticket.ProjectID),
+		"workspace_id": uuidText(ticket.WorkspaceID),
+	}
+}
+
+func attemptPayload(attempt db.Attempt) map[string]any {
+	return map[string]any{
+		"id":        uuidText(attempt.ID),
+		"ticket_id": uuidText(attempt.TicketID),
+		"agent_id":  attempt.AgentID,
+		"harness":   attempt.Harness,
+		"model":     attempt.Model,
+		"status":    attempt.Status,
+	}
+}
+
+func transitionPayload(result services.AttemptTransitionResult) map[string]any {
+	return map[string]any{
+		"attempt_id":     uuidText(result.AttemptID),
+		"ticket_id":      uuidText(result.TicketID),
+		"attempt_status": result.AttemptStatus,
+		"ticket_status":  result.TicketStatus,
+	}
+}
+
+func writeJSON(stdout, stderr io.Writer, value any) int {
+	data, err := json.Marshal(value)
+	if err != nil {
+		fmt.Fprintf(stderr, "json error: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(data))
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func isKnownCommand(name string) bool {
 	for _, cmd := range commands {
 		if cmd.name == name {
@@ -156,6 +734,15 @@ func isKnownCommand(name string) bool {
 		}
 	}
 	return false
+}
+
+func isRuntimeCommand(name string) bool {
+	switch name {
+	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "list", "get":
+		return true
+	default:
+		return false
+	}
 }
 
 func printHelp(w io.Writer) {

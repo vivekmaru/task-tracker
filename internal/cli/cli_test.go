@@ -3,13 +3,18 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/config"
+	"github.com/vivek/agent-task-tracker/internal/db"
+	"github.com/vivek/agent-task-tracker/internal/services"
 )
 
 func TestRunPrintsTopLevelHelp(t *testing.T) {
@@ -78,6 +83,7 @@ func TestRunAdvertisesPhaseOneCommandSkeletons(t *testing.T) {
 		"complete",
 		"fail",
 		"block",
+		"cancel",
 		"attach",
 		"list",
 		"get",
@@ -121,7 +127,7 @@ func TestRunWorkerLoadsConfigFile(t *testing.T) {
 	code := RunWithDependencies([]string{"worker", "--config", path}, &stdout, &stderr, Dependencies{
 		OpenRuntime: func(_ context.Context, cfg config.Config) (RuntimeHandle, error) {
 			opened = cfg
-			return noopRuntime{}, nil
+			return &noopRuntime{}, nil
 		},
 	})
 
@@ -163,6 +169,171 @@ func TestRunServerReportsRuntimeOpenError(t *testing.T) {
 	}
 }
 
-type noopRuntime struct{}
+func TestRunCreateTicketJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		createTicket: db.Ticket{
+			ID:        testUUID(1),
+			Title:     "Fix auth",
+			Status:    services.TicketStatusTodo,
+			CreatedBy: services.ActorHuman,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"create",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--title", "Fix auth",
+		"--type", services.TicketTypeBug,
+		"--acceptance", "Auth tests pass",
+		"--verify", "go test ./...",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.createReq.Title != "Fix auth" || fake.createReq.Type != services.TicketTypeBug {
+		t.Fatalf("unexpected create request: %#v", fake.createReq)
+	}
+	if fake.createReq.AcceptanceCriteria[0] != "Auth tests pass" {
+		t.Fatalf("expected acceptance criteria, got %#v", fake.createReq.AcceptanceCriteria)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &body); err != nil {
+		t.Fatalf("decode stdout JSON: %v; stdout=%s", err, stdout.String())
+	}
+	if body["status"] != services.TicketStatusTodo {
+		t.Fatalf("expected ticket status in JSON, got %#v", body)
+	}
+}
+
+func TestRunClaimNextJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		claimResult: services.ClaimNextResult{
+			Ticket:  db.Ticket{ID: testUUID(4), Title: "Fix auth"},
+			Attempt: db.Attempt{ID: testUUID(5), AgentID: "codex", Harness: "codex"},
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"claim-next",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--agent-id", "codex",
+		"--harness", "codex",
+		"--capability", "codegen",
+		"--lease", "15m",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.claimReq.AgentID != "codex" || fake.claimReq.Lease != 15*time.Minute {
+		t.Fatalf("unexpected claim request: %#v", fake.claimReq)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &body); err != nil {
+		t.Fatalf("decode stdout JSON: %v; stdout=%s", err, stdout.String())
+	}
+	if body["attempt_id"] == "" {
+		t.Fatalf("expected attempt_id in JSON, got %#v", body)
+	}
+}
+
+type noopRuntime struct {
+	fakeRuntime
+}
 
 func (noopRuntime) Close() {}
+
+type fakeRuntime struct {
+	createReq     services.CreateTicketRequest
+	createTicket  db.Ticket
+	proposeReq    services.CreateTicketRequest
+	proposeTicket db.Ticket
+	claimReq      services.ClaimNextRequest
+	claimResult   services.ClaimNextResult
+}
+
+func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
+	return func(context.Context, config.Config) (RuntimeHandle, error) {
+		return rt, nil
+	}
+}
+
+func (f *fakeRuntime) Close() {}
+
+func (f *fakeRuntime) CreateTicket(_ context.Context, req services.CreateTicketRequest) (db.Ticket, error) {
+	f.createReq = req
+	return f.createTicket, nil
+}
+
+func (f *fakeRuntime) ProposeTicket(_ context.Context, req services.CreateTicketRequest) (db.Ticket, error) {
+	f.proposeReq = req
+	return f.proposeTicket, nil
+}
+
+func (f *fakeRuntime) ClaimNext(_ context.Context, req services.ClaimNextRequest) (services.ClaimNextResult, error) {
+	f.claimReq = req
+	return f.claimResult, nil
+}
+
+func (f *fakeRuntime) Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error) {
+	return db.Attempt{}, nil
+}
+
+func (f *fakeRuntime) Checkpoint(context.Context, services.CheckpointRequest) (services.CheckpointResult, error) {
+	return services.CheckpointResult{}, nil
+}
+
+func (f *fakeRuntime) Complete(context.Context, services.CompleteAttemptRequest) (services.AttemptTransitionResult, error) {
+	return services.AttemptTransitionResult{}, nil
+}
+
+func (f *fakeRuntime) Fail(context.Context, services.FailAttemptRequest) (services.AttemptTransitionResult, error) {
+	return services.AttemptTransitionResult{}, nil
+}
+
+func (f *fakeRuntime) Block(context.Context, services.BlockAttemptRequest) (services.AttemptTransitionResult, error) {
+	return services.AttemptTransitionResult{}, nil
+}
+
+func (f *fakeRuntime) Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error) {
+	return services.AttemptTransitionResult{}, nil
+}
+
+func (f *fakeRuntime) ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) GetTicket(context.Context, pgtype.UUID) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error) {
+	return db.Attempt{}, nil
+}
+
+func testUUID(seed byte) pgtype.UUID {
+	var bytes [16]byte
+	bytes[15] = seed
+	return pgtype.UUID{Bytes: bytes, Valid: true}
+}
+
+func uuidString(t *testing.T, id pgtype.UUID) string {
+	t.Helper()
+
+	value, err := id.Value()
+	if err != nil {
+		t.Fatalf("uuid value: %v", err)
+	}
+	text, ok := value.(string)
+	if !ok {
+		t.Fatalf("expected uuid string, got %T", value)
+	}
+	return text
+}
