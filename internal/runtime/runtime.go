@@ -124,6 +124,10 @@ func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.Registe
 	return r.Capabilities.Register(ctx, req)
 }
 
+func (r *Runtime) DecomposeTicket(ctx context.Context, req services.DecomposeTicketRequest) (services.DecomposeTicketResult, error) {
+	return r.Tickets.DecomposeTicket(ctx, req)
+}
+
 func (r *Runtime) GetCapabilities(ctx context.Context, req services.GetCapabilitiesRequest) (db.AgentCapability, error) {
 	return r.Capabilities.Get(ctx, req)
 }

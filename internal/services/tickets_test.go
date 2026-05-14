@@ -263,6 +263,140 @@ func TestCreateTicketFromAttemptRejectsWeakAgentTicket(t *testing.T) {
 	}
 }
 
+func TestDecomposeTicketProposesChildrenAndDependencies(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+	parentID := testUUID(8)
+
+	result, err := service.DecomposeTicket(context.Background(), DecomposeTicketRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		ParentID:       parentID,
+		Mode:           DecomposeModePropose,
+		CreatedBy:      ActorAgent,
+		CreatedByID:    "planner",
+		CreationReason: "Planner decomposition from Phase 2 task",
+		Children: []DecomposeChildRequest{
+			{
+				Key:                  "contracts",
+				Title:                "Define contract structs",
+				Description:          "Create the shared contract structs first.",
+				Type:                 TicketTypeFeature,
+				AcceptanceCriteria:   []string{"Contract structs exist"},
+				VerificationCommands: []string{"go test ./internal/contracts"},
+				ExpectedArtifacts:    []string{"test output"},
+			},
+			{
+				Key:                  "docs",
+				Title:                "Document contract usage",
+				Description:          "Explain how adapters should consume contract structs.",
+				Type:                 TicketTypeDocumentation,
+				AcceptanceCriteria:   []string{"Docs explain adapter usage"},
+				VerificationCommands: []string{"go test ./..."},
+				DependsOn:            []string{"contracts"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("decompose ticket: %v", err)
+	}
+
+	if len(result.Children) != 2 {
+		t.Fatalf("expected two child tickets, got %#v", result.Children)
+	}
+	if store.createdTickets[0].ParentID != parentID || store.createdTickets[1].ParentID != parentID {
+		t.Fatalf("expected parent relationship on children")
+	}
+	if store.createdTickets[0].RootID != parentID || store.createdTickets[1].RootID != parentID {
+		t.Fatalf("expected parent to become root when root is omitted")
+	}
+	if store.createdTickets[0].ExpectedArtifacts[0] != "test output" {
+		t.Fatalf("expected proof expectations to be preserved, got %#v", store.createdTickets[0].ExpectedArtifacts)
+	}
+	if len(store.createdDependencies) != 1 {
+		t.Fatalf("expected one child dependency, got %#v", store.createdDependencies)
+	}
+	if store.createdDependencies[0].TicketID != result.Children[1].ID || store.createdDependencies[0].DependsOnTicketID != result.Children[0].ID {
+		t.Fatalf("unexpected dependency: %#v children=%#v", store.createdDependencies[0], result.Children)
+	}
+	if len(store.createdEvents) != 2 || store.createdEvents[0].Type != EventTicketProposed || store.createdEvents[1].Type != EventTicketProposed {
+		t.Fatalf("expected proposed events, got %#v", store.createdEvents)
+	}
+}
+
+func TestDecomposeTicketCanCreateClaimableChildrenWhenAllowed(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+
+	result, err := service.DecomposeTicket(context.Background(), DecomposeTicketRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		ParentID:       testUUID(8),
+		Mode:           DecomposeModeCreate,
+		CanEnqueue:     true,
+		CreatedBy:      ActorHuman,
+		CreatedByID:    "vivek",
+		CreationReason: "Manual phase planning",
+		Children: []DecomposeChildRequest{
+			{
+				Key:                "impl",
+				Title:              "Implement capability lookup",
+				Description:        "Add lookup behavior.",
+				Type:               TicketTypeFeature,
+				AcceptanceCriteria: []string{"Lookup tests pass"},
+				RelevantPaths:      []string{"internal/services"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("decompose ticket: %v", err)
+	}
+	if len(result.Children) != 1 {
+		t.Fatalf("expected one child, got %#v", result.Children)
+	}
+	if result.Children[0].Status != TicketStatusTodo {
+		t.Fatalf("expected created child to be todo, got %q", result.Children[0].Status)
+	}
+	if len(store.createdEvents) != 1 || store.createdEvents[0].Type != EventTicketCreated {
+		t.Fatalf("expected created event, got %#v", store.createdEvents)
+	}
+}
+
+func TestDecomposeTicketRejectsUnknownChildDependency(t *testing.T) {
+	service := NewTicketService(&fakeTicketStore{})
+
+	_, err := service.DecomposeTicket(context.Background(), DecomposeTicketRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		ParentID:       testUUID(8),
+		Mode:           DecomposeModePropose,
+		CreatedBy:      ActorAgent,
+		CreatedByID:    "planner",
+		CreationReason: "Planner decomposition",
+		Children: []DecomposeChildRequest{
+			{
+				Key:                "docs",
+				Title:              "Document flow",
+				Description:        "Write docs.",
+				Type:               TicketTypeDocumentation,
+				AcceptanceCriteria: []string{"Docs exist"},
+				RelevantPaths:      []string{"docs"},
+				DependsOn:          []string{"missing"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %T", err)
+	}
+	if !strings.Contains(strings.Join(validationErr.Problems, "\n"), `children[0].depends_on references unknown child "missing"`) {
+		t.Fatalf("unexpected validation problems: %#v", validationErr.Problems)
+	}
+}
+
 func TestValidateTicketRequiresQualityFields(t *testing.T) {
 	service := NewTicketService(&fakeTicketStore{})
 
@@ -332,7 +466,7 @@ type fakeTicketStore struct {
 func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicketParams) (db.Ticket, error) {
 	s.createdTickets = append(s.createdTickets, params)
 	return db.Ticket{
-		ID:                   testUUID(99),
+		ID:                   testUUID(byte(90 + len(s.createdTickets))),
 		WorkspaceID:          params.WorkspaceID,
 		ProjectID:            params.ProjectID,
 		ParentID:             params.ParentID,
