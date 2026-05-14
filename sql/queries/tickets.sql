@@ -42,14 +42,26 @@ WHERE id = $1;
 
 -- name: UpdateTicket :one
 UPDATE tickets
-SET title = $2,
-    description = $3,
-    tags = $4,
-    acceptance_criteria = $5,
-    verification_commands = $6,
-    relevant_paths = $7,
+SET title = COALESCE(sqlc.narg('title')::text, title),
+    description = COALESCE(sqlc.narg('description')::text, description),
+    tags = CASE
+        WHEN sqlc.arg('update_tags')::boolean THEN sqlc.arg('tags')::text[]
+        ELSE tags
+    END,
+    acceptance_criteria = CASE
+        WHEN sqlc.arg('update_acceptance_criteria')::boolean THEN sqlc.arg('acceptance_criteria')::text[]
+        ELSE acceptance_criteria
+    END,
+    verification_commands = CASE
+        WHEN sqlc.arg('update_verification_commands')::boolean THEN sqlc.arg('verification_commands')::jsonb
+        ELSE verification_commands
+    END,
+    relevant_paths = CASE
+        WHEN sqlc.arg('update_relevant_paths')::boolean THEN sqlc.arg('relevant_paths')::text[]
+        ELSE relevant_paths
+    END,
     updated_at = now()
-WHERE id = $1
+WHERE id = sqlc.arg('id')
 RETURNING *;
 
 -- name: ListTickets :many

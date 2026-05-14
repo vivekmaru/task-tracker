@@ -80,6 +80,23 @@ func TestServerCallCreateTicketDelegatesToRuntime(t *testing.T) {
 	}
 }
 
+func TestServerCallRejectsOperationsOutsideConfiguredAllowlist(t *testing.T) {
+	server, err := NewServer(&fakeRuntime{}, []contracts.Operation{
+		contracts.MustOperation(contracts.OperationCreateTicket),
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	if server.CanCall(contracts.OperationClaimNextTicket) {
+		t.Fatal("expected unregistered operation to be unavailable")
+	}
+	_, err = server.Call(context.Background(), contracts.OperationClaimNextTicket, nil)
+	if err == nil {
+		t.Fatal("expected unregistered operation call to fail")
+	}
+}
+
 func TestServerCallClaimNextConvertsLeaseSeconds(t *testing.T) {
 	rt := &fakeRuntime{}
 	server, err := NewServer(rt, contracts.AllOperations())
@@ -87,7 +104,7 @@ func TestServerCallClaimNextConvertsLeaseSeconds(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 
-	_, err = server.Call(context.Background(), contracts.OperationClaimNextTicket, json.RawMessage(`{
+	out, err := server.Call(context.Background(), contracts.OperationClaimNextTicket, json.RawMessage(`{
 		"workspace_id":"00000000-0000-0000-0000-000000000001",
 		"project_id":"00000000-0000-0000-0000-000000000002",
 		"agent_id":"codex",
@@ -105,6 +122,17 @@ func TestServerCallClaimNextConvertsLeaseSeconds(t *testing.T) {
 	}
 	if rt.claimReq.IdempotencyKey != "stable" {
 		t.Fatalf("expected idempotency key, got %#v", rt.claimReq)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	contextBundle := body["context"].(map[string]any)
+	if _, ok := contextBundle["AcceptanceCriteria"]; ok {
+		t.Fatalf("context should not expose Go field names: %#v", contextBundle)
+	}
+	if _, ok := contextBundle["acceptance_criteria"]; !ok {
+		t.Fatalf("context should expose schema-compatible field names: %#v", contextBundle)
 	}
 }
 
@@ -180,6 +208,27 @@ func TestServerCallRejectsInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestServerCallRejectsMalformedOptionalUUID(t *testing.T) {
+	server, err := NewServer(&fakeRuntime{}, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationCreateTicketFromAttempt, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"attempt_id":"00000000-0000-0000-0000-000000000003",
+		"source_artifact_id":"not-a-uuid",
+		"title":"Follow up",
+		"type":"bug",
+		"acceptance_criteria":["Malformed UUIDs are rejected"],
+		"creation_reason":"test"
+	}`))
+	if err == nil {
+		t.Fatal("expected malformed UUID validation error")
+	}
+}
+
 func TestEveryContractOperationHasMCPHandler(t *testing.T) {
 	server, err := NewServer(&fakeRuntime{}, contracts.AllOperations())
 	if err != nil {
@@ -236,9 +285,31 @@ func (f *fakeRuntime) UpdateTicket(_ context.Context, req services.UpdateTicketR
 
 func (f *fakeRuntime) ClaimNext(_ context.Context, req services.ClaimNextRequest) (services.ClaimNextResult, error) {
 	f.claimReq = req
+	ticket := db.Ticket{
+		ID:                 testUUID(3),
+		Title:              "Claimed",
+		Type:               services.TicketTypeFeature,
+		Status:             services.TicketStatusInProgress,
+		AcceptanceCriteria: []string{"MCP claim returns schema context"},
+		RelevantPaths:      []string{"internal/mcp/server.go"},
+	}
+	attempt := db.Attempt{ID: testUUID(4), TicketID: testUUID(3), AgentID: req.AgentID, Harness: req.Harness, Status: services.AttemptStatusRunning}
 	return services.ClaimNextResult{
-		Ticket:  db.Ticket{ID: testUUID(3), Title: "Claimed", Type: services.TicketTypeFeature, Status: services.TicketStatusInProgress},
-		Attempt: db.Attempt{ID: testUUID(4), TicketID: testUUID(3), AgentID: req.AgentID, Harness: req.Harness, Status: services.AttemptStatusRunning},
+		Ticket:  ticket,
+		Attempt: attempt,
+		Context: services.ClaimContextBundle{
+			Ticket:               ticket,
+			Attempt:              attempt,
+			AcceptanceCriteria:   ticket.AcceptanceCriteria,
+			VerificationCommands: []string{"go test ./internal/mcp"},
+			RelevantPaths:        ticket.RelevantPaths,
+			Checkpoints: []db.AttemptCheckpoint{{
+				ID:        testUUID(11),
+				AttemptID: attempt.ID,
+				Summary:   "Halfway",
+				NextStep:  pgtype.Text{String: "Finish tests", Valid: true},
+			}},
+		},
 	}, nil
 }
 

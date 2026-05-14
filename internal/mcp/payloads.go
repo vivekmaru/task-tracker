@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -39,14 +40,38 @@ type createTicketInput struct {
 	CanEnqueue           bool           `json:"can_enqueue"`
 }
 
-func (p createTicketInput) request() services.CreateTicketRequest {
+func (p createTicketInput) request() (services.CreateTicketRequest, error) {
+	workspaceID, err := requiredUUIDField("workspace_id", p.WorkspaceID)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
+	projectID, err := requiredUUIDField("project_id", p.ProjectID)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
+	parentID, err := optionalUUIDField("parent_id", p.ParentID)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
+	rootID, err := optionalUUIDField("root_id", p.RootID)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
+	sourceAttemptID, err := optionalUUIDField("source_attempt_id", p.SourceAttemptID)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
+	sourceArtifactID, err := optionalUUIDField("source_artifact_id", p.SourceArtifactID)
+	if err != nil {
+		return services.CreateTicketRequest{}, err
+	}
 	return services.CreateTicketRequest{
-		WorkspaceID:          mustUUID(p.WorkspaceID),
-		ProjectID:            mustUUID(p.ProjectID),
-		ParentID:             mustUUID(p.ParentID),
-		RootID:               mustUUID(p.RootID),
-		SourceAttemptID:      mustUUID(p.SourceAttemptID),
-		SourceArtifactID:     mustUUID(p.SourceArtifactID),
+		WorkspaceID:          workspaceID,
+		ProjectID:            projectID,
+		ParentID:             parentID,
+		RootID:               rootID,
+		SourceAttemptID:      sourceAttemptID,
+		SourceArtifactID:     sourceArtifactID,
 		Title:                p.Title,
 		Description:          p.Description,
 		Type:                 p.Type,
@@ -69,7 +94,7 @@ func (p createTicketInput) request() services.CreateTicketRequest {
 		CreationReason:       p.CreationReason,
 		Enqueue:              p.Enqueue,
 		CanEnqueue:           p.CanEnqueue,
-	}
+	}, nil
 }
 
 type createFromAttemptInput struct {
@@ -99,16 +124,32 @@ type createFromAttemptInput struct {
 	CanEnqueue           bool           `json:"can_enqueue"`
 }
 
-func (p createFromAttemptInput) request() services.CreateTicketFromAttemptRequest {
+func (p createFromAttemptInput) request() (services.CreateTicketFromAttemptRequest, error) {
 	templateKind := p.TemplateKind
 	if templateKind == "" {
 		templateKind = p.Type
 	}
+	workspaceID, err := requiredUUIDField("workspace_id", p.WorkspaceID)
+	if err != nil {
+		return services.CreateTicketFromAttemptRequest{}, err
+	}
+	projectID, err := requiredUUIDField("project_id", p.ProjectID)
+	if err != nil {
+		return services.CreateTicketFromAttemptRequest{}, err
+	}
+	attemptID, err := requiredUUIDField("attempt_id", p.AttemptID)
+	if err != nil {
+		return services.CreateTicketFromAttemptRequest{}, err
+	}
+	sourceArtifactID, err := optionalUUIDField("source_artifact_id", p.SourceArtifactID)
+	if err != nil {
+		return services.CreateTicketFromAttemptRequest{}, err
+	}
 	return services.CreateTicketFromAttemptRequest{
-		WorkspaceID:          mustUUID(p.WorkspaceID),
-		ProjectID:            mustUUID(p.ProjectID),
-		SourceAttemptID:      mustUUID(p.AttemptID),
-		SourceArtifactID:     mustUUID(p.SourceArtifactID),
+		WorkspaceID:          workspaceID,
+		ProjectID:            projectID,
+		SourceAttemptID:      attemptID,
+		SourceArtifactID:     sourceArtifactID,
 		TemplateKind:         templateKind,
 		Title:                p.Title,
 		Description:          p.Description,
@@ -128,7 +169,7 @@ func (p createFromAttemptInput) request() services.CreateTicketFromAttemptReques
 		CreationReason:       p.CreationReason,
 		Enqueue:              p.Enqueue,
 		CanEnqueue:           p.CanEnqueue,
-	}
+	}, nil
 }
 
 type claimNextInput struct {
@@ -145,10 +186,18 @@ type claimNextInput struct {
 	IdempotencyTTL int64    `json:"idempotency_ttl"`
 }
 
-func (p claimNextInput) request() services.ClaimNextRequest {
+func (p claimNextInput) request() (services.ClaimNextRequest, error) {
+	workspaceID, err := requiredUUIDField("workspace_id", p.WorkspaceID)
+	if err != nil {
+		return services.ClaimNextRequest{}, err
+	}
+	projectID, err := requiredUUIDField("project_id", p.ProjectID)
+	if err != nil {
+		return services.ClaimNextRequest{}, err
+	}
 	return services.ClaimNextRequest{
-		WorkspaceID:    mustUUID(p.WorkspaceID),
-		ProjectID:      mustUUID(p.ProjectID),
+		WorkspaceID:    workspaceID,
+		ProjectID:      projectID,
 		Type:           p.Type,
 		Tags:           p.Tags,
 		Harness:        p.Harness,
@@ -158,7 +207,7 @@ func (p claimNextInput) request() services.ClaimNextRequest {
 		Lease:          time.Duration(p.LeaseSeconds) * time.Second,
 		IdempotencyKey: p.IdempotencyKey,
 		IdempotencyTTL: time.Duration(p.IdempotencyTTL) * time.Second,
-	}
+	}, nil
 }
 
 type attemptLeaseInput struct {
@@ -191,9 +240,13 @@ type updateTicketPatch struct {
 	RelevantPaths        *[]string `json:"relevant_paths"`
 }
 
-func (p updateTicketInput) request() services.UpdateTicketRequest {
+func (p updateTicketInput) request() (services.UpdateTicketRequest, error) {
+	ticketID, err := requiredUUIDField("ticket_id", p.TicketID)
+	if err != nil {
+		return services.UpdateTicketRequest{}, err
+	}
 	return services.UpdateTicketRequest{
-		TicketID:             mustUUID(p.TicketID),
+		TicketID:             ticketID,
 		Title:                p.Patch.Title,
 		Description:          p.Patch.Description,
 		Tags:                 p.Patch.Tags,
@@ -202,7 +255,7 @@ func (p updateTicketInput) request() services.UpdateTicketRequest {
 		RelevantPaths:        p.Patch.RelevantPaths,
 		ActorType:            services.ActorAgent,
 		ActorID:              p.ActorID,
-	}
+	}, nil
 }
 
 type completeInput struct {
@@ -253,12 +306,28 @@ type attachArtifactInput struct {
 	Metadata       map[string]any `json:"metadata"`
 }
 
-func (p attachArtifactInput) request() services.RegisterArtifactRequest {
+func (p attachArtifactInput) request() (services.RegisterArtifactRequest, error) {
+	workspaceID, err := requiredUUIDField("workspace_id", p.WorkspaceID)
+	if err != nil {
+		return services.RegisterArtifactRequest{}, err
+	}
+	projectID, err := requiredUUIDField("project_id", p.ProjectID)
+	if err != nil {
+		return services.RegisterArtifactRequest{}, err
+	}
+	ticketID, err := requiredUUIDField("ticket_id", p.TicketID)
+	if err != nil {
+		return services.RegisterArtifactRequest{}, err
+	}
+	attemptID, err := optionalUUIDField("attempt_id", p.AttemptID)
+	if err != nil {
+		return services.RegisterArtifactRequest{}, err
+	}
 	return services.RegisterArtifactRequest{
-		WorkspaceID:    mustUUID(p.WorkspaceID),
-		ProjectID:      mustUUID(p.ProjectID),
-		TicketID:       mustUUID(p.TicketID),
-		AttemptID:      mustUUID(p.AttemptID),
+		WorkspaceID:    workspaceID,
+		ProjectID:      projectID,
+		TicketID:       ticketID,
+		AttemptID:      attemptID,
 		Type:           p.Type,
 		Role:           p.Role,
 		Name:           p.Name,
@@ -267,7 +336,7 @@ func (p attachArtifactInput) request() services.RegisterArtifactRequest {
 		SizeBytes:      p.SizeBytes,
 		MimeType:       p.MimeType,
 		Metadata:       p.Metadata,
-	}
+	}, nil
 }
 
 type decomposeInput struct {
@@ -303,7 +372,7 @@ type decomposeChildInput struct {
 	DependsOn            []string       `json:"depends_on"`
 }
 
-func (p decomposeInput) request() services.DecomposeTicketRequest {
+func (p decomposeInput) request() (services.DecomposeTicketRequest, error) {
 	children := make([]services.DecomposeChildRequest, 0, len(p.Children))
 	for _, child := range p.Children {
 		children = append(children, services.DecomposeChildRequest{
@@ -326,18 +395,34 @@ func (p decomposeInput) request() services.DecomposeTicketRequest {
 			DependsOn:            child.DependsOn,
 		})
 	}
+	workspaceID, err := requiredUUIDField("workspace_id", p.WorkspaceID)
+	if err != nil {
+		return services.DecomposeTicketRequest{}, err
+	}
+	projectID, err := requiredUUIDField("project_id", p.ProjectID)
+	if err != nil {
+		return services.DecomposeTicketRequest{}, err
+	}
+	parentID, err := requiredUUIDField("ticket_id", p.TicketID)
+	if err != nil {
+		return services.DecomposeTicketRequest{}, err
+	}
+	rootID, err := optionalUUIDField("root_id", p.RootID)
+	if err != nil {
+		return services.DecomposeTicketRequest{}, err
+	}
 	return services.DecomposeTicketRequest{
-		WorkspaceID:    mustUUID(p.WorkspaceID),
-		ProjectID:      mustUUID(p.ProjectID),
-		ParentID:       mustUUID(p.TicketID),
-		RootID:         mustUUID(p.RootID),
+		WorkspaceID:    workspaceID,
+		ProjectID:      projectID,
+		ParentID:       parentID,
+		RootID:         rootID,
 		Mode:           p.Mode,
 		CanEnqueue:     p.CanEnqueue,
 		CreatedBy:      p.CreatedBy,
 		CreatedByID:    p.CreatedByID,
 		CreationReason: p.CreationReason,
 		Children:       children,
-	}
+	}, nil
 }
 
 type registerCapabilitiesInput struct {
@@ -354,10 +439,18 @@ type registerCapabilitiesInput struct {
 	Metadata       map[string]any `json:"metadata"`
 }
 
-func (p registerCapabilitiesInput) request() services.RegisterCapabilitiesRequest {
+func (p registerCapabilitiesInput) request() (services.RegisterCapabilitiesRequest, error) {
+	workspaceID, err := requiredUUIDField("workspace_id", p.WorkspaceID)
+	if err != nil {
+		return services.RegisterCapabilitiesRequest{}, err
+	}
+	projectID, err := requiredUUIDField("project_id", p.ProjectID)
+	if err != nil {
+		return services.RegisterCapabilitiesRequest{}, err
+	}
 	return services.RegisterCapabilitiesRequest{
-		WorkspaceID:    mustUUID(p.WorkspaceID),
-		ProjectID:      mustUUID(p.ProjectID),
+		WorkspaceID:    workspaceID,
+		ProjectID:      projectID,
 		AgentID:        p.AgentID,
 		Harness:        p.Harness,
 		Model:          p.Model,
@@ -367,16 +460,29 @@ func (p registerCapabilitiesInput) request() services.RegisterCapabilitiesReques
 		ArtifactRoles:  p.ArtifactRoles,
 		PreferredClaim: p.PreferredClaim,
 		Metadata:       p.Metadata,
-	}
+	}, nil
 }
 
-func mustUUID(value string) pgtype.UUID {
-	var id pgtype.UUID
+func requiredUUIDField(name, value string) (pgtype.UUID, error) {
 	if value == "" {
-		return id
+		return pgtype.UUID{}, services.ValidationError{Problems: []string{fmt.Sprintf("%s is required", name)}}
 	}
-	_ = id.Scan(value)
-	return id
+	return parseUUIDField(name, value)
+}
+
+func optionalUUIDField(name, value string) (pgtype.UUID, error) {
+	if value == "" {
+		return pgtype.UUID{}, nil
+	}
+	return parseUUIDField(name, value)
+}
+
+func parseUUIDField(name, value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(value); err != nil {
+		return pgtype.UUID{}, services.ValidationError{Problems: []string{fmt.Sprintf("%s must be a valid UUID", name)}}
+	}
+	return id, nil
 }
 
 func uuidText(id pgtype.UUID) string {
@@ -411,6 +517,42 @@ func attemptPayload(attempt db.Attempt) map[string]any {
 	}
 }
 
+func claimContextPayload(bundle services.ClaimContextBundle) map[string]any {
+	priorAttempts := make([]map[string]any, 0, len(bundle.PriorAttempts))
+	for _, attempt := range bundle.PriorAttempts {
+		priorAttempts = append(priorAttempts, attemptPayload(attempt))
+	}
+	checkpoints := make([]map[string]any, 0, len(bundle.Checkpoints))
+	for _, checkpoint := range bundle.Checkpoints {
+		checkpoints = append(checkpoints, map[string]any{
+			"id":               uuidText(checkpoint.ID),
+			"summary":          checkpoint.Summary,
+			"progress_percent": 0,
+			"next_step":        textValue(checkpoint.NextStep),
+			"risk":             textValue(checkpoint.Risk),
+		})
+	}
+	artifacts := make([]map[string]any, 0, len(bundle.Artifacts))
+	for _, artifact := range bundle.Artifacts {
+		artifacts = append(artifacts, artifactPayload(artifact))
+	}
+	return map[string]any{
+		"ticket":                ticketPayload(bundle.Ticket),
+		"attempt":               attemptPayload(bundle.Attempt),
+		"acceptance_criteria":   stringSliceValue(bundle.AcceptanceCriteria),
+		"verification_commands": stringSliceValue(bundle.VerificationCommands),
+		"environment":           objectValue(bundle.Environment),
+		"input":                 objectValue(bundle.Input),
+		"relevant_paths":        stringSliceValue(bundle.RelevantPaths),
+		"required_tools":        stringSliceValue(bundle.RequiredTools),
+		"required_permissions":  stringSliceValue(bundle.RequiredPermissions),
+		"expected_artifacts":    stringSliceValue(bundle.ExpectedArtifacts),
+		"prior_attempts":        priorAttempts,
+		"checkpoints":           checkpoints,
+		"artifacts":             artifacts,
+	}
+}
+
 func transitionPayload(result services.AttemptTransitionResult) map[string]any {
 	return map[string]any{
 		"attempt_id":     uuidText(result.AttemptID),
@@ -418,6 +560,27 @@ func transitionPayload(result services.AttemptTransitionResult) map[string]any {
 		"attempt_status": result.AttemptStatus,
 		"ticket_status":  result.TicketStatus,
 	}
+}
+
+func textValue(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func stringSliceValue(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+func objectValue(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	return value
 }
 
 func artifactPayload(artifact db.Artifact) map[string]any {

@@ -54,7 +54,6 @@ var (
 type TicketStore interface {
 	CreateTicket(context.Context, db.CreateTicketParams) (db.Ticket, error)
 	UpdateTicket(context.Context, db.UpdateTicketParams) (db.Ticket, error)
-	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	CreateTicketDependency(context.Context, db.CreateTicketDependencyParams) (db.TicketDependency, error)
 	CreateTicketEvent(context.Context, db.CreateTicketEventParams) (db.TicketEvent, error)
 	ListTickets(context.Context, db.ListTicketsParams) ([]db.Ticket, error)
@@ -181,60 +180,42 @@ func (s *TicketService) UpdateTicket(ctx context.Context, req UpdateTicketReques
 		return db.Ticket{}, ValidationError{Problems: problems}
 	}
 
-	current, err := s.store.GetTicket(ctx, req.TicketID)
-	if err != nil {
-		return db.Ticket{}, fmt.Errorf("get ticket: %w", err)
-	}
-
-	title := current.Title
-	description := current.Description
-	tags := current.Tags
-	acceptanceCriteria := current.AcceptanceCriteria
-	relevantPaths := current.RelevantPaths
-	verificationCommands, err := decodeJSONArray(current.VerificationCommands)
-	if err != nil {
-		return db.Ticket{}, fmt.Errorf("decode existing verification commands: %w", err)
-	}
-
 	var changedFields []string
+	params := db.UpdateTicketParams{ID: req.TicketID}
 	if req.Title != nil {
-		title = *req.Title
+		params.Title = requiredText(*req.Title)
 		changedFields = append(changedFields, "title")
 	}
 	if req.Description != nil {
-		description = *req.Description
+		params.Description = requiredText(*req.Description)
 		changedFields = append(changedFields, "description")
 	}
 	if req.Tags != nil {
-		tags = *req.Tags
+		params.UpdateTags = true
+		params.Tags = *req.Tags
 		changedFields = append(changedFields, "tags")
 	}
 	if req.AcceptanceCriteria != nil {
-		acceptanceCriteria = *req.AcceptanceCriteria
+		params.UpdateAcceptanceCriteria = true
+		params.AcceptanceCriteria = *req.AcceptanceCriteria
 		changedFields = append(changedFields, "acceptance_criteria")
 	}
 	if req.VerificationCommands != nil {
-		verificationCommands = *req.VerificationCommands
+		verificationRaw, err := encodeJSONArray(*req.VerificationCommands)
+		if err != nil {
+			return db.Ticket{}, fmt.Errorf("marshal verification commands: %w", err)
+		}
+		params.UpdateVerificationCommands = true
+		params.VerificationCommands = verificationRaw
 		changedFields = append(changedFields, "verification_commands")
 	}
 	if req.RelevantPaths != nil {
-		relevantPaths = *req.RelevantPaths
+		params.UpdateRelevantPaths = true
+		params.RelevantPaths = *req.RelevantPaths
 		changedFields = append(changedFields, "relevant_paths")
 	}
 
-	verificationRaw, err := encodeJSONArray(verificationCommands)
-	if err != nil {
-		return db.Ticket{}, fmt.Errorf("marshal verification commands: %w", err)
-	}
-	ticket, err := s.store.UpdateTicket(ctx, db.UpdateTicketParams{
-		ID:                   req.TicketID,
-		Title:                title,
-		Description:          description,
-		Tags:                 tags,
-		AcceptanceCriteria:   acceptanceCriteria,
-		VerificationCommands: verificationRaw,
-		RelevantPaths:        relevantPaths,
-	})
+	ticket, err := s.store.UpdateTicket(ctx, params)
 	if err != nil {
 		return db.Ticket{}, fmt.Errorf("update ticket: %w", err)
 	}
@@ -570,6 +551,10 @@ func optionalText(value string) pgtype.Text {
 	return pgtype.Text{String: value, Valid: true}
 }
 
+func requiredText(value string) pgtype.Text {
+	return pgtype.Text{String: value, Valid: true}
+}
+
 func encodeJSONObject(value map[string]any) ([]byte, error) {
 	if len(value) == 0 {
 		return defaultJSONObject, nil
@@ -582,17 +567,6 @@ func encodeJSONArray(value []string) ([]byte, error) {
 		return defaultJSONArray, nil
 	}
 	return json.Marshal(value)
-}
-
-func decodeJSONArray(value []byte) ([]string, error) {
-	if len(value) == 0 {
-		return nil, nil
-	}
-	var out []string
-	if err := json.Unmarshal(value, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func isAllowedActor(value string) bool {

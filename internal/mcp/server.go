@@ -119,6 +119,9 @@ func (s *Server) CanCall(name string) bool {
 	if s == nil {
 		return false
 	}
+	if _, ok := s.tools[name]; !ok {
+		return false
+	}
 	_, ok := s.handlers[name]
 	return ok
 }
@@ -129,6 +132,9 @@ func (s *Server) Call(ctx context.Context, name string, input json.RawMessage) (
 	}
 	handler, ok := s.handlers[name]
 	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownTool, name)
+	}
+	if _, ok := s.tools[name]; !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownTool, name)
 	}
 	if s.runtime == nil {
@@ -168,7 +174,11 @@ func (s *Server) callCreateTicket(ctx context.Context, input json.RawMessage) (a
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	ticket, err := s.runtime.CreateTicket(ctx, payload.request())
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := s.runtime.CreateTicket(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +190,10 @@ func (s *Server) callProposeTicket(ctx context.Context, input json.RawMessage) (
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	req := payload.request()
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
 	if req.CreatedBy == "" {
 		req.CreatedBy = services.ActorAgent
 	}
@@ -196,7 +209,11 @@ func (s *Server) callCreateTicketFromAttempt(ctx context.Context, input json.Raw
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	ticket, err := s.runtime.CreateTicketFromAttempt(ctx, payload.request())
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := s.runtime.CreateTicketFromAttempt(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -208,14 +225,18 @@ func (s *Server) callClaimNextTicket(ctx context.Context, input json.RawMessage)
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	result, err := s.runtime.ClaimNext(ctx, payload.request())
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.runtime.ClaimNext(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
 		"ticket":  ticketPayload(result.Ticket),
 		"attempt": attemptPayload(result.Attempt),
-		"context": result.Context,
+		"context": claimContextPayload(result.Context),
 	}, nil
 }
 
@@ -227,8 +248,12 @@ func (s *Server) callHeartbeatAttempt(ctx context.Context, input json.RawMessage
 	if payload.AttemptID == "" {
 		return nil, services.ValidationError{Problems: []string{"attempt_id is required"}}
 	}
+	attemptID, err := requiredUUIDField("attempt_id", payload.AttemptID)
+	if err != nil {
+		return nil, err
+	}
 	attempt, err := s.runtime.Heartbeat(ctx, services.HeartbeatRequest{
-		AttemptID: mustUUID(payload.AttemptID),
+		AttemptID: attemptID,
 		Lease:     time.Duration(payload.LeaseSeconds) * time.Second,
 	})
 	if err != nil {
@@ -242,8 +267,12 @@ func (s *Server) callCheckpointAttempt(ctx context.Context, input json.RawMessag
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
+	attemptID, err := requiredUUIDField("attempt_id", payload.AttemptID)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.runtime.Checkpoint(ctx, services.CheckpointRequest{
-		AttemptID:       mustUUID(payload.AttemptID),
+		AttemptID:       attemptID,
 		Summary:         payload.Summary,
 		ProgressPercent: int32(payload.ProgressPercent),
 		FilesTouched:    payload.FilesTouched,
@@ -267,7 +296,11 @@ func (s *Server) callUpdateTicket(ctx context.Context, input json.RawMessage) (a
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	ticket, err := s.runtime.UpdateTicket(ctx, payload.request())
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := s.runtime.UpdateTicket(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -279,8 +312,12 @@ func (s *Server) callCompleteAttempt(ctx context.Context, input json.RawMessage)
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
+	attemptID, err := requiredUUIDField("attempt_id", payload.AttemptID)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.runtime.Complete(ctx, services.CompleteAttemptRequest{
-		AttemptID:    mustUUID(payload.AttemptID),
+		AttemptID:    attemptID,
 		Output:       payload.Output,
 		OutputSchema: payload.OutputSchema,
 	})
@@ -295,8 +332,12 @@ func (s *Server) callFailAttempt(ctx context.Context, input json.RawMessage) (an
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
+	attemptID, err := requiredUUIDField("attempt_id", payload.AttemptID)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.runtime.Fail(ctx, services.FailAttemptRequest{
-		AttemptID:       mustUUID(payload.AttemptID),
+		AttemptID:       attemptID,
 		FailureReason:   payload.FailureReason,
 		FailureCategory: payload.FailureCategory,
 		Output:          payload.Output,
@@ -312,8 +353,12 @@ func (s *Server) callBlockAttempt(ctx context.Context, input json.RawMessage) (a
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
+	attemptID, err := requiredUUIDField("attempt_id", payload.AttemptID)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.runtime.Block(ctx, services.BlockAttemptRequest{
-		AttemptID:       mustUUID(payload.AttemptID),
+		AttemptID:       attemptID,
 		BlockerReason:   payload.BlockerReason,
 		FailureCategory: payload.FailureCategory,
 		Blocker:         payload.Blocker,
@@ -329,9 +374,17 @@ func (s *Server) callListTickets(ctx context.Context, input json.RawMessage) (an
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
+	workspaceID, err := requiredUUIDField("workspace_id", payload.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	projectID, err := requiredUUIDField("project_id", payload.ProjectID)
+	if err != nil {
+		return nil, err
+	}
 	tickets, err := s.runtime.ListTickets(ctx, services.ListTicketsRequest{
-		WorkspaceID: mustUUID(payload.WorkspaceID),
-		ProjectID:   mustUUID(payload.ProjectID),
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
 		Status:      payload.Status,
 		Type:        payload.Type,
 		Offset:      int32(payload.Offset),
@@ -352,7 +405,11 @@ func (s *Server) callGetTicket(ctx context.Context, input json.RawMessage) (any,
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	ticket, err := s.runtime.GetTicket(ctx, mustUUID(payload.TicketID))
+	ticketID, err := requiredUUIDField("ticket_id", payload.TicketID)
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := s.runtime.GetTicket(ctx, ticketID)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +421,11 @@ func (s *Server) callAttachArtifact(ctx context.Context, input json.RawMessage) 
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	artifact, err := s.runtime.RegisterArtifact(ctx, payload.request())
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	artifact, err := s.runtime.RegisterArtifact(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +437,11 @@ func (s *Server) callDecomposeTicket(ctx context.Context, input json.RawMessage)
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	result, err := s.runtime.DecomposeTicket(ctx, payload.request())
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.runtime.DecomposeTicket(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -392,7 +457,11 @@ func (s *Server) callRegisterCapabilities(ctx context.Context, input json.RawMes
 	if err := decodeInput(input, &payload); err != nil {
 		return nil, err
 	}
-	record, err := s.runtime.RegisterCapabilities(ctx, payload.request())
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	record, err := s.runtime.RegisterCapabilities(ctx, req)
 	if err != nil {
 		return nil, err
 	}

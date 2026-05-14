@@ -161,26 +161,14 @@ func TestTicketTemplatesCoverAgentCreatedWorkTypes(t *testing.T) {
 }
 
 func TestUpdateTicketPatchesMutableFieldsAndCreatesEvent(t *testing.T) {
-	existing := db.Ticket{
-		ID:                   testUUID(3),
-		WorkspaceID:          testUUID(1),
-		ProjectID:            testUUID(2),
-		Title:                "Old title",
-		Description:          "Old description",
-		Type:                 TicketTypeFeature,
-		Status:               TicketStatusTodo,
-		Tags:                 []string{"backend"},
-		AcceptanceCriteria:   []string{"Old acceptance"},
-		VerificationCommands: []byte(`["go test ./old"]`),
-		RelevantPaths:        []string{"old.go"},
-	}
+	ticketID := testUUID(3)
 	tags := []string{"backend", "mcp"}
 	verificationCommands := []string{"go test ./internal/mcp"}
-	store := &fakeTicketStore{ticket: existing}
+	store := &fakeTicketStore{}
 	service := NewTicketService(store)
 
 	ticket, err := service.UpdateTicket(context.Background(), UpdateTicketRequest{
-		TicketID:             existing.ID,
+		TicketID:             ticketID,
 		Title:                stringPtr("  New title  "),
 		Tags:                 &tags,
 		VerificationCommands: &verificationCommands,
@@ -194,8 +182,11 @@ func TestUpdateTicketPatchesMutableFieldsAndCreatesEvent(t *testing.T) {
 	if ticket.Title != "New title" {
 		t.Fatalf("expected patched title, got %q", ticket.Title)
 	}
-	if store.updatedTickets[0].Description != existing.Description {
-		t.Fatalf("expected existing description to be preserved, got %#v", store.updatedTickets[0])
+	if store.updatedTickets[0].Description.Valid {
+		t.Fatalf("expected untouched description to be left to SQL patch, got %#v", store.updatedTickets[0])
+	}
+	if !store.updatedTickets[0].UpdateTags || store.updatedTickets[0].UpdateAcceptanceCriteria {
+		t.Fatalf("expected only provided slice fields to be marked for update, got %#v", store.updatedTickets[0])
 	}
 	assertJSONStrings(t, store.updatedTickets[0].VerificationCommands, []string{"go test ./internal/mcp"})
 	if len(store.createdEvents) != 1 || store.createdEvents[0].Type != EventTicketUpdated {
@@ -549,7 +540,6 @@ type fakeTicketStore struct {
 	createdDependencies []db.CreateTicketDependencyParams
 	createdEvents       []db.CreateTicketEventParams
 	listParams          []db.ListTicketsParams
-	ticket              db.Ticket
 }
 
 func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicketParams) (db.Ticket, error) {
@@ -586,23 +576,16 @@ func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicket
 	}, nil
 }
 
-func (s *fakeTicketStore) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
-	if s.ticket.ID.Valid {
-		return s.ticket, nil
-	}
-	return db.Ticket{ID: id, WorkspaceID: testUUID(1), ProjectID: testUUID(2)}, nil
-}
-
 func (s *fakeTicketStore) UpdateTicket(_ context.Context, params db.UpdateTicketParams) (db.Ticket, error) {
 	s.updatedTickets = append(s.updatedTickets, params)
 	return db.Ticket{
 		ID:                   params.ID,
-		WorkspaceID:          s.ticket.WorkspaceID,
-		ProjectID:            s.ticket.ProjectID,
-		Title:                params.Title,
-		Description:          params.Description,
-		Type:                 s.ticket.Type,
-		Status:               s.ticket.Status,
+		WorkspaceID:          testUUID(1),
+		ProjectID:            testUUID(2),
+		Title:                params.Title.String,
+		Description:          params.Description.String,
+		Type:                 TicketTypeFeature,
+		Status:               TicketStatusTodo,
 		Tags:                 params.Tags,
 		AcceptanceCriteria:   params.AcceptanceCriteria,
 		VerificationCommands: params.VerificationCommands,

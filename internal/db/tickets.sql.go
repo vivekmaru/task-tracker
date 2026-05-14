@@ -339,36 +339,56 @@ func (q *Queries) ListTickets(ctx context.Context, arg ListTicketsParams) ([]Tic
 
 const updateTicket = `-- name: UpdateTicket :one
 UPDATE tickets
-SET title = $2,
-    description = $3,
-    tags = $4,
-    acceptance_criteria = $5,
-    verification_commands = $6,
-    relevant_paths = $7,
+SET title = COALESCE($1::text, title),
+    description = COALESCE($2::text, description),
+    tags = CASE
+        WHEN $3::boolean THEN $4::text[]
+        ELSE tags
+    END,
+    acceptance_criteria = CASE
+        WHEN $5::boolean THEN $6::text[]
+        ELSE acceptance_criteria
+    END,
+    verification_commands = CASE
+        WHEN $7::boolean THEN $8::jsonb
+        ELSE verification_commands
+    END,
+    relevant_paths = CASE
+        WHEN $9::boolean THEN $10::text[]
+        ELSE relevant_paths
+    END,
     updated_at = now()
-WHERE id = $1
+WHERE id = $11
 RETURNING id, workspace_id, project_id, parent_id, root_id, source_attempt_id, source_artifact_id, title, description, type, status, priority, tags, acceptance_criteria, verification_commands, expected_artifacts, relevant_paths, required_tools, required_permissions, environment, input, input_schema, required_capabilities, allowed_harnesses, retry_policy, created_by, created_by_id, creation_reason, created_at, updated_at
 `
 
 type UpdateTicketParams struct {
-	ID                   pgtype.UUID `db:"id" json:"id"`
-	Title                string      `db:"title" json:"title"`
-	Description          string      `db:"description" json:"description"`
-	Tags                 []string    `db:"tags" json:"tags"`
-	AcceptanceCriteria   []string    `db:"acceptance_criteria" json:"acceptance_criteria"`
-	VerificationCommands []byte      `db:"verification_commands" json:"verification_commands"`
-	RelevantPaths        []string    `db:"relevant_paths" json:"relevant_paths"`
+	Title                      pgtype.Text `db:"title" json:"title"`
+	Description                pgtype.Text `db:"description" json:"description"`
+	UpdateTags                 bool        `db:"update_tags" json:"update_tags"`
+	Tags                       []string    `db:"tags" json:"tags"`
+	UpdateAcceptanceCriteria   bool        `db:"update_acceptance_criteria" json:"update_acceptance_criteria"`
+	AcceptanceCriteria         []string    `db:"acceptance_criteria" json:"acceptance_criteria"`
+	UpdateVerificationCommands bool        `db:"update_verification_commands" json:"update_verification_commands"`
+	VerificationCommands       []byte      `db:"verification_commands" json:"verification_commands"`
+	UpdateRelevantPaths        bool        `db:"update_relevant_paths" json:"update_relevant_paths"`
+	RelevantPaths              []string    `db:"relevant_paths" json:"relevant_paths"`
+	ID                         pgtype.UUID `db:"id" json:"id"`
 }
 
 func (q *Queries) UpdateTicket(ctx context.Context, arg UpdateTicketParams) (Ticket, error) {
 	row := q.db.QueryRow(ctx, updateTicket,
-		arg.ID,
 		arg.Title,
 		arg.Description,
+		arg.UpdateTags,
 		arg.Tags,
+		arg.UpdateAcceptanceCriteria,
 		arg.AcceptanceCriteria,
+		arg.UpdateVerificationCommands,
 		arg.VerificationCommands,
+		arg.UpdateRelevantPaths,
 		arg.RelevantPaths,
+		arg.ID,
 	)
 	var i Ticket
 	err := row.Scan(

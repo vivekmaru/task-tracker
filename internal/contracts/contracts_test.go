@@ -114,3 +114,28 @@ func TestAgentCreationSchemasEncourageUsefulContext(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateFromAttemptSchemaTypeEnumMatchesSupportedTemplates(t *testing.T) {
+	operation := MustOperation(OperationCreateTicketFromAttempt)
+	props := operation.InputSchema["properties"].(map[string]any)
+	typeSchema := props["type"].(Schema)
+	enumValues := typeSchema["enum"].([]string)
+
+	want := map[string]bool{
+		"bug":           true,
+		"feature":       true,
+		"documentation": true,
+		"review":        true,
+		"investigation": true,
+		"cleanup":       true,
+		"follow_up":     true,
+	}
+	if len(enumValues) != len(want) {
+		t.Fatalf("unexpected template enum values: %#v", enumValues)
+	}
+	for _, value := range enumValues {
+		if !want[value] {
+			t.Fatalf("schema exposes unsupported create-from-attempt template %q", value)
+		}
+	}
+}
