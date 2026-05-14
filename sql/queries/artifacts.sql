@@ -21,3 +21,14 @@ SELECT *
 FROM artifacts
 WHERE ticket_id = $1
 ORDER BY created_at ASC;
+
+-- name: ListArtifactsByAttempt :many
+SELECT *
+FROM artifacts
+WHERE attempt_id = $1
+ORDER BY created_at ASC;
+
+-- name: GetArtifact :one
+SELECT *
+FROM artifacts
+WHERE id = $1;

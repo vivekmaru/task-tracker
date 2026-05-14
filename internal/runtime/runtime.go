@@ -18,6 +18,7 @@ type Runtime struct {
 	Tickets     *services.TicketService
 	Claims      *services.ClaimService
 	Attempts    *services.AttemptService
+	Artifacts   *services.ArtifactService
 	Maintenance *jobs.MaintenanceWorker
 }
 
@@ -42,6 +43,7 @@ func New(queries *db.Queries) *Runtime {
 		Tickets:     services.NewTicketService(queries),
 		Claims:      services.NewClaimService(queries),
 		Attempts:    services.NewAttemptService(queries),
+		Artifacts:   services.NewArtifactService(queries),
 		Maintenance: jobs.NewMaintenanceWorker(queries),
 	}
 }
@@ -98,4 +100,20 @@ func (r *Runtime) GetTicket(ctx context.Context, id pgtype.UUID) (db.Ticket, err
 
 func (r *Runtime) GetAttempt(ctx context.Context, id pgtype.UUID) (db.Attempt, error) {
 	return r.Queries.GetAttempt(ctx, id)
+}
+
+func (r *Runtime) RegisterArtifact(ctx context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
+	return r.Artifacts.RegisterArtifact(ctx, req)
+}
+
+func (r *Runtime) ListArtifactsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.Artifact, error) {
+	return r.Artifacts.ListArtifactsByTicket(ctx, ticketID)
+}
+
+func (r *Runtime) ListArtifactsByAttempt(ctx context.Context, attemptID pgtype.UUID) ([]db.Artifact, error) {
+	return r.Artifacts.ListArtifactsByAttempt(ctx, attemptID)
+}
+
+func (r *Runtime) GetArtifact(ctx context.Context, id pgtype.UUID) (db.Artifact, error) {
+	return r.Artifacts.GetArtifact(ctx, id)
 }

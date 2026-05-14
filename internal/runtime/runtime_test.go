@@ -26,4 +26,7 @@ func TestNewComposesQueriesServicesAndWorkers(t *testing.T) {
 	if rt.Maintenance == nil {
 		t.Fatal("expected maintenance worker")
 	}
+	if rt.Artifacts == nil {
+		t.Fatal("expected artifact service")
+	}
 }

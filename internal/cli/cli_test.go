@@ -244,6 +244,46 @@ func TestRunClaimNextJSON(t *testing.T) {
 	}
 }
 
+func TestRunAttachRegistersArtifactJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:   testUUID(6),
+			Type: services.ArtifactTypeTestOutput,
+			Role: services.ArtifactRoleEvidence,
+			Name: "test-output.txt",
+			Url:  "local://test-output.txt",
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"attach",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--ticket-id", uuidString(t, testUUID(4)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--type", services.ArtifactTypeTestOutput,
+		"--role", services.ArtifactRoleEvidence,
+		"--name", "test-output.txt",
+		"--url", "local://test-output.txt",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.artifactReq.Name != "test-output.txt" || fake.artifactReq.Role != services.ArtifactRoleEvidence {
+		t.Fatalf("unexpected artifact request: %#v", fake.artifactReq)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &body); err != nil {
+		t.Fatalf("decode stdout JSON: %v; stdout=%s", err, stdout.String())
+	}
+	if body["type"] != services.ArtifactTypeTestOutput {
+		t.Fatalf("expected artifact type in JSON, got %#v", body)
+	}
+}
+
 type noopRuntime struct {
 	fakeRuntime
 }
@@ -257,6 +297,8 @@ type fakeRuntime struct {
 	proposeTicket db.Ticket
 	claimReq      services.ClaimNextRequest
 	claimResult   services.ClaimNextResult
+	artifactReq   services.RegisterArtifactRequest
+	artifact      db.Artifact
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -316,6 +358,11 @@ func (f *fakeRuntime) GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 
 func (f *fakeRuntime) GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error) {
 	return db.Attempt{}, nil
+}
+
+func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
+	f.artifactReq = req
+	return f.artifact, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {

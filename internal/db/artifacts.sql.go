@@ -80,6 +80,76 @@ func (q *Queries) CreateArtifact(ctx context.Context, arg CreateArtifactParams) 
 	return i, err
 }
 
+const getArtifact = `-- name: GetArtifact :one
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, role, name, url, storage_backend, size_bytes, mime_type, metadata, created_at
+FROM artifacts
+WHERE id = $1
+`
+
+func (q *Queries) GetArtifact(ctx context.Context, id pgtype.UUID) (Artifact, error) {
+	row := q.db.QueryRow(ctx, getArtifact, id)
+	var i Artifact
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ProjectID,
+		&i.TicketID,
+		&i.AttemptID,
+		&i.Type,
+		&i.Role,
+		&i.Name,
+		&i.Url,
+		&i.StorageBackend,
+		&i.SizeBytes,
+		&i.MimeType,
+		&i.Metadata,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const listArtifactsByAttempt = `-- name: ListArtifactsByAttempt :many
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, role, name, url, storage_backend, size_bytes, mime_type, metadata, created_at
+FROM artifacts
+WHERE attempt_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListArtifactsByAttempt(ctx context.Context, attemptID pgtype.UUID) ([]Artifact, error) {
+	rows, err := q.db.Query(ctx, listArtifactsByAttempt, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Artifact{}
+	for rows.Next() {
+		var i Artifact
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.TicketID,
+			&i.AttemptID,
+			&i.Type,
+			&i.Role,
+			&i.Name,
+			&i.Url,
+			&i.StorageBackend,
+			&i.SizeBytes,
+			&i.MimeType,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listArtifactsByTicket = `-- name: ListArtifactsByTicket :many
 SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, role, name, url, storage_backend, size_bytes, mime_type, metadata, created_at
 FROM artifacts

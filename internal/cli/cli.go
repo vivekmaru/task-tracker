@@ -55,6 +55,7 @@ type RuntimeHandle interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
 }
 
 type Dependencies struct {
@@ -123,6 +124,8 @@ func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, dep
 		return runBlockCommand(ctx, args, stdout, stderr, deps)
 	case "cancel":
 		return runCancelCommand(ctx, args, stdout, stderr, deps)
+	case "attach":
+		return runAttachCommand(ctx, args, stdout, stderr, deps)
 	}
 	fmt.Fprintf(stderr, "command %q is not implemented yet\n", name)
 	return 1
@@ -534,6 +537,51 @@ func runCancelCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	return writeJSON(stdout, stderr, transitionPayload(result))
 }
 
+func runAttachCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("attach", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, ticketID, attemptID, artifactType, role, name, url, storageBackend, mimeType string
+	var sizeBytes int64
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&ticketID, "ticket-id", "", "ticket id")
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&artifactType, "type", "", "artifact type")
+	flags.StringVar(&role, "role", "", "artifact role")
+	flags.StringVar(&name, "name", "", "artifact name")
+	flags.StringVar(&url, "url", "", "artifact URL")
+	flags.StringVar(&storageBackend, "storage-backend", services.ArtifactStorageLocal, "storage backend")
+	flags.StringVar(&mimeType, "mime-type", "", "MIME type")
+	flags.Int64Var(&sizeBytes, "size-bytes", 0, "size in bytes")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	artifact, err := rt.RegisterArtifact(ctx, services.RegisterArtifactRequest{
+		WorkspaceID:    mustUUID(workspaceID),
+		ProjectID:      mustUUID(projectID),
+		TicketID:       mustUUID(ticketID),
+		AttemptID:      mustUUID(attemptID),
+		Type:           artifactType,
+		Role:           role,
+		Name:           name,
+		URL:            url,
+		StorageBackend: storageBackend,
+		SizeBytes:      sizeBytes,
+		MimeType:       mimeType,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "attach error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, artifactPayload(artifact))
+}
+
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
 	var opts config.Options
 	for i := 0; i < len(args); i++ {
@@ -708,6 +756,21 @@ func transitionPayload(result services.AttemptTransitionResult) map[string]any {
 	}
 }
 
+func artifactPayload(artifact db.Artifact) map[string]any {
+	return map[string]any{
+		"id":              uuidText(artifact.ID),
+		"ticket_id":       uuidText(artifact.TicketID),
+		"attempt_id":      uuidText(artifact.AttemptID),
+		"type":            artifact.Type,
+		"role":            artifact.Role,
+		"name":            artifact.Name,
+		"url":             artifact.Url,
+		"storage_backend": artifact.StorageBackend,
+		"size_bytes":      artifact.SizeBytes,
+		"mime_type":       artifact.MimeType,
+	}
+}
+
 func writeJSON(stdout, stderr io.Writer, value any) int {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -738,7 +801,7 @@ func isKnownCommand(name string) bool {
 
 func isRuntimeCommand(name string) bool {
 	switch name {
-	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "list", "get":
+	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get":
 		return true
 	default:
 		return false

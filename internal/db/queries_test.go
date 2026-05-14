@@ -36,4 +36,6 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.GetAttemptMetrics
 	_ = q.CreateArtifact
 	_ = q.ListArtifactsByTicket
+	_ = q.ListArtifactsByAttempt
+	_ = q.GetArtifact
 }
