@@ -160,6 +160,69 @@ func TestTicketTemplatesCoverAgentCreatedWorkTypes(t *testing.T) {
 	}
 }
 
+func TestUpdateTicketPatchesMutableFieldsAndCreatesEvent(t *testing.T) {
+	ticketID := testUUID(3)
+	tags := []string{"backend", "mcp"}
+	verificationCommands := []string{"go test ./internal/mcp"}
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+
+	ticket, err := service.UpdateTicket(context.Background(), UpdateTicketRequest{
+		TicketID:             ticketID,
+		Title:                stringPtr("  New title  "),
+		Tags:                 &tags,
+		VerificationCommands: &verificationCommands,
+		ActorType:            ActorAgent,
+		ActorID:              "codex",
+	})
+	if err != nil {
+		t.Fatalf("update ticket: %v", err)
+	}
+
+	if ticket.Title != "New title" {
+		t.Fatalf("expected patched title, got %q", ticket.Title)
+	}
+	if store.updatedTickets[0].Description.Valid {
+		t.Fatalf("expected untouched description to be left to SQL patch, got %#v", store.updatedTickets[0])
+	}
+	if !store.updatedTickets[0].UpdateTags || store.updatedTickets[0].UpdateAcceptanceCriteria {
+		t.Fatalf("expected only provided slice fields to be marked for update, got %#v", store.updatedTickets[0])
+	}
+	assertJSONStrings(t, store.updatedTickets[0].VerificationCommands, []string{"go test ./internal/mcp"})
+	if len(store.createdEvents) != 1 || store.createdEvents[0].Type != EventTicketUpdated {
+		t.Fatalf("expected updated event, got %#v", store.createdEvents)
+	}
+}
+
+func TestUpdateTicketPreservesExplicitEmptyArrays(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+	tags := []string{}
+	acceptanceCriteria := []string{"still required"}
+	verificationCommands := []string{}
+	relevantPaths := []string{}
+
+	_, err := service.UpdateTicket(context.Background(), UpdateTicketRequest{
+		TicketID:             testUUID(3),
+		Tags:                 &tags,
+		AcceptanceCriteria:   &acceptanceCriteria,
+		VerificationCommands: &verificationCommands,
+		RelevantPaths:        &relevantPaths,
+	})
+	if err != nil {
+		t.Fatalf("update ticket: %v", err)
+	}
+
+	params := store.updatedTickets[0]
+	if params.Tags == nil || len(params.Tags) != 0 {
+		t.Fatalf("expected explicit empty tags slice, got %#v", params.Tags)
+	}
+	if params.RelevantPaths == nil || len(params.RelevantPaths) != 0 {
+		t.Fatalf("expected explicit empty relevant paths slice, got %#v", params.RelevantPaths)
+	}
+	assertJSONStrings(t, params.VerificationCommands, []string{})
+}
+
 func TestCreateTicketFromAttemptDefaultsToProposedBacklogWork(t *testing.T) {
 	store := &fakeTicketStore{}
 	service := NewTicketService(store)
@@ -502,6 +565,7 @@ func TestListTicketsDefaultsPaginationAndFilters(t *testing.T) {
 
 type fakeTicketStore struct {
 	createdTickets      []db.CreateTicketParams
+	updatedTickets      []db.UpdateTicketParams
 	createdDependencies []db.CreateTicketDependencyParams
 	createdEvents       []db.CreateTicketEventParams
 	listParams          []db.ListTicketsParams
@@ -541,6 +605,23 @@ func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicket
 	}, nil
 }
 
+func (s *fakeTicketStore) UpdateTicket(_ context.Context, params db.UpdateTicketParams) (db.Ticket, error) {
+	s.updatedTickets = append(s.updatedTickets, params)
+	return db.Ticket{
+		ID:                   params.ID,
+		WorkspaceID:          testUUID(1),
+		ProjectID:            testUUID(2),
+		Title:                params.Title.String,
+		Description:          params.Description.String,
+		Type:                 TicketTypeFeature,
+		Status:               TicketStatusTodo,
+		Tags:                 params.Tags,
+		AcceptanceCriteria:   params.AcceptanceCriteria,
+		VerificationCommands: params.VerificationCommands,
+		RelevantPaths:        params.RelevantPaths,
+	}, nil
+}
+
 func (s *fakeTicketStore) CreateTicketDependency(_ context.Context, params db.CreateTicketDependencyParams) (db.TicketDependency, error) {
 	s.createdDependencies = append(s.createdDependencies, params)
 	return db.TicketDependency{
@@ -577,6 +658,10 @@ func testUUID(seed byte) pgtype.UUID {
 }
 
 func int32Ptr(value int32) *int32 {
+	return &value
+}
+
+func stringPtr(value string) *string {
 	return &value
 }
 
