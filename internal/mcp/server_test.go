@@ -120,6 +120,31 @@ func TestServerCallCreateTicketEnforcesAgentActorAndDoesNotTrustHiddenCanEnqueue
 	}
 }
 
+func TestServerCallCreateTicketDefaultsMissingCreationReason(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationCreateTicket, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"title":"Create without explicit reason",
+		"description":"Schema-compatible MCP create should remain executable.",
+		"type":"feature",
+		"acceptance_criteria":["Creation reason is defaulted"],
+		"creation_reason":"   "
+	}`))
+	if err != nil {
+		t.Fatalf("call create_ticket: %v", err)
+	}
+
+	if rt.createReq.CreatedBy != services.ActorAgent || rt.createReq.CreationReason == "" {
+		t.Fatalf("expected MCP create_ticket to set agent creation reason, got %#v", rt.createReq)
+	}
+}
+
 func TestServerCallRejectsOperationsOutsideConfiguredAllowlist(t *testing.T) {
 	server, err := NewServer(&fakeRuntime{}, []contracts.Operation{
 		contracts.MustOperation(contracts.OperationCreateTicket),
@@ -238,6 +263,26 @@ func TestServerCallUpdateTicketDelegatesToRuntime(t *testing.T) {
 	}
 	if rt.updateReq.ActorType != services.ActorAgent || rt.updateReq.ActorID != "codex" {
 		t.Fatalf("expected agent attribution, got %#v", rt.updateReq)
+	}
+}
+
+func TestServerCallListTicketsDefaultsLimit(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationListTickets, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002"
+	}`))
+	if err != nil {
+		t.Fatalf("call list_tickets: %v", err)
+	}
+
+	if rt.listReq.Limit != defaultListTicketsLimit {
+		t.Fatalf("expected default list limit, got %#v", rt.listReq)
 	}
 }
 

@@ -102,7 +102,7 @@ var operations = []Operation{
 			CLICommand:      CLICreateTicket,
 			MCPTool:         OperationCreateTicket,
 		},
-		InputSchema:  ticketInputSchema("Create ticket input", []string{"workspace_id", "project_id", "title", "type", "acceptance_criteria", "creation_reason"}),
+		InputSchema:  ticketInputSchema("Create ticket input", []string{"workspace_id", "project_id", "title", "type", "acceptance_criteria"}),
 		OutputSchema: ticketOutputSchema("Created ticket"),
 	},
 	{
@@ -129,6 +129,7 @@ var operations = []Operation{
 			"project_id":          uuidSchema("Project ID"),
 			"attempt_id":          uuidSchema("Source attempt ID"),
 			"source_artifact_id":  optionalUUIDSchema("Evidence artifact that explains the discovered work"),
+			"created_by_id":       stringSchema("Creator identifier for ticket-event attribution"),
 			"title":               stringSchema("Short imperative ticket title"),
 			"description":         stringSchema("Context captured from the attempt"),
 			"type":                enumSchema("Ticket template", "bug", "feature", "documentation", "review", "investigation", "cleanup", "follow_up"),

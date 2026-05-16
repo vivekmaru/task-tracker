@@ -115,14 +115,18 @@ func TestAgentCreationSchemasEncourageUsefulContext(t *testing.T) {
 	}
 }
 
-func TestCreateTicketSchemaRequiresAgentCreationReason(t *testing.T) {
+func TestCreateTicketSchemaKeepsCreationReasonAgentScoped(t *testing.T) {
 	operation := MustOperation(OperationCreateTicket)
 	required := map[string]bool{}
 	for _, field := range operation.InputSchema["required"].([]string) {
 		required[field] = true
 	}
-	if !required["creation_reason"] {
-		t.Fatalf("create_ticket schema should require creation_reason because MCP creates as agent")
+	if required["creation_reason"] {
+		t.Fatalf("create_ticket schema should not require creation_reason for non-agent REST and CLI callers")
+	}
+	props := operation.InputSchema["properties"].(map[string]any)
+	if _, ok := props["creation_reason"]; !ok {
+		t.Fatalf("create_ticket schema should expose creation_reason for agent callers")
 	}
 }
 
@@ -157,6 +161,7 @@ func TestCreateFromAttemptSchemaExposesForwardedFields(t *testing.T) {
 	for _, field := range []string{
 		"priority",
 		"tags",
+		"created_by_id",
 		"expected_artifacts",
 		"required_tools",
 		"required_permissions",

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -16,6 +17,11 @@ import (
 var (
 	ErrUnknownTool     = errors.New("unknown MCP tool")
 	ErrRuntimeRequired = errors.New("runtime is required")
+)
+
+const (
+	defaultListTicketsLimit  = 50
+	defaultMCPCreationReason = "MCP create_ticket request"
 )
 
 type Runtime interface {
@@ -179,6 +185,9 @@ func (s *Server) callCreateTicket(ctx context.Context, input json.RawMessage) (a
 		return nil, err
 	}
 	req.CreatedBy = services.ActorAgent
+	if strings.TrimSpace(req.CreationReason) == "" {
+		req.CreationReason = defaultMCPCreationReason
+	}
 	ticket, err := s.runtime.CreateTicket(ctx, req)
 	if err != nil {
 		return nil, err
@@ -381,13 +390,17 @@ func (s *Server) callListTickets(ctx context.Context, input json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
+	limit := payload.Limit
+	if limit == 0 {
+		limit = defaultListTicketsLimit
+	}
 	tickets, err := s.runtime.ListTickets(ctx, services.ListTicketsRequest{
 		WorkspaceID: workspaceID,
 		ProjectID:   projectID,
 		Status:      payload.Status,
 		Type:        payload.Type,
 		Offset:      int32(payload.Offset),
-		Limit:       int32(payload.Limit),
+		Limit:       int32(limit),
 	})
 	if err != nil {
 		return nil, err
