@@ -733,8 +733,14 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 		return 1
 	}
 	defer rt.Close()
+	attemptUUID := mustUUID(attemptID)
+	artifacts, err := registerCodexProofsForAttempt(ctx, rt, proof, attemptUUID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex complete artifact error: %v\n", err)
+		return 1
+	}
 	result, err := rt.Complete(ctx, services.CompleteAttemptRequest{
-		AttemptID: mustUUID(attemptID),
+		AttemptID: attemptUUID,
 		Output: map[string]any{
 			"summary": summary,
 			"proofs":  []string(proof.Proofs),
@@ -742,11 +748,6 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "codex complete error: %v\n", err)
-		return 1
-	}
-	artifacts, err := registerCodexProofs(ctx, rt, proof, result.TicketID, result.AttemptID)
-	if err != nil {
-		fmt.Fprintf(stderr, "codex complete artifact error: %v\n", err)
 		return 1
 	}
 	return writeJSON(stdout, stderr, map[string]any{
@@ -831,8 +832,14 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 		return 1
 	}
 	defer rt.Close()
+	attemptUUID := mustUUID(attemptID)
+	artifacts, err := registerCodexProofsForAttempt(ctx, rt, proof, attemptUUID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex block artifact error: %v\n", err)
+		return 1
+	}
 	result, err := rt.Block(ctx, services.BlockAttemptRequest{
-		AttemptID:       mustUUID(attemptID),
+		AttemptID:       attemptUUID,
 		BlockerReason:   reason,
 		FailureCategory: category,
 		Blocker: map[string]any{
@@ -842,11 +849,6 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "codex block error: %v\n", err)
-		return 1
-	}
-	artifacts, err := registerCodexProofs(ctx, rt, proof, result.TicketID, result.AttemptID)
-	if err != nil {
-		fmt.Fprintf(stderr, "codex block artifact error: %v\n", err)
 		return 1
 	}
 	return writeJSON(stdout, stderr, map[string]any{
@@ -905,6 +907,17 @@ func registerCodexProofs(ctx context.Context, rt RuntimeHandle, flags codexProof
 		artifacts = append(artifacts, artifactPayload(artifact))
 	}
 	return artifacts, nil
+}
+
+func registerCodexProofsForAttempt(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, attemptID pgtype.UUID) ([]map[string]any, error) {
+	if len(flags.Proofs) == 0 {
+		return []map[string]any{}, nil
+	}
+	attempt, err := rt.GetAttempt(ctx, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	return registerCodexProofs(ctx, rt, flags, attempt.TicketID, attempt.ID)
 }
 
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {

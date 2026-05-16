@@ -382,6 +382,7 @@ func TestRunCodexCheckpointUsesSharedRuntime(t *testing.T) {
 func TestRunCodexCompleteRegistersProofArtifacts(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
 		completeResult: services.AttemptTransitionResult{
 			AttemptID:     testUUID(5),
 			TicketID:      testUUID(4),
@@ -448,6 +449,7 @@ func TestRunCodexFollowUpCreatesTicketFromAttempt(t *testing.T) {
 func TestRunCodexBlockCapturesProofs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
 		blockResult: services.AttemptTransitionResult{
 			AttemptID:     testUUID(5),
 			TicketID:      testUUID(4),
@@ -476,6 +478,62 @@ func TestRunCodexBlockCapturesProofs(t *testing.T) {
 	}
 	if len(fake.artifactReqs) != 1 || fake.artifactReqs[0].Type != services.ArtifactTypeLog {
 		t.Fatalf("expected proof artifact registration, got %#v", fake.artifactReqs)
+	}
+}
+
+func TestRunCodexCompleteRegistersProofsBeforeTransition(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt:     db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
+		artifactErr: errors.New("artifact rejected"),
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Implemented and verified",
+		"--proof", "local://cli-test.log",
+		"--proof-type", services.ArtifactTypeTestOutput,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if fake.completeCalls != 0 {
+		t.Fatalf("complete should not run after proof registration failure: %#v", fake.completeReq)
+	}
+	if !strings.Contains(stderr.String(), "codex complete artifact error") {
+		t.Fatalf("expected artifact error, got %q", stderr.String())
+	}
+}
+
+func TestRunCodexBlockRegistersProofsBeforeTransition(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt:     db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
+		artifactErr: errors.New("artifact rejected"),
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "block",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--reason", "Waiting for API credentials",
+		"--proof", "local://blocked.log",
+		"--proof-type", services.ArtifactTypeLog,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if fake.blockCalls != 0 {
+		t.Fatalf("block should not run after proof registration failure: %#v", fake.blockReq)
+	}
+	if !strings.Contains(stderr.String(), "codex block artifact error") {
+		t.Fatalf("expected artifact error, got %q", stderr.String())
 	}
 }
 
@@ -528,12 +586,17 @@ type fakeRuntime struct {
 	checkpointReq           services.CheckpointRequest
 	checkpointResult        services.CheckpointResult
 	completeReq             services.CompleteAttemptRequest
+	completeCalls           int
 	completeResult          services.AttemptTransitionResult
 	blockReq                services.BlockAttemptRequest
+	blockCalls              int
 	blockResult             services.AttemptTransitionResult
+	attempt                 db.Attempt
+	attemptErr              error
 	artifactReqs            []services.RegisterArtifactRequest
 	artifactReq             services.RegisterArtifactRequest
 	artifact                db.Artifact
+	artifactErr             error
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -554,8 +617,9 @@ func (f *fakeRuntime) ProposeTicket(_ context.Context, req services.CreateTicket
 	return f.proposeTicket, nil
 }
 
-func (f *fakeRuntime) CreateTicketFromAttempt(context.Context, services.CreateTicketFromAttemptRequest) (db.Ticket, error) {
-	return db.Ticket{}, nil
+func (f *fakeRuntime) CreateTicketFromAttempt(_ context.Context, req services.CreateTicketFromAttemptRequest) (db.Ticket, error) {
+	f.createFromAttemptReq = req
+	return f.createFromAttemptTicket, nil
 }
 
 func (f *fakeRuntime) UpdateTicket(context.Context, services.UpdateTicketRequest) (db.Ticket, error) {
@@ -578,6 +642,7 @@ func (f *fakeRuntime) Checkpoint(_ context.Context, req services.CheckpointReque
 
 func (f *fakeRuntime) Complete(_ context.Context, req services.CompleteAttemptRequest) (services.AttemptTransitionResult, error) {
 	f.completeReq = req
+	f.completeCalls++
 	return f.completeResult, nil
 }
 
@@ -587,6 +652,7 @@ func (f *fakeRuntime) Fail(context.Context, services.FailAttemptRequest) (servic
 
 func (f *fakeRuntime) Block(_ context.Context, req services.BlockAttemptRequest) (services.AttemptTransitionResult, error) {
 	f.blockReq = req
+	f.blockCalls++
 	return f.blockResult, nil
 }
 
@@ -603,13 +669,13 @@ func (f *fakeRuntime) GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 }
 
 func (f *fakeRuntime) GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error) {
-	return db.Attempt{}, nil
+	return f.attempt, f.attemptErr
 }
 
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	f.artifactReq = req
 	f.artifactReqs = append(f.artifactReqs, req)
-	return f.artifact, nil
+	return f.artifact, f.artifactErr
 }
 
 func (f *fakeRuntime) DecomposeTicket(context.Context, services.DecomposeTicketRequest) (services.DecomposeTicketResult, error) {
