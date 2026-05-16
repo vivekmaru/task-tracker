@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -134,9 +135,11 @@ type createFromAttemptInput struct {
 }
 
 func (p createFromAttemptInput) request() (services.CreateTicketFromAttemptRequest, error) {
-	templateKind := p.TemplateKind
-	if templateKind == "" {
-		templateKind = p.Type
+	if strings.TrimSpace(p.TemplateKind) != "" {
+		return services.CreateTicketFromAttemptRequest{}, services.ValidationError{Problems: []string{"template_kind is not accepted from MCP callers; use type"}}
+	}
+	if strings.TrimSpace(p.Type) == "" {
+		return services.CreateTicketFromAttemptRequest{}, services.ValidationError{Problems: []string{"type is required"}}
 	}
 	workspaceID, err := requiredUUIDField("workspace_id", p.WorkspaceID)
 	if err != nil {
@@ -159,7 +162,7 @@ func (p createFromAttemptInput) request() (services.CreateTicketFromAttemptReque
 		ProjectID:            projectID,
 		SourceAttemptID:      attemptID,
 		SourceArtifactID:     sourceArtifactID,
-		TemplateKind:         templateKind,
+		TemplateKind:         p.Type,
 		Title:                p.Title,
 		Description:          p.Description,
 		Priority:             p.Priority,
@@ -427,6 +430,7 @@ func (p decomposeInput) request() (services.DecomposeTicketRequest, error) {
 		ParentID:       parentID,
 		RootID:         rootID,
 		Mode:           p.Mode,
+		CanEnqueue:     p.Mode == services.DecomposeModeCreate,
 		CreatedBy:      services.ActorAgent,
 		CreatedByID:    p.CreatedByID,
 		CreationReason: p.CreationReason,

@@ -347,13 +347,13 @@ var operations = []Operation{
 			RESTOperationID: RESTDecomposeTicket,
 			MCPTool:         OperationDecomposeTicket,
 		},
-		InputSchema: objectSchema("Decompose ticket input", []string{"workspace_id", "project_id", "ticket_id", "can_enqueue", "creation_reason", "children"}, map[string]any{
+		InputSchema: objectSchema("Decompose ticket input", []string{"workspace_id", "project_id", "ticket_id", "creation_reason", "children"}, map[string]any{
 			"workspace_id":    uuidSchema("Workspace ID"),
 			"project_id":      uuidSchema("Project ID"),
 			"ticket_id":       uuidSchema("Parent ticket ID"),
 			"root_id":         optionalUUIDSchema("Root ticket ID for nested decomposition"),
 			"mode":            enumSchema("Creation mode", "propose", "create"),
-			"can_enqueue":     booleanSchema("Whether this caller may create claimable todo children when mode is create"),
+			"can_enqueue":     falseBooleanSchema("MCP callers cannot self-grant enqueue authority; create mode authorization is adapter-controlled"),
 			"created_by":      enumSchema("Creator type", "human", "agent", "system"),
 			"created_by_id":   stringSchema("Creator identifier"),
 			"creation_reason": stringSchema("Why this decomposition is being created"),
@@ -371,8 +371,8 @@ var operations = []Operation{
 				"required_permissions":  stringArraySchema("Required permissions"),
 				"required_capabilities": stringArraySchema("Required claiming capabilities"),
 				"allowed_harnesses":     stringArraySchema("Harnesses allowed to claim this child"),
-				"environment":           objectSchema("Environment facts", nil, nil),
-				"input":                 objectSchema("Structured child input", nil, nil),
+				"environment":           freeformObjectSchema("Environment facts"),
+				"input":                 freeformObjectSchema("Structured child input"),
 				"depends_on":            stringArraySchema("Sibling child keys this child depends on"),
 			})),
 		}),
@@ -395,6 +395,7 @@ var operations = []Operation{
 			"model":           stringSchema("Model or runtime label"),
 			"transports":      stringArraySchema("Supported transports, such as cli, rest, or mcp"),
 			"capabilities":    stringArraySchema("Capability labels used for matching claims"),
+			"tool_names":      stringArraySchema("Specific tool names this agent can call"),
 			"artifact_roles":  stringArraySchema("Artifact roles this agent can produce"),
 			"preferred_claim": objectSchema("Preferred claim filters and lease settings", nil, nil),
 			"metadata":        objectSchema("Additional harness metadata", nil, nil),
@@ -549,6 +550,14 @@ func objectSchema(description string, required []string, properties map[string]a
 	return schema
 }
 
+func freeformObjectSchema(description string) Schema {
+	return Schema{
+		"type":                 "object",
+		"description":          description,
+		"additionalProperties": true,
+	}
+}
+
 func arraySchema(description string, items any) Schema {
 	return Schema{
 		"type":        "array",
@@ -567,6 +576,10 @@ func stringSchema(description string) Schema {
 
 func booleanSchema(description string) Schema {
 	return Schema{"type": "boolean", "description": description}
+}
+
+func falseBooleanSchema(description string) Schema {
+	return Schema{"type": "boolean", "const": false, "description": description}
 }
 
 func uuidSchema(description string) Schema {

@@ -274,6 +274,51 @@ func TestServerCallRejectsMalformedOptionalUUID(t *testing.T) {
 	}
 }
 
+func TestServerCallCreateFromAttemptRejectsHiddenTemplateKind(t *testing.T) {
+	server, err := NewServer(&fakeRuntime{}, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationCreateTicketFromAttempt, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"attempt_id":"00000000-0000-0000-0000-000000000003",
+		"template_kind":"cleanup",
+		"type":"bug",
+		"title":"Follow up",
+		"acceptance_criteria":["Hidden template_kind is rejected"],
+		"creation_reason":"schema consistency regression test"
+	}`))
+	if err == nil {
+		t.Fatal("expected hidden template_kind validation error")
+	}
+}
+
+func TestServerCallCreateFromAttemptUsesDeclaredType(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationCreateTicketFromAttempt, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"attempt_id":"00000000-0000-0000-0000-000000000003",
+		"type":"bug",
+		"title":"Follow up",
+		"acceptance_criteria":["Type drives template kind"],
+		"creation_reason":"schema consistency regression test"
+	}`))
+	if err != nil {
+		t.Fatalf("call create_ticket_from_attempt: %v", err)
+	}
+	if rt.createFromAttemptReq.TemplateKind != services.TemplateBug {
+		t.Fatalf("expected declared type to drive template kind, got %#v", rt.createFromAttemptReq)
+	}
+}
+
 func TestServerCallCreateFromAttemptDoesNotTrustHiddenEnqueueFlags(t *testing.T) {
 	rt := &fakeRuntime{}
 	server, err := NewServer(rt, contracts.AllOperations())
@@ -357,6 +402,38 @@ func TestServerCallDecomposeTicketEnforcesAgentActor(t *testing.T) {
 
 	if rt.decomposeReq.CreatedBy != services.ActorAgent || rt.decomposeReq.CanEnqueue {
 		t.Fatalf("MCP decompose_ticket should force agent actor without enqueue authority, got %#v", rt.decomposeReq)
+	}
+}
+
+func TestServerCallDecomposeTicketCreateModeSetsInternalEnqueueAuthority(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationDecomposeTicket, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"ticket_id":"00000000-0000-0000-0000-000000000003",
+		"mode":"create",
+		"can_enqueue":false,
+		"created_by":"human",
+		"created_by_id":"vivek",
+		"creation_reason":"permission boundary regression test",
+		"children":[{
+			"key":"impl",
+			"title":"Implement child",
+			"type":"feature",
+			"acceptance_criteria":["Child exists"]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("call decompose_ticket: %v", err)
+	}
+
+	if rt.decomposeReq.CreatedBy != services.ActorAgent || !rt.decomposeReq.CanEnqueue {
+		t.Fatalf("MCP decompose_ticket create mode should authorize enqueue internally, got %#v", rt.decomposeReq)
 	}
 }
 

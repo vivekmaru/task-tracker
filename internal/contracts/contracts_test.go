@@ -146,10 +146,8 @@ func TestDecomposeSchemaExposesRuntimeRequiredFields(t *testing.T) {
 	for _, field := range operation.InputSchema["required"].([]string) {
 		required[field] = true
 	}
-	for _, field := range []string{"can_enqueue", "creation_reason"} {
-		if !required[field] {
-			t.Fatalf("decompose schema should require %q", field)
-		}
+	if !required["creation_reason"] {
+		t.Fatalf("decompose schema should require creation_reason")
 	}
 
 	props := operation.InputSchema["properties"].(map[string]any)
@@ -174,6 +172,15 @@ func TestDecomposeSchemaExposesRuntimeRequiredFields(t *testing.T) {
 			t.Fatalf("decompose child schema should expose %q", field)
 		}
 	}
+	for _, field := range []string{"environment", "input"} {
+		schema := childProps[field].(Schema)
+		if schema["additionalProperties"] != true {
+			t.Fatalf("decompose child %s schema should permit structured context, got %#v", field, schema)
+		}
+	}
+	if props["can_enqueue"].(Schema)["const"] != false {
+		t.Fatalf("decompose can_enqueue schema should not allow client-granted enqueue authority")
+	}
 }
 
 func TestRegisterCapabilitiesSchemaRequiresTransports(t *testing.T) {
@@ -184,6 +191,14 @@ func TestRegisterCapabilitiesSchemaRequiresTransports(t *testing.T) {
 	}
 	if !required["transports"] {
 		t.Fatalf("register capabilities schema should require transports")
+	}
+}
+
+func TestRegisterCapabilitiesSchemaExposesToolNames(t *testing.T) {
+	operation := MustOperation(OperationRegisterAgentCapabilities)
+	props := operation.InputSchema["properties"].(map[string]any)
+	if _, ok := props["tool_names"]; !ok {
+		t.Fatalf("register capabilities schema should expose tool_names")
 	}
 }
 
