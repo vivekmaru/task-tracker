@@ -609,7 +609,7 @@ func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	subcommand := args[0]
-	if len(args) > 1 && isHelpArg(args[1]) {
+	if hasHelpArg(args[1:]) {
 		if printCodexSubcommandHelp(stdout, subcommand) {
 			return 0
 		}
@@ -704,13 +704,18 @@ func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stder
 			attemptID = flags.Arg(0)
 		}
 	}
+	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex checkpoint argument error: %v\n", err)
+		return 2
+	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
 		return 1
 	}
 	defer rt.Close()
 	result, err := rt.Checkpoint(ctx, services.CheckpointRequest{
-		AttemptID:       mustUUID(attemptID),
+		AttemptID:       attemptUUID,
 		Summary:         summary,
 		ProgressPercent: int32(progress),
 		FilesTouched:    files,
@@ -748,12 +753,16 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 	if !proof.validate("codex complete", stderr) {
 		return 2
 	}
+	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex complete argument error: %v\n", err)
+		return 2
+	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
 		return 1
 	}
 	defer rt.Close()
-	attemptUUID := mustUUID(attemptID)
 	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex complete artifact error: %v\n", err)
@@ -797,7 +806,11 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 	if !parseFlags(flags, args) {
 		return 2
 	}
-	sourceAttemptID := mustUUID(attemptID)
+	sourceAttemptID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up argument error: %v\n", err)
+		return 2
+	}
 	sourceArtifactID, err := optionalUUID(artifactID)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex follow-up argument error: --artifact-id must be a UUID: %v\n", err)
@@ -863,12 +876,16 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 	if !proof.validate("codex block", stderr) {
 		return 2
 	}
+	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex block argument error: %v\n", err)
+		return 2
+	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
 		return 1
 	}
 	defer rt.Close()
-	attemptUUID := mustUUID(attemptID)
 	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex block artifact error: %v\n", err)
@@ -1124,6 +1141,18 @@ func optionalUUID(value string) (pgtype.UUID, error) {
 	return id, nil
 }
 
+func requiredUUIDFlag(name, value string) (pgtype.UUID, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return pgtype.UUID{}, fmt.Errorf("%s is required", name)
+	}
+	id, err := optionalUUID(value)
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("%s must be a UUID: %w", name, err)
+	}
+	return id, nil
+}
+
 func uuidText(id pgtype.UUID) string {
 	value, err := id.Value()
 	if err != nil {
@@ -1308,4 +1337,13 @@ func printCodexSubcommandHelp(w io.Writer, name string) bool {
 
 func isHelpArg(value string) bool {
 	return value == "help" || value == "--help" || value == "-h"
+}
+
+func hasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if isHelpArg(arg) {
+			return true
+		}
+	}
+	return false
 }

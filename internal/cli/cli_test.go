@@ -554,6 +554,69 @@ func TestRunCodexFollowUpRejectsSourceAttemptScopeMismatch(t *testing.T) {
 	}
 }
 
+func TestRunCodexAttemptCommandsRejectMissingOrMalformedAttemptID(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{
+			name:       "checkpoint missing",
+			args:       []string{"codex", "checkpoint", "--summary", "Progress"},
+			wantStderr: "codex checkpoint argument error: --attempt-id is required",
+		},
+		{
+			name:       "checkpoint malformed positional",
+			args:       []string{"codex", "checkpoint", "not-a-uuid", "--summary", "Progress"},
+			wantStderr: "codex checkpoint argument error: --attempt-id must be a UUID",
+		},
+		{
+			name:       "complete missing",
+			args:       []string{"codex", "complete", "--summary", "Done"},
+			wantStderr: "codex complete argument error: --attempt-id is required",
+		},
+		{
+			name:       "block malformed",
+			args:       []string{"codex", "block", "--attempt-id", "not-a-uuid", "--reason", "Waiting"},
+			wantStderr: "codex block argument error: --attempt-id must be a UUID",
+		},
+		{
+			name:       "follow-up missing",
+			args:       []string{"codex", "follow-up", "--title", "Fix follow-up"},
+			wantStderr: "codex follow-up argument error: --attempt-id is required",
+		},
+		{
+			name:       "follow-up malformed",
+			args:       []string{"codex", "follow-up", "--attempt-id", "not-a-uuid", "--title", "Fix follow-up"},
+			wantStderr: "codex follow-up argument error: --attempt-id must be a UUID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			opened := false
+
+			code := RunWithDependencies(tt.args, &stdout, &stderr, Dependencies{
+				OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+					opened = true
+					return &fakeRuntime{}, nil
+				},
+			})
+
+			if code != 2 {
+				t.Fatalf("expected exit code 2, got %d", code)
+			}
+			if opened {
+				t.Fatalf("runtime should not open for invalid attempt id")
+			}
+			if !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Fatalf("expected stderr to contain %q, got %q", tt.wantStderr, stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunCodexFollowUpRejectsMalformedArtifactID(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{}
@@ -889,6 +952,35 @@ func TestRunCodexSubcommandHelpSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "forge codex claim") {
 		t.Fatalf("expected codex claim help, got %q", stdout.String())
+	}
+}
+
+func TestRunCodexSubcommandHelpSucceedsAfterFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	opened := false
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--help",
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			opened = true
+			return &fakeRuntime{}, nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if opened {
+		t.Fatalf("runtime should not open for help")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "forge codex complete") {
+		t.Fatalf("expected codex complete help, got %q", stdout.String())
 	}
 }
 
