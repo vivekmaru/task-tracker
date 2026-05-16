@@ -178,6 +178,7 @@ func (s *Server) callCreateTicket(ctx context.Context, input json.RawMessage) (a
 	if err != nil {
 		return nil, err
 	}
+	req.CreatedBy = services.ActorAgent
 	ticket, err := s.runtime.CreateTicket(ctx, req)
 	if err != nil {
 		return nil, err
@@ -194,9 +195,7 @@ func (s *Server) callProposeTicket(ctx context.Context, input json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
-	if req.CreatedBy == "" {
-		req.CreatedBy = services.ActorAgent
-	}
+	req.CreatedBy = services.ActorAgent
 	ticket, err := s.runtime.ProposeTicket(ctx, req)
 	if err != nil {
 		return nil, err

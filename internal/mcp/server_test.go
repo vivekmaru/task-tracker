@@ -85,7 +85,7 @@ func TestServerCallCreateTicketDelegatesToRuntime(t *testing.T) {
 	}
 }
 
-func TestServerCallCreateTicketDoesNotTrustHiddenCanEnqueue(t *testing.T) {
+func TestServerCallCreateTicketEnforcesAgentActorAndDoesNotTrustHiddenCanEnqueue(t *testing.T) {
 	rt := &fakeRuntime{}
 	server, err := NewServer(rt, contracts.AllOperations())
 	if err != nil {
@@ -99,8 +99,8 @@ func TestServerCallCreateTicketDoesNotTrustHiddenCanEnqueue(t *testing.T) {
 		"description":"Hidden can_enqueue should not be trusted.",
 		"type":"feature",
 		"acceptance_criteria":["Hidden can_enqueue is ignored"],
-		"created_by":"agent",
-		"created_by_id":"codex",
+		"created_by":"human",
+		"created_by_id":"vivek",
 		"creation_reason":"permission boundary regression test",
 		"enqueue":true,
 		"can_enqueue":true
@@ -111,6 +111,9 @@ func TestServerCallCreateTicketDoesNotTrustHiddenCanEnqueue(t *testing.T) {
 
 	if !rt.createReq.Enqueue {
 		t.Fatalf("expected enqueue intent to be forwarded, got %#v", rt.createReq)
+	}
+	if rt.createReq.CreatedBy != services.ActorAgent {
+		t.Fatalf("MCP create_ticket should force agent actor, got %#v", rt.createReq)
 	}
 	if rt.createReq.CanEnqueue {
 		t.Fatalf("MCP create_ticket should not trust hidden can_enqueue, got %#v", rt.createReq)
@@ -295,6 +298,65 @@ func TestServerCallCreateFromAttemptDoesNotTrustHiddenEnqueueFlags(t *testing.T)
 
 	if rt.createFromAttemptReq.Enqueue || rt.createFromAttemptReq.CanEnqueue {
 		t.Fatalf("MCP create_ticket_from_attempt should ignore hidden enqueue flags, got %#v", rt.createFromAttemptReq)
+	}
+}
+
+func TestServerCallDecomposeTicketRejectsClientCanEnqueue(t *testing.T) {
+	server, err := NewServer(&fakeRuntime{}, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationDecomposeTicket, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"ticket_id":"00000000-0000-0000-0000-000000000003",
+		"mode":"create",
+		"can_enqueue":true,
+		"created_by":"human",
+		"created_by_id":"vivek",
+		"creation_reason":"permission boundary regression test",
+		"children":[{
+			"key":"impl",
+			"title":"Implement child",
+			"type":"feature",
+			"acceptance_criteria":["Child exists"]
+		}]
+	}`))
+	if err == nil {
+		t.Fatal("expected can_enqueue validation error")
+	}
+}
+
+func TestServerCallDecomposeTicketEnforcesAgentActor(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationDecomposeTicket, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001",
+		"project_id":"00000000-0000-0000-0000-000000000002",
+		"ticket_id":"00000000-0000-0000-0000-000000000003",
+		"mode":"propose",
+		"can_enqueue":false,
+		"created_by":"human",
+		"created_by_id":"vivek",
+		"creation_reason":"permission boundary regression test",
+		"children":[{
+			"key":"impl",
+			"title":"Implement child",
+			"type":"feature",
+			"acceptance_criteria":["Child exists"]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("call decompose_ticket: %v", err)
+	}
+
+	if rt.decomposeReq.CreatedBy != services.ActorAgent || rt.decomposeReq.CanEnqueue {
+		t.Fatalf("MCP decompose_ticket should force agent actor without enqueue authority, got %#v", rt.decomposeReq)
 	}
 }
 

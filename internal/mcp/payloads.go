@@ -380,6 +380,9 @@ type decomposeChildInput struct {
 }
 
 func (p decomposeInput) request() (services.DecomposeTicketRequest, error) {
+	if p.CanEnqueue {
+		return services.DecomposeTicketRequest{}, services.ValidationError{Problems: []string{"can_enqueue is not accepted from MCP callers"}}
+	}
 	children := make([]services.DecomposeChildRequest, 0, len(p.Children))
 	for _, child := range p.Children {
 		children = append(children, services.DecomposeChildRequest{
@@ -424,8 +427,7 @@ func (p decomposeInput) request() (services.DecomposeTicketRequest, error) {
 		ParentID:       parentID,
 		RootID:         rootID,
 		Mode:           p.Mode,
-		CanEnqueue:     p.CanEnqueue,
-		CreatedBy:      p.CreatedBy,
+		CreatedBy:      services.ActorAgent,
 		CreatedByID:    p.CreatedByID,
 		CreationReason: p.CreationReason,
 		Children:       children,
