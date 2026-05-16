@@ -95,6 +95,27 @@ func TestRunAdvertisesPhaseOneCommandSkeletons(t *testing.T) {
 	}
 }
 
+func TestRunCodexDefaultsRuntimeOpenerWithEmptyDependencies(t *testing.T) {
+	t.Setenv("FORGE_DATABASE_URL", "://bad-url")
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"codex", "claim",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+	}, &stdout, &stderr, Dependencies{})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "codex claim runtime error") {
+		t.Fatalf("expected runtime error, got %q", stderr.String())
+	}
+}
+
 func TestRunServerReportsClearConfigValidationError(t *testing.T) {
 	t.Setenv("FORGE_DATABASE_URL", "")
 	var stdout, stderr bytes.Buffer

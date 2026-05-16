@@ -97,6 +97,9 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 		return runProcess(name, args[1:], stdout, stderr, deps)
 	}
 	if name == "codex" {
+		if deps.OpenRuntime == nil {
+			deps.OpenRuntime = openRuntime
+		}
 		return runCodexCommand(context.Background(), args[1:], stdout, stderr, deps)
 	}
 	if isRuntimeCommand(name) {
