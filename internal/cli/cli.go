@@ -607,6 +607,11 @@ func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	subcommand := args[0]
+	if len(args) > 1 && isHelpArg(args[1]) {
+		if printCodexSubcommandHelp(stdout, subcommand) {
+			return 0
+		}
+	}
 	switch subcommand {
 	case "claim":
 		return runCodexClaimCommand(ctx, args[1:], stdout, stderr, deps)
@@ -782,6 +787,11 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 	if !parseFlags(flags, args) {
 		return 2
 	}
+	sourceArtifactID, err := optionalUUID(artifactID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up argument error: --artifact-id must be a UUID: %v\n", err)
+		return 2
+	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
 		return 1
@@ -791,7 +801,7 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 		WorkspaceID:          mustUUID(workspaceID),
 		ProjectID:            mustUUID(projectID),
 		SourceAttemptID:      mustUUID(attemptID),
-		SourceArtifactID:     mustUUID(artifactID),
+		SourceArtifactID:     sourceArtifactID,
 		TemplateKind:         kind,
 		Title:                title,
 		Description:          description,
@@ -802,7 +812,6 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 		CreatedByID:          "codex",
 		CreationReason:       reason,
 		Enqueue:              enqueue,
-		CanEnqueue:           enqueue,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "codex follow-up error: %v\n", err)
@@ -879,22 +888,22 @@ func (f *codexProofFlags) bind(flags *flag.FlagSet) {
 }
 
 func (f codexProofFlags) validate(commandName string, stderr io.Writer) bool {
-	if len(f.Proofs) == 0 {
-		return true
-	}
-	if f.WorkspaceID == "" || f.ProjectID == "" {
-		fmt.Fprintf(stderr, "%s argument error: --workspace-id and --project-id are required when --proof is provided\n", commandName)
-		return false
+	for i, proof := range f.Proofs {
+		if strings.TrimSpace(proof) == "" {
+			fmt.Fprintf(stderr, "%s argument error: --proof[%d] must not be empty\n", commandName, i)
+			return false
+		}
 	}
 	return true
 }
 
-func registerCodexProofs(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, ticketID, attemptID pgtype.UUID) ([]map[string]any, error) {
+func registerCodexProofs(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) ([]map[string]any, error) {
 	artifacts := make([]map[string]any, 0, len(flags.Proofs))
 	for _, proof := range flags.Proofs {
+		proof = strings.TrimSpace(proof)
 		artifact, err := rt.RegisterArtifact(ctx, services.RegisterArtifactRequest{
-			WorkspaceID:    mustUUID(flags.WorkspaceID),
-			ProjectID:      mustUUID(flags.ProjectID),
+			WorkspaceID:    workspaceID,
+			ProjectID:      projectID,
 			TicketID:       ticketID,
 			AttemptID:      attemptID,
 			Type:           flags.ProofType,
@@ -920,7 +929,7 @@ func registerCodexProofsForAttempt(ctx context.Context, rt RuntimeHandle, flags 
 	if err != nil {
 		return nil, err
 	}
-	return registerCodexProofs(ctx, rt, flags, attempt.TicketID, attempt.ID)
+	return registerCodexProofs(ctx, rt, flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID)
 }
 
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
@@ -1053,6 +1062,18 @@ func mustUUID(value string) pgtype.UUID {
 	}
 	_ = id.Scan(value)
 	return id
+}
+
+func optionalUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return id, nil
+	}
+	if err := id.Scan(value); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return id, nil
 }
 
 func uuidText(id pgtype.UUID) string {
@@ -1217,4 +1238,18 @@ func printCodexHelp(w io.Writer) {
 	fmt.Fprintln(w, "  complete    Complete an attempt and attach proof artifacts")
 	fmt.Fprintln(w, "  follow-up   Create structured follow-up from an attempt")
 	fmt.Fprintln(w, "  block       Mark an attempt blocked with captured context")
+}
+
+func printCodexSubcommandHelp(w io.Writer, name string) bool {
+	switch name {
+	case "claim", "checkpoint", "complete", "follow-up", "block":
+		fmt.Fprintf(w, "Usage:\n  forge codex %s [flags]\n", name)
+		return true
+	default:
+		return false
+	}
+}
+
+func isHelpArg(value string) bool {
+	return value == "help" || value == "--help" || value == "-h"
 }

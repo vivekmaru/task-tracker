@@ -403,7 +403,7 @@ func TestRunCodexCheckpointUsesSharedRuntime(t *testing.T) {
 func TestRunCodexCompleteRegistersProofArtifacts(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
-		attempt: db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
 		completeResult: services.AttemptTransitionResult{
 			AttemptID:     testUUID(5),
 			TicketID:      testUUID(4),
@@ -467,10 +467,63 @@ func TestRunCodexFollowUpCreatesTicketFromAttempt(t *testing.T) {
 	}
 }
 
+func TestRunCodexFollowUpRejectsMalformedArtifactID(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{}
+
+	code := RunWithDependencies([]string{
+		"codex", "follow-up",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--artifact-id", "not-a-uuid",
+		"--title", "Fix follow-up",
+		"--reason", "Codex discovered this while testing",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if fake.createFromAttemptReq.Title != "" {
+		t.Fatalf("follow-up should not run after artifact-id parse failure: %#v", fake.createFromAttemptReq)
+	}
+	if !strings.Contains(stderr.String(), "--artifact-id must be a UUID") {
+		t.Fatalf("expected artifact-id error, got %q", stderr.String())
+	}
+}
+
+func TestRunCodexFollowUpDoesNotSelfAuthorizeEnqueue(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		createFromAttemptTicket: db.Ticket{ID: testUUID(8), Title: "Fix follow-up", Type: services.TicketTypeBug, Status: services.TicketStatusBacklog},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "follow-up",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--title", "Fix follow-up",
+		"--type", services.TemplateBug,
+		"--reason", "Codex discovered this while testing",
+		"--enqueue",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if !fake.createFromAttemptReq.Enqueue {
+		t.Fatalf("expected enqueue request to be forwarded: %#v", fake.createFromAttemptReq)
+	}
+	if fake.createFromAttemptReq.CanEnqueue {
+		t.Fatalf("codex follow-up should not self-authorize enqueue: %#v", fake.createFromAttemptReq)
+	}
+}
+
 func TestRunCodexBlockCapturesProofs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
-		attempt: db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
 		blockResult: services.AttemptTransitionResult{
 			AttemptID:     testUUID(5),
 			TicketID:      testUUID(4),
@@ -505,7 +558,7 @@ func TestRunCodexBlockCapturesProofs(t *testing.T) {
 func TestRunCodexCompleteRegistersProofsBeforeTransition(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
-		attempt:     db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
+		attempt:     db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
 		artifactErr: errors.New("artifact rejected"),
 	}
 
@@ -533,7 +586,7 @@ func TestRunCodexCompleteRegistersProofsBeforeTransition(t *testing.T) {
 func TestRunCodexBlockRegistersProofsBeforeTransition(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
-		attempt:     db.Attempt{ID: testUUID(5), TicketID: testUUID(4)},
+		attempt:     db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
 		artifactErr: errors.New("artifact rejected"),
 	}
 
@@ -558,21 +611,79 @@ func TestRunCodexBlockRegistersProofsBeforeTransition(t *testing.T) {
 	}
 }
 
-func TestRunCodexCompleteRequiresWorkspaceForProofs(t *testing.T) {
+func TestRunCodexCompleteUsesAttemptScopeForProofs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+		completeResult: services.AttemptTransitionResult{
+			AttemptID:     testUUID(5),
+			TicketID:      testUUID(4),
+			AttemptStatus: services.AttemptStatusSucceeded,
+			TicketStatus:  services.TicketStatusDone,
+		},
+		artifact: db.Artifact{ID: testUUID(7), Type: services.ArtifactTypeTestOutput, Role: services.ArtifactRoleEvidence, Name: "cli-test.log", Url: "local://cli-test.log"},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Done",
+		"--proof", " local://cli-test.log ",
+		"--proof-type", services.ArtifactTypeTestOutput,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if len(fake.artifactReqs) != 1 {
+		t.Fatalf("expected proof artifact registration, got %#v", fake.artifactReqs)
+	}
+	if fake.artifactReqs[0].WorkspaceID != fake.attempt.WorkspaceID || fake.artifactReqs[0].ProjectID != fake.attempt.ProjectID {
+		t.Fatalf("expected attempt scope for proof artifact, got %#v", fake.artifactReqs[0])
+	}
+	if fake.artifactReqs[0].URL != "local://cli-test.log" || fake.artifactReqs[0].Name != "cli-test.log" {
+		t.Fatalf("expected normalized proof artifact input, got %#v", fake.artifactReqs[0])
+	}
+}
+
+func TestRunCodexCompleteRejectsBlankProofBeforeRegistration(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{}
 
 	code := RunWithDependencies([]string{
 		"codex", "complete",
 		"--attempt-id", uuidString(t, testUUID(5)),
 		"--summary", "Done",
 		"--proof", "local://cli-test.log",
-	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(&fakeRuntime{})})
+		"--proof", " ",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
 
 	if code != 2 {
 		t.Fatalf("expected exit code 2, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "--workspace-id and --project-id are required") {
+	if len(fake.artifactReqs) != 0 || fake.completeCalls != 0 {
+		t.Fatalf("blank proof should fail before artifact registration or transition: artifacts=%#v completeCalls=%d", fake.artifactReqs, fake.completeCalls)
+	}
+	if !strings.Contains(stderr.String(), "--proof[1] must not be empty") {
 		t.Fatalf("expected proof validation error, got %q", stderr.String())
+	}
+}
+
+func TestRunCodexSubcommandHelpSucceeds(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{"codex", "claim", "--help"}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(&fakeRuntime{})})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "forge codex claim") {
+		t.Fatalf("expected codex claim help, got %q", stdout.String())
 	}
 }
 
