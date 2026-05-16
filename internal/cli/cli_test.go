@@ -492,11 +492,9 @@ func TestRunCodexFollowUpRejectsMalformedArtifactID(t *testing.T) {
 	}
 }
 
-func TestRunCodexFollowUpDoesNotSelfAuthorizeEnqueue(t *testing.T) {
+func TestRunCodexFollowUpRejectsUnsupportedEnqueue(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	fake := &fakeRuntime{
-		createFromAttemptTicket: db.Ticket{ID: testUUID(8), Title: "Fix follow-up", Type: services.TicketTypeBug, Status: services.TicketStatusBacklog},
-	}
+	fake := &fakeRuntime{}
 
 	code := RunWithDependencies([]string{
 		"codex", "follow-up",
@@ -509,14 +507,14 @@ func TestRunCodexFollowUpDoesNotSelfAuthorizeEnqueue(t *testing.T) {
 		"--enqueue",
 	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
 
-	if code != 0 {
-		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
 	}
-	if !fake.createFromAttemptReq.Enqueue {
-		t.Fatalf("expected enqueue request to be forwarded: %#v", fake.createFromAttemptReq)
+	if fake.createFromAttemptReq.Title != "" {
+		t.Fatalf("follow-up should not run with unsupported enqueue flag: %#v", fake.createFromAttemptReq)
 	}
-	if fake.createFromAttemptReq.CanEnqueue {
-		t.Fatalf("codex follow-up should not self-authorize enqueue: %#v", fake.createFromAttemptReq)
+	if !strings.Contains(stderr.String(), "flag provided but not defined: -enqueue") {
+		t.Fatalf("expected unsupported enqueue flag error, got %q", stderr.String())
 	}
 }
 
@@ -555,7 +553,7 @@ func TestRunCodexBlockCapturesProofs(t *testing.T) {
 	}
 }
 
-func TestRunCodexCompleteRegistersProofsBeforeTransition(t *testing.T) {
+func TestRunCodexCompleteReportsAtomicProofFailure(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		attempt:     db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
@@ -575,15 +573,18 @@ func TestRunCodexCompleteRegistersProofsBeforeTransition(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
 	}
-	if fake.completeCalls != 0 {
-		t.Fatalf("complete should not run after proof registration failure: %#v", fake.completeReq)
+	if fake.completeCalls != 1 {
+		t.Fatalf("complete should be attempted inside the atomic transition path: %#v", fake.completeReq)
 	}
-	if !strings.Contains(stderr.String(), "codex complete artifact error") {
-		t.Fatalf("expected artifact error, got %q", stderr.String())
+	if len(fake.artifactReqs) != 0 {
+		t.Fatalf("failed atomic transition should not expose persisted artifacts: %#v", fake.artifactReqs)
+	}
+	if !strings.Contains(stderr.String(), "codex complete error") {
+		t.Fatalf("expected complete error, got %q", stderr.String())
 	}
 }
 
-func TestRunCodexBlockRegistersProofsBeforeTransition(t *testing.T) {
+func TestRunCodexBlockReportsAtomicProofFailure(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		attempt:     db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
@@ -603,11 +604,45 @@ func TestRunCodexBlockRegistersProofsBeforeTransition(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
 	}
-	if fake.blockCalls != 0 {
-		t.Fatalf("block should not run after proof registration failure: %#v", fake.blockReq)
+	if fake.blockCalls != 1 {
+		t.Fatalf("block should be attempted inside the atomic transition path: %#v", fake.blockReq)
 	}
-	if !strings.Contains(stderr.String(), "codex block artifact error") {
-		t.Fatalf("expected artifact error, got %q", stderr.String())
+	if len(fake.artifactReqs) != 0 {
+		t.Fatalf("failed atomic transition should not expose persisted artifacts: %#v", fake.artifactReqs)
+	}
+	if !strings.Contains(stderr.String(), "codex block error") {
+		t.Fatalf("expected block error, got %q", stderr.String())
+	}
+}
+
+func TestRunCodexCompleteDoesNotPersistProofsWhenTransitionFails(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt:     db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
+		completeErr: errors.New("attempt is already closed"),
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Implemented and verified",
+		"--proof", "local://cli-test.log",
+		"--proof-type", services.ArtifactTypeTestOutput,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if fake.completeCalls != 1 {
+		t.Fatalf("expected complete attempt, got %d", fake.completeCalls)
+	}
+	if len(fake.artifactReqs) != 0 {
+		t.Fatalf("transition failure should not persist proof artifacts: %#v", fake.artifactReqs)
+	}
+	if !strings.Contains(stderr.String(), "attempt is already closed") {
+		t.Fatalf("expected transition error, got %q", stderr.String())
 	}
 }
 
@@ -719,9 +754,11 @@ type fakeRuntime struct {
 	checkpointResult        services.CheckpointResult
 	completeReq             services.CompleteAttemptRequest
 	completeCalls           int
+	completeErr             error
 	completeResult          services.AttemptTransitionResult
 	blockReq                services.BlockAttemptRequest
 	blockCalls              int
+	blockErr                error
 	blockResult             services.AttemptTransitionResult
 	attempt                 db.Attempt
 	attemptErr              error
@@ -775,7 +812,25 @@ func (f *fakeRuntime) Checkpoint(_ context.Context, req services.CheckpointReque
 func (f *fakeRuntime) Complete(_ context.Context, req services.CompleteAttemptRequest) (services.AttemptTransitionResult, error) {
 	f.completeReq = req
 	f.completeCalls++
-	return f.completeResult, nil
+	return f.completeResult, f.completeErr
+}
+
+func (f *fakeRuntime) CompleteWithArtifacts(_ context.Context, req services.CompleteAttemptRequest, artifactReqs []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error) {
+	f.completeReq = req
+	f.completeCalls++
+	if f.completeErr != nil {
+		return services.AttemptTransitionResult{}, nil, f.completeErr
+	}
+	if f.artifactErr != nil {
+		return services.AttemptTransitionResult{}, nil, f.artifactErr
+	}
+	artifacts := make([]db.Artifact, 0, len(artifactReqs))
+	for _, req := range artifactReqs {
+		f.artifactReq = req
+		f.artifactReqs = append(f.artifactReqs, req)
+		artifacts = append(artifacts, f.artifact)
+	}
+	return f.completeResult, artifacts, nil
 }
 
 func (f *fakeRuntime) Fail(context.Context, services.FailAttemptRequest) (services.AttemptTransitionResult, error) {
@@ -785,7 +840,25 @@ func (f *fakeRuntime) Fail(context.Context, services.FailAttemptRequest) (servic
 func (f *fakeRuntime) Block(_ context.Context, req services.BlockAttemptRequest) (services.AttemptTransitionResult, error) {
 	f.blockReq = req
 	f.blockCalls++
-	return f.blockResult, nil
+	return f.blockResult, f.blockErr
+}
+
+func (f *fakeRuntime) BlockWithArtifacts(_ context.Context, req services.BlockAttemptRequest, artifactReqs []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error) {
+	f.blockReq = req
+	f.blockCalls++
+	if f.blockErr != nil {
+		return services.AttemptTransitionResult{}, nil, f.blockErr
+	}
+	if f.artifactErr != nil {
+		return services.AttemptTransitionResult{}, nil, f.artifactErr
+	}
+	artifacts := make([]db.Artifact, 0, len(artifactReqs))
+	for _, req := range artifactReqs {
+		f.artifactReq = req
+		f.artifactReqs = append(f.artifactReqs, req)
+		artifacts = append(artifacts, f.artifact)
+	}
+	return f.blockResult, artifacts, nil
 }
 
 func (f *fakeRuntime) Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error) {

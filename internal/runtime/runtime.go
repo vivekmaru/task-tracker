@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/vivek/agent-task-tracker/internal/config"
@@ -88,12 +89,24 @@ func (r *Runtime) Complete(ctx context.Context, req services.CompleteAttemptRequ
 	return r.Attempts.Complete(ctx, req)
 }
 
+func (r *Runtime) CompleteWithArtifacts(ctx context.Context, req services.CompleteAttemptRequest, artifactReqs []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error) {
+	return r.transitionWithArtifacts(ctx, artifactReqs, func(attempts *services.AttemptService) (services.AttemptTransitionResult, error) {
+		return attempts.Complete(ctx, req)
+	})
+}
+
 func (r *Runtime) Fail(ctx context.Context, req services.FailAttemptRequest) (services.AttemptTransitionResult, error) {
 	return r.Attempts.Fail(ctx, req)
 }
 
 func (r *Runtime) Block(ctx context.Context, req services.BlockAttemptRequest) (services.AttemptTransitionResult, error) {
 	return r.Attempts.Block(ctx, req)
+}
+
+func (r *Runtime) BlockWithArtifacts(ctx context.Context, req services.BlockAttemptRequest, artifactReqs []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error) {
+	return r.transitionWithArtifacts(ctx, artifactReqs, func(attempts *services.AttemptService) (services.AttemptTransitionResult, error) {
+		return attempts.Block(ctx, req)
+	})
 }
 
 func (r *Runtime) Cancel(ctx context.Context, req services.CancelAttemptRequest) (services.AttemptTransitionResult, error) {
@@ -114,6 +127,48 @@ func (r *Runtime) GetAttempt(ctx context.Context, id pgtype.UUID) (db.Attempt, e
 
 func (r *Runtime) RegisterArtifact(ctx context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	return r.Artifacts.RegisterArtifact(ctx, req)
+}
+
+func (r *Runtime) transitionWithArtifacts(
+	ctx context.Context,
+	artifactReqs []services.RegisterArtifactRequest,
+	transition func(*services.AttemptService) (services.AttemptTransitionResult, error),
+) (services.AttemptTransitionResult, []db.Artifact, error) {
+	if r.Pool == nil {
+		return services.AttemptTransitionResult{}, nil, fmt.Errorf("runtime pool is not configured")
+	}
+	tx, err := r.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return services.AttemptTransitionResult{}, nil, fmt.Errorf("begin transition transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	queries := r.Queries.WithTx(tx)
+	attempts := services.NewAttemptService(queries)
+	artifacts := services.NewArtifactService(queries)
+
+	result, err := transition(attempts)
+	if err != nil {
+		return services.AttemptTransitionResult{}, nil, err
+	}
+	created := make([]db.Artifact, 0, len(artifactReqs))
+	for _, req := range artifactReqs {
+		artifact, err := artifacts.RegisterArtifact(ctx, req)
+		if err != nil {
+			return services.AttemptTransitionResult{}, nil, err
+		}
+		created = append(created, artifact)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return services.AttemptTransitionResult{}, nil, fmt.Errorf("commit transition transaction: %w", err)
+	}
+	committed = true
+	return result, created, nil
 }
 
 func (r *Runtime) ListArtifactsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.Artifact, error) {
