@@ -124,18 +124,30 @@ var operations = []Operation{
 		Bindings: SurfaceBinding{
 			MCPTool: OperationCreateTicketFromAttempt,
 		},
-		InputSchema: objectSchema("Create ticket from attempt input", []string{"attempt_id", "title", "type", "acceptance_criteria", "creation_reason"}, map[string]any{
+		InputSchema: objectSchema("Create ticket from attempt input", []string{"workspace_id", "project_id", "attempt_id", "title", "type", "acceptance_criteria", "creation_reason"}, map[string]any{
+			"workspace_id":        uuidSchema("Workspace ID"),
+			"project_id":          uuidSchema("Project ID"),
 			"attempt_id":          uuidSchema("Source attempt ID"),
 			"source_artifact_id":  optionalUUIDSchema("Evidence artifact that explains the discovered work"),
+			"created_by_id":       stringSchema("Creator identifier for ticket-event attribution"),
 			"title":               stringSchema("Short imperative ticket title"),
 			"description":         stringSchema("Context captured from the attempt"),
-			"type":                enumSchema("Ticket type", "feature", "bug", "documentation", "research", "analysis", "planning", "review", "integration", "investigation", "cleanup", "follow_up", "custom"),
+			"type":                enumSchema("Ticket template", "bug", "feature", "documentation", "review", "investigation", "cleanup", "follow_up"),
+			"priority":            integerSchema("Priority from 0 highest to 4 lowest", 0, 4),
+			"tags":                stringArraySchema("Search and routing tags"),
 			"acceptance_criteria": stringArraySchema("Observable conditions that make the follow-up done"),
 			"verification_commands": stringArraySchema(
 				"Commands or checks a future agent should run when completing the ticket",
 			),
-			"relevant_paths":  stringArraySchema("Files, packages, docs, or external paths related to the work"),
-			"creation_reason": stringSchema("Why the attempt created this work"),
+			"expected_artifacts":    stringArraySchema("Proof artifacts expected at completion"),
+			"relevant_paths":        stringArraySchema("Files, packages, docs, or external paths related to the work"),
+			"required_tools":        stringArraySchema("Tools the future worker likely needs"),
+			"required_permissions":  stringArraySchema("Permissions the future worker likely needs"),
+			"required_capabilities": stringArraySchema("Capabilities required to claim the follow-up"),
+			"allowed_harnesses":     stringArraySchema("Harnesses allowed to claim the follow-up"),
+			"environment":           freeformObjectSchema("Environment facts for the future worker"),
+			"input":                 freeformObjectSchema("Structured task input"),
+			"creation_reason":       stringSchema("Why the attempt created this work"),
 		}),
 		OutputSchema: ticketOutputSchema("Created follow-up ticket"),
 	},
@@ -216,7 +228,8 @@ var operations = []Operation{
 		},
 		InputSchema: objectSchema("Update ticket input", []string{"ticket_id", "patch"}, map[string]any{
 			"ticket_id": uuidSchema("Ticket ID"),
-			"patch": objectSchema("Patch fields", nil, map[string]any{
+			"actor_id":  stringSchema("Actor ID for ticket-event attribution"),
+			"patch": nonEmptyObjectSchema("Patch fields", nil, map[string]any{
 				"title":                 stringSchema("Updated title"),
 				"description":           stringSchema("Updated description"),
 				"acceptance_criteria":   stringArraySchema("Updated acceptance criteria"),
@@ -344,16 +357,32 @@ var operations = []Operation{
 			RESTOperationID: RESTDecomposeTicket,
 			MCPTool:         OperationDecomposeTicket,
 		},
-		InputSchema: objectSchema("Decompose ticket input", []string{"ticket_id", "children"}, map[string]any{
-			"ticket_id": uuidSchema("Parent ticket ID"),
-			"mode":      enumSchema("Creation mode", "propose", "create"),
-			"children": arraySchema("Child ticket proposals", objectSchema("Child ticket proposal", []string{"title", "type", "acceptance_criteria"}, map[string]any{
+		InputSchema: objectSchema("Decompose ticket input", []string{"workspace_id", "project_id", "ticket_id", "creation_reason", "children"}, map[string]any{
+			"workspace_id":    uuidSchema("Workspace ID"),
+			"project_id":      uuidSchema("Project ID"),
+			"ticket_id":       uuidSchema("Parent ticket ID"),
+			"root_id":         optionalUUIDSchema("Root ticket ID for nested decomposition"),
+			"mode":            enumSchema("Creation mode", "propose", "create"),
+			"can_enqueue":     falseBooleanSchema("MCP callers cannot self-grant enqueue authority; create mode authorization is adapter-controlled"),
+			"created_by_id":   stringSchema("Creator identifier"),
+			"creation_reason": stringSchema("Why this decomposition is being created"),
+			"children": arraySchema("Child ticket proposals", objectSchema("Child ticket proposal", []string{"key", "title", "type", "acceptance_criteria"}, map[string]any{
+				"key":                   stringSchema("Stable child key used for dependency wiring"),
 				"title":                 stringSchema("Child title"),
 				"description":           stringSchema("Child context"),
 				"type":                  stringSchema("Child ticket type"),
+				"tags":                  stringArraySchema("Child tags"),
 				"acceptance_criteria":   stringArraySchema("Child acceptance criteria"),
 				"verification_commands": stringArraySchema("Child verification commands"),
-				"depends_on":            stringArraySchema("Sibling titles or ticket IDs this child depends on"),
+				"expected_artifacts":    stringArraySchema("Expected child proof artifacts"),
+				"relevant_paths":        stringArraySchema("Relevant files, packages, docs, or external paths"),
+				"required_tools":        stringArraySchema("Required tools"),
+				"required_permissions":  stringArraySchema("Required permissions"),
+				"required_capabilities": stringArraySchema("Required claiming capabilities"),
+				"allowed_harnesses":     stringArraySchema("Harnesses allowed to claim this child"),
+				"environment":           freeformObjectSchema("Environment facts"),
+				"input":                 freeformObjectSchema("Structured child input"),
+				"depends_on":            stringArraySchema("Sibling child keys this child depends on"),
 			})),
 		}),
 		OutputSchema: objectSchema("Decompose ticket output", []string{"children"}, map[string]any{
@@ -367,15 +396,18 @@ var operations = []Operation{
 		Bindings: SurfaceBinding{
 			MCPTool: OperationRegisterAgentCapabilities,
 		},
-		InputSchema: objectSchema("Register agent capabilities input", []string{"agent_id", "harness", "capabilities"}, map[string]any{
+		InputSchema: objectSchema("Register agent capabilities input", []string{"workspace_id", "project_id", "agent_id", "harness", "transports", "capabilities"}, map[string]any{
+			"workspace_id":    uuidSchema("Workspace ID"),
+			"project_id":      uuidSchema("Project ID"),
 			"agent_id":        stringSchema("Stable agent or worker identifier"),
 			"harness":         stringSchema("Harness name, such as codex"),
 			"model":           stringSchema("Model or runtime label"),
 			"transports":      stringArraySchema("Supported transports, such as cli, rest, or mcp"),
 			"capabilities":    stringArraySchema("Capability labels used for matching claims"),
+			"tool_names":      stringArraySchema("Specific tool names this agent can call"),
 			"artifact_roles":  stringArraySchema("Artifact roles this agent can produce"),
-			"preferred_claim": objectSchema("Preferred claim filters and lease settings", nil, nil),
-			"metadata":        objectSchema("Additional harness metadata", nil, nil),
+			"preferred_claim": freeformObjectSchema("Preferred claim filters and lease settings"),
+			"metadata":        freeformObjectSchema("Additional harness metadata"),
 		}),
 		OutputSchema: objectSchema("Register agent capabilities output", []string{"agent_id", "harness", "capabilities"}, map[string]any{
 			"agent_id":     stringSchema("Registered agent ID"),
@@ -527,6 +559,20 @@ func objectSchema(description string, required []string, properties map[string]a
 	return schema
 }
 
+func freeformObjectSchema(description string) Schema {
+	return Schema{
+		"type":                 "object",
+		"description":          description,
+		"additionalProperties": true,
+	}
+}
+
+func nonEmptyObjectSchema(description string, required []string, properties map[string]any) Schema {
+	schema := objectSchema(description, required, properties)
+	schema["minProperties"] = 1
+	return schema
+}
+
 func arraySchema(description string, items any) Schema {
 	return Schema{
 		"type":        "array",
@@ -545,6 +591,10 @@ func stringSchema(description string) Schema {
 
 func booleanSchema(description string) Schema {
 	return Schema{"type": "boolean", "description": description}
+}
+
+func falseBooleanSchema(description string) Schema {
+	return Schema{"type": "boolean", "const": false, "description": description}
 }
 
 func uuidSchema(description string) Schema {

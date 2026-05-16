@@ -40,6 +40,7 @@ const (
 
 	EventTicketCreated  = "created"
 	EventTicketProposed = "proposed"
+	EventTicketUpdated  = "updated"
 )
 
 var ErrEnqueuePermissionRequired = errors.New("enqueue permission required")
@@ -52,6 +53,7 @@ var (
 
 type TicketStore interface {
 	CreateTicket(context.Context, db.CreateTicketParams) (db.Ticket, error)
+	UpdateTicket(context.Context, db.UpdateTicketParams) (db.Ticket, error)
 	CreateTicketDependency(context.Context, db.CreateTicketDependencyParams) (db.TicketDependency, error)
 	CreateTicketEvent(context.Context, db.CreateTicketEventParams) (db.TicketEvent, error)
 	ListTickets(context.Context, db.ListTicketsParams) ([]db.Ticket, error)
@@ -114,6 +116,20 @@ type ListTicketsRequest struct {
 	Limit       int32
 }
 
+type UpdateTicketRequest struct {
+	TicketID pgtype.UUID
+
+	Title                *string
+	Description          *string
+	Tags                 *[]string
+	AcceptanceCriteria   *[]string
+	VerificationCommands *[]string
+	RelevantPaths        *[]string
+
+	ActorType string
+	ActorID   string
+}
+
 type ValidationError struct {
 	Problems []string
 }
@@ -153,6 +169,77 @@ func (s *TicketService) ListTickets(ctx context.Context, req ListTicketsRequest)
 		Offset:      req.Offset,
 		Limit:       limit,
 	})
+}
+
+func (s *TicketService) UpdateTicket(ctx context.Context, req UpdateTicketRequest) (db.Ticket, error) {
+	req = trimUpdateTicketRequest(req)
+	if req.ActorType == "" {
+		req.ActorType = ActorAgent
+	}
+	if problems := validateUpdateTicketRequest(req); len(problems) > 0 {
+		return db.Ticket{}, ValidationError{Problems: problems}
+	}
+
+	var changedFields []string
+	params := db.UpdateTicketParams{ID: req.TicketID}
+	if req.Title != nil {
+		params.Title = requiredText(*req.Title)
+		changedFields = append(changedFields, "title")
+	}
+	if req.Description != nil {
+		params.Description = requiredText(*req.Description)
+		changedFields = append(changedFields, "description")
+	}
+	if req.Tags != nil {
+		params.UpdateTags = true
+		params.Tags = *req.Tags
+		changedFields = append(changedFields, "tags")
+	}
+	if req.AcceptanceCriteria != nil {
+		params.UpdateAcceptanceCriteria = true
+		params.AcceptanceCriteria = *req.AcceptanceCriteria
+		changedFields = append(changedFields, "acceptance_criteria")
+	}
+	if req.VerificationCommands != nil {
+		verificationRaw, err := encodeJSONArray(*req.VerificationCommands)
+		if err != nil {
+			return db.Ticket{}, fmt.Errorf("marshal verification commands: %w", err)
+		}
+		params.UpdateVerificationCommands = true
+		params.VerificationCommands = verificationRaw
+		changedFields = append(changedFields, "verification_commands")
+	}
+	if req.RelevantPaths != nil {
+		params.UpdateRelevantPaths = true
+		params.RelevantPaths = *req.RelevantPaths
+		changedFields = append(changedFields, "relevant_paths")
+	}
+
+	ticket, err := s.store.UpdateTicket(ctx, params)
+	if err != nil {
+		return db.Ticket{}, fmt.Errorf("update ticket: %w", err)
+	}
+
+	eventData, err := json.Marshal(map[string]any{
+		"changed_fields": changedFields,
+	})
+	if err != nil {
+		return db.Ticket{}, fmt.Errorf("marshal ticket event data: %w", err)
+	}
+	_, err = s.store.CreateTicketEvent(ctx, db.CreateTicketEventParams{
+		WorkspaceID: ticket.WorkspaceID,
+		ProjectID:   ticket.ProjectID,
+		TicketID:    ticket.ID,
+		Type:        EventTicketUpdated,
+		ActorType:   req.ActorType,
+		ActorID:     optionalText(req.ActorID),
+		Data:        eventData,
+	})
+	if err != nil {
+		return db.Ticket{}, fmt.Errorf("create ticket event: %w", err)
+	}
+
+	return ticket, nil
 }
 
 func (s *TicketService) createTicket(ctx context.Context, req CreateTicketRequest, eventType string) (db.Ticket, error) {
@@ -352,6 +439,31 @@ func validateListTicketsRequest(req ListTicketsRequest) []string {
 	return problems
 }
 
+func validateUpdateTicketRequest(req UpdateTicketRequest) []string {
+	var problems []string
+	if !req.TicketID.Valid {
+		problems = append(problems, "ticket_id is required")
+	}
+	if !isAllowedActor(req.ActorType) {
+		problems = append(problems, "actor_type must be human, agent, or system")
+	}
+	if req.Title == nil &&
+		req.Description == nil &&
+		req.Tags == nil &&
+		req.AcceptanceCriteria == nil &&
+		req.VerificationCommands == nil &&
+		req.RelevantPaths == nil {
+		problems = append(problems, "patch must include at least one supported field")
+	}
+	if req.Title != nil && *req.Title == "" {
+		problems = append(problems, "title cannot be empty")
+	}
+	if req.AcceptanceCriteria != nil && len(*req.AcceptanceCriteria) == 0 {
+		problems = append(problems, "acceptance_criteria cannot be empty")
+	}
+	return problems
+}
+
 func defaultCreateStatus(req CreateTicketRequest) string {
 	if req.CreatedBy == ActorAgent && !req.Enqueue {
 		return TicketStatusBacklog
@@ -388,6 +500,36 @@ func trimCreateTicketRequest(req CreateTicketRequest) CreateTicketRequest {
 	return req
 }
 
+func trimUpdateTicketRequest(req UpdateTicketRequest) UpdateTicketRequest {
+	if req.Title != nil {
+		value := strings.TrimSpace(*req.Title)
+		req.Title = &value
+	}
+	if req.Description != nil {
+		value := strings.TrimSpace(*req.Description)
+		req.Description = &value
+	}
+	req.ActorType = strings.TrimSpace(req.ActorType)
+	req.ActorID = strings.TrimSpace(req.ActorID)
+	if req.Tags != nil {
+		values := compactStringsPreserveEmpty(*req.Tags)
+		req.Tags = &values
+	}
+	if req.AcceptanceCriteria != nil {
+		values := compactStringsPreserveEmpty(*req.AcceptanceCriteria)
+		req.AcceptanceCriteria = &values
+	}
+	if req.VerificationCommands != nil {
+		values := compactStringsPreserveEmpty(*req.VerificationCommands)
+		req.VerificationCommands = &values
+	}
+	if req.RelevantPaths != nil {
+		values := compactStringsPreserveEmpty(*req.RelevantPaths)
+		req.RelevantPaths = &values
+	}
+	return req
+}
+
 func compactStrings(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -402,10 +544,22 @@ func compactStrings(values []string) []string {
 	return out
 }
 
+func compactStringsPreserveEmpty(values []string) []string {
+	out := compactStrings(values)
+	if out == nil {
+		return []string{}
+	}
+	return out
+}
+
 func optionalText(value string) pgtype.Text {
 	if value == "" {
 		return pgtype.Text{}
 	}
+	return pgtype.Text{String: value, Valid: true}
+}
+
+func requiredText(value string) pgtype.Text {
 	return pgtype.Text{String: value, Valid: true}
 }
 

@@ -48,6 +48,7 @@ type RuntimeHandle interface {
 	CreateTicket(context.Context, services.CreateTicketRequest) (db.Ticket, error)
 	ProposeTicket(context.Context, services.CreateTicketRequest) (db.Ticket, error)
 	CreateTicketFromAttempt(context.Context, services.CreateTicketFromAttemptRequest) (db.Ticket, error)
+	UpdateTicket(context.Context, services.UpdateTicketRequest) (db.Ticket, error)
 	ClaimNext(context.Context, services.ClaimNextRequest) (services.ClaimNextResult, error)
 	Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error)
 	Checkpoint(context.Context, services.CheckpointRequest) (services.CheckpointResult, error)
@@ -59,6 +60,8 @@ type RuntimeHandle interface {
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
+	DecomposeTicket(context.Context, services.DecomposeTicketRequest) (services.DecomposeTicketResult, error)
+	RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error)
 }
 
 type Dependencies struct {
