@@ -104,7 +104,7 @@ func TestImplementedOperationsExposeSharedSurfaceBindings(t *testing.T) {
 }
 
 func TestAgentCreationSchemasEncourageUsefulContext(t *testing.T) {
-	for _, name := range []string{OperationProposeTicket, OperationCreateTicketFromAttempt} {
+	for _, name := range []string{OperationCreateTicket, OperationProposeTicket, OperationCreateTicketFromAttempt} {
 		operation := MustOperation(name)
 		props := operation.InputSchema["properties"].(map[string]any)
 		for _, field := range []string{"acceptance_criteria", "verification_commands", "relevant_paths", "creation_reason"} {
@@ -112,6 +112,17 @@ func TestAgentCreationSchemasEncourageUsefulContext(t *testing.T) {
 				t.Fatalf("%s input schema should include %q", name, field)
 			}
 		}
+	}
+}
+
+func TestCreateTicketSchemaRequiresAgentCreationReason(t *testing.T) {
+	operation := MustOperation(OperationCreateTicket)
+	required := map[string]bool{}
+	for _, field := range operation.InputSchema["required"].([]string) {
+		required[field] = true
+	}
+	if !required["creation_reason"] {
+		t.Fatalf("create_ticket schema should require creation_reason because MCP creates as agent")
 	}
 }
 
@@ -140,6 +151,32 @@ func TestCreateFromAttemptSchemaTypeEnumMatchesSupportedTemplates(t *testing.T) 
 	}
 }
 
+func TestCreateFromAttemptSchemaExposesForwardedFields(t *testing.T) {
+	operation := MustOperation(OperationCreateTicketFromAttempt)
+	props := operation.InputSchema["properties"].(map[string]any)
+	for _, field := range []string{
+		"priority",
+		"tags",
+		"expected_artifacts",
+		"required_tools",
+		"required_permissions",
+		"required_capabilities",
+		"allowed_harnesses",
+		"environment",
+		"input",
+	} {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("create_ticket_from_attempt schema should expose forwarded field %q", field)
+		}
+	}
+	for _, field := range []string{"environment", "input"} {
+		schema := props[field].(Schema)
+		if schema["additionalProperties"] != true {
+			t.Fatalf("create_ticket_from_attempt %s schema should permit structured context, got %#v", field, schema)
+		}
+	}
+}
+
 func TestDecomposeSchemaExposesRuntimeRequiredFields(t *testing.T) {
 	operation := MustOperation(OperationDecomposeTicket)
 	required := map[string]bool{}
@@ -151,10 +188,13 @@ func TestDecomposeSchemaExposesRuntimeRequiredFields(t *testing.T) {
 	}
 
 	props := operation.InputSchema["properties"].(map[string]any)
-	for _, field := range []string{"can_enqueue", "created_by", "created_by_id", "creation_reason"} {
+	for _, field := range []string{"can_enqueue", "created_by_id", "creation_reason"} {
 		if _, ok := props[field]; !ok {
 			t.Fatalf("decompose schema should expose %q", field)
 		}
+	}
+	if _, ok := props["created_by"]; ok {
+		t.Fatalf("decompose schema should not expose created_by because MCP always records agent")
 	}
 
 	children := props["children"].(Schema)
@@ -202,10 +242,30 @@ func TestRegisterCapabilitiesSchemaExposesToolNames(t *testing.T) {
 	}
 }
 
+func TestRegisterCapabilitiesSchemaAllowsStructuredMetadata(t *testing.T) {
+	operation := MustOperation(OperationRegisterAgentCapabilities)
+	props := operation.InputSchema["properties"].(map[string]any)
+	for _, field := range []string{"preferred_claim", "metadata"} {
+		schema := props[field].(Schema)
+		if schema["additionalProperties"] != true {
+			t.Fatalf("register capabilities %s schema should permit structured metadata, got %#v", field, schema)
+		}
+	}
+}
+
 func TestUpdateTicketSchemaExposesActorID(t *testing.T) {
 	operation := MustOperation(OperationUpdateTicket)
 	props := operation.InputSchema["properties"].(map[string]any)
 	if _, ok := props["actor_id"]; !ok {
 		t.Fatalf("update ticket schema should expose actor_id for event attribution")
+	}
+}
+
+func TestUpdateTicketSchemaRejectsEmptyPatch(t *testing.T) {
+	operation := MustOperation(OperationUpdateTicket)
+	props := operation.InputSchema["properties"].(map[string]any)
+	patch := props["patch"].(Schema)
+	if patch["minProperties"] != 1 {
+		t.Fatalf("update_ticket patch schema should reject empty patches, got %#v", patch)
 	}
 }

@@ -356,7 +356,6 @@ type decomposeInput struct {
 	RootID         string                `json:"root_id"`
 	Mode           string                `json:"mode"`
 	CanEnqueue     bool                  `json:"can_enqueue"`
-	CreatedBy      string                `json:"created_by"`
 	CreatedByID    string                `json:"created_by_id"`
 	CreationReason string                `json:"creation_reason"`
 	Children       []decomposeChildInput `json:"children"`
