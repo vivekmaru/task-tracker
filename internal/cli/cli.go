@@ -680,6 +680,7 @@ func runCodexClaimCommand(ctx context.Context, args []string, stdout, stderr io.
 }
 
 func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
 	flags := newFlagSet("codex checkpoint", stderr)
 	var opts commandOptions
 	opts.bind(flags)
@@ -693,11 +694,15 @@ func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stder
 	flags.Var(&commands, "command", "command run")
 	flags.StringVar(&nextStep, "next", "", "next step")
 	flags.StringVar(&risk, "risk", "", "risk")
-	if !parseFlags(flags, args) {
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
@@ -721,6 +726,7 @@ func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stder
 }
 
 func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
 	flags := newFlagSet("codex complete", stderr)
 	var opts commandOptions
 	opts.bind(flags)
@@ -729,11 +735,15 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 	var attemptID, summary string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&summary, "summary", "", "output summary")
-	if !parseFlags(flags, args) {
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	if !proof.validate("codex complete", stderr) {
 		return 2
@@ -787,6 +797,7 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 	if !parseFlags(flags, args) {
 		return 2
 	}
+	sourceAttemptID := mustUUID(attemptID)
 	sourceArtifactID, err := optionalUUID(artifactID)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex follow-up argument error: --artifact-id must be a UUID: %v\n", err)
@@ -797,10 +808,19 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 		return 1
 	}
 	defer rt.Close()
+	sourceAttempt, err := rt.GetAttempt(ctx, sourceAttemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up source attempt error: %v\n", err)
+		return 1
+	}
+	if err := validateOptionalScopeFlags(workspaceID, projectID, sourceAttempt.WorkspaceID, sourceAttempt.ProjectID); err != nil {
+		fmt.Fprintf(stderr, "codex follow-up argument error: %v\n", err)
+		return 2
+	}
 	ticket, err := rt.CreateTicketFromAttempt(ctx, services.CreateTicketFromAttemptRequest{
-		WorkspaceID:          mustUUID(workspaceID),
-		ProjectID:            mustUUID(projectID),
-		SourceAttemptID:      mustUUID(attemptID),
+		WorkspaceID:          sourceAttempt.WorkspaceID,
+		ProjectID:            sourceAttempt.ProjectID,
+		SourceAttemptID:      sourceAttempt.ID,
 		SourceArtifactID:     sourceArtifactID,
 		TemplateKind:         kind,
 		Title:                title,
@@ -820,6 +840,7 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 }
 
 func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
 	flags := newFlagSet("codex block", stderr)
 	var opts commandOptions
 	opts.bind(flags)
@@ -829,11 +850,15 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "blocker reason")
 	flags.StringVar(&category, "category", "", "failure category")
-	if !parseFlags(flags, args) {
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	if !proof.validate("codex block", stderr) {
 		return 2
@@ -896,6 +921,13 @@ func (f codexProofFlags) validate(commandName string, stderr io.Writer) bool {
 	return true
 }
 
+func splitLeadingAttemptID(args []string) (string, []string) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", args
+	}
+	return args[0], args[1:]
+}
+
 func codexProofArtifactRequests(flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) []services.RegisterArtifactRequest {
 	requests := make([]services.RegisterArtifactRequest, 0, len(flags.Proofs))
 	for _, proof := range flags.Proofs {
@@ -924,7 +956,28 @@ func codexProofArtifactRequestsForAttempt(ctx context.Context, rt RuntimeHandle,
 	if err != nil {
 		return nil, err
 	}
+	if err := validateOptionalScopeFlags(flags.WorkspaceID, flags.ProjectID, attempt.WorkspaceID, attempt.ProjectID); err != nil {
+		return nil, err
+	}
 	return codexProofArtifactRequests(flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID), nil
+}
+
+func validateOptionalScopeFlags(workspaceID, projectID string, expectedWorkspaceID, expectedProjectID pgtype.UUID) error {
+	parsedWorkspaceID, err := optionalUUID(workspaceID)
+	if err != nil {
+		return fmt.Errorf("--workspace-id must be a UUID: %w", err)
+	}
+	parsedProjectID, err := optionalUUID(projectID)
+	if err != nil {
+		return fmt.Errorf("--project-id must be a UUID: %w", err)
+	}
+	if parsedWorkspaceID.Valid && parsedWorkspaceID != expectedWorkspaceID {
+		return fmt.Errorf("--workspace-id does not match source attempt")
+	}
+	if parsedProjectID.Valid && parsedProjectID != expectedProjectID {
+		return fmt.Errorf("--project-id does not match source attempt")
+	}
+	return nil
 }
 
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
