@@ -337,24 +337,94 @@ func (q *Queries) ListTickets(ctx context.Context, arg ListTicketsParams) ([]Tic
 	return items, nil
 }
 
-const setTicketStatus = `-- name: SetTicketStatus :one
-UPDATE tickets
-SET status = $1::text,
-    updated_at = now()
-WHERE id = $2::uuid
-  AND status = ANY($3::text[])
-RETURNING id, workspace_id, project_id, parent_id, root_id, source_attempt_id, source_artifact_id, title, description, type, status, priority, tags, acceptance_criteria, verification_commands, expected_artifacts, relevant_paths, required_tools, required_permissions, environment, input, input_schema, required_capabilities, allowed_harnesses, retry_policy, created_by, created_by_id, creation_reason, created_at, updated_at
+const transitionTicket = `-- name: TransitionTicket :one
+WITH updated_ticket AS (
+    UPDATE tickets
+    SET status = $1::text,
+        updated_at = now()
+    WHERE id = $2::uuid
+      AND status = ANY($3::text[])
+    RETURNING id, workspace_id, project_id, parent_id, root_id, source_attempt_id, source_artifact_id, title, description, type, status, priority, tags, acceptance_criteria, verification_commands, expected_artifacts, relevant_paths, required_tools, required_permissions, environment, input, input_schema, required_capabilities, allowed_harnesses, retry_policy, created_by, created_by_id, creation_reason, created_at, updated_at
+),
+transition_event AS (
+    INSERT INTO ticket_events (
+        workspace_id,
+        project_id,
+        ticket_id,
+        type,
+        actor_type,
+        actor_id,
+        data
+    )
+    SELECT
+        workspace_id,
+        project_id,
+        id,
+        $4::text,
+        $5::text,
+        $6::text,
+        $7::jsonb
+    FROM updated_ticket
+    RETURNING id
+)
+SELECT id, workspace_id, project_id, parent_id, root_id, source_attempt_id, source_artifact_id, title, description, type, status, priority, tags, acceptance_criteria, verification_commands, expected_artifacts, relevant_paths, required_tools, required_permissions, environment, input, input_schema, required_capabilities, allowed_harnesses, retry_policy, created_by, created_by_id, creation_reason, created_at, updated_at
+FROM updated_ticket
 `
 
-type SetTicketStatusParams struct {
+type TransitionTicketParams struct {
 	Status          string      `db:"status" json:"status"`
 	ID              pgtype.UUID `db:"id" json:"id"`
 	AllowedStatuses []string    `db:"allowed_statuses" json:"allowed_statuses"`
+	Type            string      `db:"type" json:"type"`
+	ActorType       string      `db:"actor_type" json:"actor_type"`
+	ActorID         pgtype.Text `db:"actor_id" json:"actor_id"`
+	Data            []byte      `db:"data" json:"data"`
 }
 
-func (q *Queries) SetTicketStatus(ctx context.Context, arg SetTicketStatusParams) (Ticket, error) {
-	row := q.db.QueryRow(ctx, setTicketStatus, arg.Status, arg.ID, arg.AllowedStatuses)
-	var i Ticket
+type TransitionTicketRow struct {
+	ID                   pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID          pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID            pgtype.UUID        `db:"project_id" json:"project_id"`
+	ParentID             pgtype.UUID        `db:"parent_id" json:"parent_id"`
+	RootID               pgtype.UUID        `db:"root_id" json:"root_id"`
+	SourceAttemptID      pgtype.UUID        `db:"source_attempt_id" json:"source_attempt_id"`
+	SourceArtifactID     pgtype.UUID        `db:"source_artifact_id" json:"source_artifact_id"`
+	Title                string             `db:"title" json:"title"`
+	Description          string             `db:"description" json:"description"`
+	Type                 string             `db:"type" json:"type"`
+	Status               string             `db:"status" json:"status"`
+	Priority             int32              `db:"priority" json:"priority"`
+	Tags                 []string           `db:"tags" json:"tags"`
+	AcceptanceCriteria   []string           `db:"acceptance_criteria" json:"acceptance_criteria"`
+	VerificationCommands []byte             `db:"verification_commands" json:"verification_commands"`
+	ExpectedArtifacts    []string           `db:"expected_artifacts" json:"expected_artifacts"`
+	RelevantPaths        []string           `db:"relevant_paths" json:"relevant_paths"`
+	RequiredTools        []string           `db:"required_tools" json:"required_tools"`
+	RequiredPermissions  []string           `db:"required_permissions" json:"required_permissions"`
+	Environment          []byte             `db:"environment" json:"environment"`
+	Input                []byte             `db:"input" json:"input"`
+	InputSchema          pgtype.Text        `db:"input_schema" json:"input_schema"`
+	RequiredCapabilities []string           `db:"required_capabilities" json:"required_capabilities"`
+	AllowedHarnesses     []string           `db:"allowed_harnesses" json:"allowed_harnesses"`
+	RetryPolicy          []byte             `db:"retry_policy" json:"retry_policy"`
+	CreatedBy            string             `db:"created_by" json:"created_by"`
+	CreatedByID          pgtype.Text        `db:"created_by_id" json:"created_by_id"`
+	CreationReason       pgtype.Text        `db:"creation_reason" json:"creation_reason"`
+	CreatedAt            pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+func (q *Queries) TransitionTicket(ctx context.Context, arg TransitionTicketParams) (TransitionTicketRow, error) {
+	row := q.db.QueryRow(ctx, transitionTicket,
+		arg.Status,
+		arg.ID,
+		arg.AllowedStatuses,
+		arg.Type,
+		arg.ActorType,
+		arg.ActorID,
+		arg.Data,
+	)
+	var i TransitionTicketRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,

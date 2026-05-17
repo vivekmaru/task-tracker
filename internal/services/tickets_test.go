@@ -657,7 +657,7 @@ func TestHumanTicketTransitionsUpdateStatusAndWriteEvents(t *testing.T) {
 				})
 			},
 			wantStatus:    TicketStatusArchived,
-			wantAllowed:   []string{TicketStatusBacklog, TicketStatusTodo, TicketStatusInProgress, TicketStatusBlocked, TicketStatusNeedsReview, TicketStatusDone, TicketStatusFailed},
+			wantAllowed:   []string{TicketStatusBacklog, TicketStatusTodo, TicketStatusBlocked, TicketStatusNeedsReview, TicketStatusDone, TicketStatusFailed},
 			wantEventType: EventTicketArchived,
 			wantDataFields: map[string]any{
 				"operation": "archive",
@@ -679,14 +679,14 @@ func TestHumanTicketTransitionsUpdateStatusAndWriteEvents(t *testing.T) {
 			if ticket.Status != tt.wantStatus {
 				t.Fatalf("expected ticket status %q, got %q", tt.wantStatus, ticket.Status)
 			}
-			if len(store.statusUpdates) != 1 {
-				t.Fatalf("expected one status update, got %d", len(store.statusUpdates))
+			if len(store.transitions) != 1 {
+				t.Fatalf("expected one ticket transition, got %d", len(store.transitions))
 			}
-			statusUpdate := store.statusUpdates[0]
-			if statusUpdate.ID != ticketID || statusUpdate.Status != tt.wantStatus {
-				t.Fatalf("unexpected status update: %#v", statusUpdate)
+			transition := store.transitions[0]
+			if transition.ID != ticketID || transition.Status != tt.wantStatus {
+				t.Fatalf("unexpected ticket transition: %#v", transition)
 			}
-			assertStringSlicesEqual(t, statusUpdate.AllowedStatuses, tt.wantAllowed)
+			assertStringSlicesEqual(t, transition.AllowedStatuses, tt.wantAllowed)
 
 			if len(store.createdEvents) != 1 {
 				t.Fatalf("expected one transition event, got %d", len(store.createdEvents))
@@ -730,10 +730,10 @@ func TestReviewTicketApprovesOrRejectsNeedsReviewWork(t *testing.T) {
 			if ticket.Status != tt.wantStatus {
 				t.Fatalf("expected ticket status %q, got %q", tt.wantStatus, ticket.Status)
 			}
-			if len(store.statusUpdates) != 1 {
-				t.Fatalf("expected one status update, got %d", len(store.statusUpdates))
+			if len(store.transitions) != 1 {
+				t.Fatalf("expected one ticket transition, got %d", len(store.transitions))
 			}
-			assertStringSlicesEqual(t, store.statusUpdates[0].AllowedStatuses, []string{TicketStatusNeedsReview})
+			assertStringSlicesEqual(t, store.transitions[0].AllowedStatuses, []string{TicketStatusNeedsReview})
 			if len(store.createdEvents) != 1 {
 				t.Fatalf("expected one reviewed event, got %d", len(store.createdEvents))
 			}
@@ -748,7 +748,7 @@ func TestReviewTicketApprovesOrRejectsNeedsReviewWork(t *testing.T) {
 }
 
 func TestHumanTicketTransitionsRejectInvalidTransitions(t *testing.T) {
-	store := &fakeTicketStore{setStatusErr: pgx.ErrNoRows}
+	store := &fakeTicketStore{transitionErr: pgx.ErrNoRows}
 	service := NewTicketService(store)
 
 	_, err := service.MarkReady(context.Background(), TicketTransitionRequest{
@@ -761,6 +761,25 @@ func TestHumanTicketTransitionsRejectInvalidTransitions(t *testing.T) {
 	}
 	if len(store.createdEvents) != 0 {
 		t.Fatalf("expected no event for rejected transition, got %d", len(store.createdEvents))
+	}
+}
+
+func TestArchiveDoesNotAllowInProgressTickets(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+
+	_, err := service.Archive(context.Background(), TicketTransitionRequest{
+		TicketID:  testUUID(55),
+		ActorType: ActorHuman,
+	})
+	if err != nil {
+		t.Fatalf("archive ticket: %v", err)
+	}
+
+	for _, allowed := range store.transitions[0].AllowedStatuses {
+		if allowed == TicketStatusInProgress {
+			t.Fatalf("archive should not allow %q tickets while attempts can still complete: %#v", TicketStatusInProgress, store.transitions[0].AllowedStatuses)
+		}
 	}
 }
 
@@ -785,11 +804,11 @@ func TestReviewTicketRejectsUnknownDecision(t *testing.T) {
 type fakeTicketStore struct {
 	createdTickets      []db.CreateTicketParams
 	updatedTickets      []db.UpdateTicketParams
-	statusUpdates       []db.SetTicketStatusParams
+	transitions         []db.TransitionTicketParams
 	createdDependencies []db.CreateTicketDependencyParams
 	createdEvents       []db.CreateTicketEventParams
 	listParams          []db.ListTicketsParams
-	setStatusErr        error
+	transitionErr       error
 }
 
 func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicketParams) (db.Ticket, error) {
@@ -843,12 +862,21 @@ func (s *fakeTicketStore) UpdateTicket(_ context.Context, params db.UpdateTicket
 	}, nil
 }
 
-func (s *fakeTicketStore) SetTicketStatus(_ context.Context, params db.SetTicketStatusParams) (db.Ticket, error) {
-	if s.setStatusErr != nil {
-		return db.Ticket{}, s.setStatusErr
+func (s *fakeTicketStore) TransitionTicket(_ context.Context, params db.TransitionTicketParams) (db.TransitionTicketRow, error) {
+	if s.transitionErr != nil {
+		return db.TransitionTicketRow{}, s.transitionErr
 	}
-	s.statusUpdates = append(s.statusUpdates, params)
-	return db.Ticket{
+	s.transitions = append(s.transitions, params)
+	s.createdEvents = append(s.createdEvents, db.CreateTicketEventParams{
+		WorkspaceID: testUUID(1),
+		ProjectID:   testUUID(2),
+		TicketID:    params.ID,
+		Type:        params.Type,
+		ActorType:   params.ActorType,
+		ActorID:     params.ActorID,
+		Data:        params.Data,
+	})
+	return db.TransitionTicketRow{
 		ID:          params.ID,
 		WorkspaceID: testUUID(1),
 		ProjectID:   testUUID(2),

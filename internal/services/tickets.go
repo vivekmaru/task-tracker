@@ -65,7 +65,7 @@ var (
 type TicketStore interface {
 	CreateTicket(context.Context, db.CreateTicketParams) (db.Ticket, error)
 	UpdateTicket(context.Context, db.UpdateTicketParams) (db.Ticket, error)
-	SetTicketStatus(context.Context, db.SetTicketStatusParams) (db.Ticket, error)
+	TransitionTicket(context.Context, db.TransitionTicketParams) (db.TransitionTicketRow, error)
 	CreateTicketDependency(context.Context, db.CreateTicketDependencyParams) (db.TicketDependency, error)
 	CreateTicketEvent(context.Context, db.CreateTicketEventParams) (db.TicketEvent, error)
 	ListTickets(context.Context, db.ListTicketsParams) ([]db.Ticket, error)
@@ -313,7 +313,6 @@ func (s *TicketService) Archive(ctx context.Context, req TicketTransitionRequest
 		allowedStatuses: []string{
 			TicketStatusBacklog,
 			TicketStatusTodo,
-			TicketStatusInProgress,
 			TicketStatusBlocked,
 			TicketStatusNeedsReview,
 			TicketStatusDone,
@@ -390,43 +389,70 @@ func (s *TicketService) transitionTicket(ctx context.Context, req TicketTransiti
 }
 
 func (s *TicketService) setTicketStatus(ctx context.Context, req setTicketStatusRequest) (db.Ticket, error) {
-	ticket, err := s.store.SetTicketStatus(ctx, db.SetTicketStatusParams{
-		ID:              req.ticketID,
-		Status:          req.status,
-		AllowedStatuses: req.allowedStatuses,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return db.Ticket{}, ErrTicketTransitionNotAllowed
-		}
-		return db.Ticket{}, fmt.Errorf("set ticket status: %w", err)
-	}
-
 	eventData := make(map[string]any, len(req.data)+1)
 	for key, value := range req.data {
 		if value != "" {
 			eventData[key] = value
 		}
 	}
-	eventData["status"] = ticket.Status
+	eventData["status"] = req.status
 	raw, err := json.Marshal(eventData)
 	if err != nil {
 		return db.Ticket{}, fmt.Errorf("marshal ticket event data: %w", err)
 	}
-	_, err = s.store.CreateTicketEvent(ctx, db.CreateTicketEventParams{
-		WorkspaceID: ticket.WorkspaceID,
-		ProjectID:   ticket.ProjectID,
-		TicketID:    ticket.ID,
-		Type:        req.eventType,
-		ActorType:   req.actorType,
-		ActorID:     optionalText(req.actorID),
-		Data:        raw,
+
+	row, err := s.store.TransitionTicket(ctx, db.TransitionTicketParams{
+		ID:              req.ticketID,
+		Status:          req.status,
+		AllowedStatuses: req.allowedStatuses,
+		Type:            req.eventType,
+		ActorType:       req.actorType,
+		ActorID:         optionalText(req.actorID),
+		Data:            raw,
 	})
 	if err != nil {
-		return db.Ticket{}, fmt.Errorf("create ticket event: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Ticket{}, ErrTicketTransitionNotAllowed
+		}
+		return db.Ticket{}, fmt.Errorf("transition ticket: %w", err)
 	}
 
-	return ticket, nil
+	return ticketFromTransitionRow(row), nil
+}
+
+func ticketFromTransitionRow(row db.TransitionTicketRow) db.Ticket {
+	return db.Ticket{
+		ID:                   row.ID,
+		WorkspaceID:          row.WorkspaceID,
+		ProjectID:            row.ProjectID,
+		ParentID:             row.ParentID,
+		RootID:               row.RootID,
+		SourceAttemptID:      row.SourceAttemptID,
+		SourceArtifactID:     row.SourceArtifactID,
+		Title:                row.Title,
+		Description:          row.Description,
+		Type:                 row.Type,
+		Status:               row.Status,
+		Priority:             row.Priority,
+		Tags:                 row.Tags,
+		AcceptanceCriteria:   row.AcceptanceCriteria,
+		VerificationCommands: row.VerificationCommands,
+		ExpectedArtifacts:    row.ExpectedArtifacts,
+		RelevantPaths:        row.RelevantPaths,
+		RequiredTools:        row.RequiredTools,
+		RequiredPermissions:  row.RequiredPermissions,
+		Environment:          row.Environment,
+		Input:                row.Input,
+		InputSchema:          row.InputSchema,
+		RequiredCapabilities: row.RequiredCapabilities,
+		AllowedHarnesses:     row.AllowedHarnesses,
+		RetryPolicy:          row.RetryPolicy,
+		CreatedBy:            row.CreatedBy,
+		CreatedByID:          row.CreatedByID,
+		CreationReason:       row.CreationReason,
+		CreatedAt:            row.CreatedAt,
+		UpdatedAt:            row.UpdatedAt,
+	}
 }
 
 func (s *TicketService) createTicket(ctx context.Context, req CreateTicketRequest, eventType string) (db.Ticket, error) {

@@ -64,13 +64,38 @@ SET title = COALESCE(sqlc.narg('title')::text, title),
 WHERE id = sqlc.arg('id')
 RETURNING *;
 
--- name: SetTicketStatus :one
-UPDATE tickets
-SET status = sqlc.arg('status')::text,
-    updated_at = now()
-WHERE id = sqlc.arg('id')::uuid
-  AND status = ANY(sqlc.arg('allowed_statuses')::text[])
-RETURNING *;
+-- name: TransitionTicket :one
+WITH updated_ticket AS (
+    UPDATE tickets
+    SET status = sqlc.arg('status')::text,
+        updated_at = now()
+    WHERE id = sqlc.arg('id')::uuid
+      AND status = ANY(sqlc.arg('allowed_statuses')::text[])
+    RETURNING *
+),
+transition_event AS (
+    INSERT INTO ticket_events (
+        workspace_id,
+        project_id,
+        ticket_id,
+        type,
+        actor_type,
+        actor_id,
+        data
+    )
+    SELECT
+        workspace_id,
+        project_id,
+        id,
+        sqlc.arg('type')::text,
+        sqlc.arg('actor_type')::text,
+        sqlc.narg('actor_id')::text,
+        sqlc.arg('data')::jsonb
+    FROM updated_ticket
+    RETURNING id
+)
+SELECT *
+FROM updated_ticket;
 
 -- name: ListTickets :many
 SELECT *

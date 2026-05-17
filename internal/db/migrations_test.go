@@ -2,6 +2,7 @@ package db
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,28 @@ func TestInitialMigrationDefinesClaimAndDependencyIndexes(t *testing.T) {
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("expected migration to contain %q", want)
+		}
+	}
+}
+
+func TestForwardMigrationAddsHumanTransitionEventTypes(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0002_ticket_transition_event_types.sql"))
+	if err != nil {
+		t.Fatalf("read event-type migration: %v", err)
+	}
+	sql := strings.ToLower(string(data))
+
+	for _, want := range []string{
+		"drop constraint if exists ticket_events_type_check",
+		"ready",
+		"reopened",
+		"unblocked",
+		"review_requested",
+		"reviewed",
+		"archived",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected event-type migration to contain %q", want)
 		}
 	}
 }
