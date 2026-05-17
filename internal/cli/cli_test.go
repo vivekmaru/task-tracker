@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
 )
 
 func TestRunPrintsTopLevelHelp(t *testing.T) {
@@ -215,6 +217,141 @@ func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunTUILoadsRuntimeAndDelegatesQueueOptions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{}
+	var gotOptions forgetui.Options
+	var gotRuntime RuntimeHandle
+
+	code := RunWithDependencies([]string{
+		"tui",
+		"--config", path,
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--status", services.TicketStatusTodo,
+		"--type", services.TicketTypeBug,
+		"--limit", "25",
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: fakeRuntimeOpener(fake),
+		RunTUI: func(_ context.Context, _ io.Writer, rt RuntimeHandle, opts forgetui.Options) error {
+			gotRuntime = rt
+			gotOptions = opts
+			return nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if gotRuntime != fake {
+		t.Fatalf("expected TUI runner to receive opened runtime")
+	}
+	if gotOptions.WorkspaceID != testUUID(2) || gotOptions.ProjectID != testUUID(3) {
+		t.Fatalf("unexpected TUI scope: %#v", gotOptions)
+	}
+	if gotOptions.Status != services.TicketStatusTodo || gotOptions.Type != services.TicketTypeBug || gotOptions.Limit != 25 {
+		t.Fatalf("unexpected TUI filters: %#v", gotOptions)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunTUIRejectsInvalidUUIDFilters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	opened := false
+
+	code := RunWithDependencies([]string{
+		"tui",
+		"--config", path,
+		"--workspace-id", "not-a-uuid",
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			opened = true
+			return &fakeRuntime{}, nil
+		},
+	})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if opened {
+		t.Fatal("runtime should not open when TUI UUID filters are invalid")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "tui argument error: --workspace-id must be a UUID") {
+		t.Fatalf("expected UUID argument error, got %q", stderr.String())
+	}
+}
+
+func TestRunTUIRejectsLimitAboveInt32Range(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	opened := false
+
+	code := RunWithDependencies([]string{
+		"tui",
+		"--limit", "3000000000",
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			opened = true
+			return &fakeRuntime{}, nil
+		},
+	})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if opened {
+		t.Fatal("runtime should not open when TUI limit is out of range")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--limit must be less than or equal to 2147483647") {
+		t.Fatalf("expected limit range error, got %q", stderr.String())
+	}
+}
+
+func TestRunWorkerRejectsTUIOnlyFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	opened := false
+
+	code := RunWithDependencies([]string{
+		"worker",
+		"--status", services.TicketStatusTodo,
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			opened = true
+			return &fakeRuntime{}, nil
+		},
+	})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if opened {
+		t.Fatal("runtime should not open for unknown process flags")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown flag \"--status\"") {
+		t.Fatalf("expected unknown flag error, got %q", stderr.String())
 	}
 }
 

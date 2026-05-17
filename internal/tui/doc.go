@@ -1,2 +1,2 @@
-// Package tui will contain the Forge terminal UI.
+// Package tui contains the Forge terminal UI.
 package tui

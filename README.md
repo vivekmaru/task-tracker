@@ -102,6 +102,7 @@ The process commands currently validate config and open the shared runtime:
 ```bash
 forge server --config forge.json
 forge worker --config forge.json
+forge tui --config forge.json --workspace-id "$WORKSPACE_ID" --project-id "$PROJECT_ID"
 ```
 
 The JSON-first execution commands call the same runtime services:
