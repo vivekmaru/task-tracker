@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 )
@@ -72,5 +73,65 @@ func TestNewRouterWithRuntimeKeepsOpenAPIRoutes(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected openapi status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOpenAPIUsesContractOperationIDsForRESTBoundOperations(t *testing.T) {
+	router := NewRouter()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected openapi status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var spec struct {
+		Paths map[string]map[string]struct {
+			OperationID string `json:"operationId"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("decode openapi: %v", err)
+	}
+
+	routes := map[string]struct {
+		method string
+		path   string
+	}{
+		contracts.OperationCreateTicket:     {"post", "/tickets"},
+		contracts.OperationProposeTicket:    {"post", "/tickets/propose"},
+		contracts.OperationClaimNextTicket:  {"post", "/tickets/claim-next"},
+		contracts.OperationHeartbeatAttempt: {"post", "/attempts/{id}/heartbeat"},
+		contracts.OperationCheckpointAttempt: {
+			method: "post",
+			path:   "/attempts/{id}/checkpoint",
+		},
+		contracts.OperationUpdateTicket:    {"patch", "/tickets/{id}"},
+		contracts.OperationCompleteAttempt: {"post", "/attempts/{id}/complete"},
+		contracts.OperationFailAttempt:     {"post", "/attempts/{id}/fail"},
+		contracts.OperationBlockAttempt:    {"post", "/attempts/{id}/block"},
+		contracts.OperationListTickets:     {"get", "/tickets"},
+		contracts.OperationGetTicket:       {"get", "/tickets/{id}"},
+		contracts.OperationAttachArtifact:  {"post", "/artifacts"},
+		contracts.OperationDecomposeTicket: {"post", "/tickets/{id}/decompose"},
+	}
+
+	for operationName, route := range routes {
+		operation := contracts.MustOperation(operationName)
+		if operation.Bindings.RESTOperationID == "" {
+			t.Fatalf("%s should declare the REST binding exposed by %s %s", operationName, route.method, route.path)
+		}
+		methods, ok := spec.Paths[route.path]
+		if !ok {
+			t.Fatalf("expected OpenAPI path %s for %s", route.path, operationName)
+		}
+		operationSpec, ok := methods[route.method]
+		if !ok {
+			t.Fatalf("expected OpenAPI operation %s %s for %s", route.method, route.path, operationName)
+		}
+		if operationSpec.OperationID != operation.Bindings.RESTOperationID {
+			t.Fatalf("%s OpenAPI operationId = %q, want contract binding %q", operationName, operationSpec.OperationID, operation.Bindings.RESTOperationID)
+		}
 	}
 }

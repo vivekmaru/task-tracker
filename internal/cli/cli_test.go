@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/config"
+	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
 )
@@ -91,6 +92,21 @@ func TestRunAdvertisesPhaseOneCommandSkeletons(t *testing.T) {
 	} {
 		if !strings.Contains(out, command) {
 			t.Fatalf("expected command %q in help output:\n%s", command, out)
+		}
+	}
+}
+
+func TestContractCLIBindingsAreRunnableRuntimeCommands(t *testing.T) {
+	for _, operation := range contracts.AllOperations() {
+		command := operation.Bindings.CLICommand
+		if command == "" {
+			continue
+		}
+		if !isKnownCommand(command) {
+			t.Fatalf("%s declares unknown CLI command %q", operation.Name, command)
+		}
+		if !isRuntimeCommand(command) {
+			t.Fatalf("%s CLI command %q should route through shared runtime commands", operation.Name, command)
 		}
 	}
 }

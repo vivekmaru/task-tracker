@@ -233,3 +233,5 @@ go test ./...
 ## Agent Harnesses
 
 See [Harness Integration Examples](docs/harness-integration.md) for copy-pasteable Codex, Claude Code, Gemini CLI, OpenCode, and custom-agent flows.
+
+See [Phase 2 Closeout](docs/phase-2-closeout.md) for the REST, CLI, and MCP parity matrix, closeout test commands, and current adapter boundaries.

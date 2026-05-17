@@ -27,6 +27,7 @@ const (
 	RESTClaimNextTicket = "claim-next-ticket"
 	RESTHeartbeat       = "heartbeat-attempt"
 	RESTCheckpoint      = "checkpoint-attempt"
+	RESTUpdateTicket    = "update-ticket"
 	RESTCompleteAttempt = "complete-attempt"
 	RESTFailAttempt     = "fail-attempt"
 	RESTBlockAttempt    = "block-attempt"
@@ -224,7 +225,8 @@ var operations = []Operation{
 		Summary:     "Update ticket",
 		Description: "Patch ticket metadata without changing attempt lifecycle state.",
 		Bindings: SurfaceBinding{
-			MCPTool: OperationUpdateTicket,
+			RESTOperationID: RESTUpdateTicket,
+			MCPTool:         OperationUpdateTicket,
 		},
 		InputSchema: objectSchema("Update ticket input", []string{"ticket_id", "patch"}, map[string]any{
 			"ticket_id": uuidSchema("Ticket ID"),
