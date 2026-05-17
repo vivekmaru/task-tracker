@@ -265,6 +265,68 @@ func TestRunTUILoadsRuntimeAndDelegatesQueueOptions(t *testing.T) {
 	}
 }
 
+func TestRunTUIRejectsInvalidUUIDFilters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	opened := false
+
+	code := RunWithDependencies([]string{
+		"tui",
+		"--config", path,
+		"--workspace-id", "not-a-uuid",
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			opened = true
+			return &fakeRuntime{}, nil
+		},
+	})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if opened {
+		t.Fatal("runtime should not open when TUI UUID filters are invalid")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "tui argument error: --workspace-id must be a UUID") {
+		t.Fatalf("expected UUID argument error, got %q", stderr.String())
+	}
+}
+
+func TestRunWorkerRejectsTUIOnlyFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	opened := false
+
+	code := RunWithDependencies([]string{
+		"worker",
+		"--status", services.TicketStatusTodo,
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			opened = true
+			return &fakeRuntime{}, nil
+		},
+	})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if opened {
+		t.Fatal("runtime should not open for unknown process flags")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown flag \"--status\"") {
+		t.Fatalf("expected unknown flag error, got %q", stderr.String())
+	}
+}
+
 func TestRunServerReportsRuntimeOpenError(t *testing.T) {
 	t.Setenv("FORGE_DATABASE_URL", "postgres://db")
 	var stdout, stderr bytes.Buffer

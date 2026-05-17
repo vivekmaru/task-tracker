@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -100,14 +101,32 @@ func TestLoadQueueUsesSharedTicketListRequest(t *testing.T) {
 	}
 }
 
+func TestRunRendersQueueErrorState(t *testing.T) {
+	var output bytes.Buffer
+
+	err := Run(context.Background(), &output, &fakeTicketLister{
+		err: errors.New("database unavailable"),
+	}, Options{})
+
+	if err == nil {
+		t.Fatal("expected load error")
+	}
+	for _, want := range []string{"Forge Queue", "Unable to load queue", "database unavailable"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("expected TUI output to contain %q, got:\n%s", want, output.String())
+		}
+	}
+}
+
 type fakeTicketLister struct {
 	req     services.ListTicketsRequest
 	tickets []db.Ticket
+	err     error
 }
 
 func (f *fakeTicketLister) ListTickets(_ context.Context, req services.ListTicketsRequest) ([]db.Ticket, error) {
 	f.req = req
-	return f.tickets, nil
+	return f.tickets, f.err
 }
 
 func testUUID(seed byte) pgtype.UUID {

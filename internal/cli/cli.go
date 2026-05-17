@@ -150,7 +150,7 @@ func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, dep
 }
 
 func runProcess(name string, args []string, stdout, stderr io.Writer, deps Dependencies) int {
-	opts, ok := parseProcessOptions(args, stderr)
+	opts, ok := parseProcessOptions(name, args, stderr)
 	if !ok {
 		return 2
 	}
@@ -170,6 +170,16 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			fmt.Fprintf(stderr, "tui configuration error: %v\n", err)
 			return 2
 		}
+		workspaceID, err := optionalUUID(opts.TUIWorkspaceID)
+		if err != nil {
+			fmt.Fprintf(stderr, "tui argument error: --workspace-id must be a UUID: %v\n", err)
+			return 2
+		}
+		projectID, err := optionalUUID(opts.TUIProjectID)
+		if err != nil {
+			fmt.Fprintf(stderr, "tui argument error: --project-id must be a UUID: %v\n", err)
+			return 2
+		}
 		rt, err := deps.OpenRuntime(context.Background(), cfg)
 		if err != nil {
 			fmt.Fprintf(stderr, "tui runtime error: %v\n", err)
@@ -182,8 +192,8 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			}
 		}
 		tuiOpts := forgetui.Options{
-			WorkspaceID: mustUUID(opts.TUIWorkspaceID),
-			ProjectID:   mustUUID(opts.TUIProjectID),
+			WorkspaceID: workspaceID,
+			ProjectID:   projectID,
 			Status:      opts.TUIStatus,
 			Type:        opts.TUIType,
 			Limit:       int32(opts.TUILimit),
@@ -1055,7 +1065,7 @@ type processOptions struct {
 	TUILimit       int
 }
 
-func parseProcessOptions(args []string, stderr io.Writer) (processOptions, bool) {
+func parseProcessOptions(name string, args []string, stderr io.Writer) (processOptions, bool) {
 	var opts processOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -1074,38 +1084,74 @@ func parseProcessOptions(args []string, stderr io.Writer) (processOptions, bool)
 				return processOptions{}, false
 			}
 		case arg == "--workspace-id":
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			value, ok := nextProcessFlagValue(args, &i, stderr, "--workspace-id")
 			if !ok {
 				return processOptions{}, false
 			}
 			opts.TUIWorkspaceID = value
 		case strings.HasPrefix(arg, "--workspace-id="):
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			opts.TUIWorkspaceID = strings.TrimPrefix(arg, "--workspace-id=")
 		case arg == "--project-id":
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			value, ok := nextProcessFlagValue(args, &i, stderr, "--project-id")
 			if !ok {
 				return processOptions{}, false
 			}
 			opts.TUIProjectID = value
 		case strings.HasPrefix(arg, "--project-id="):
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			opts.TUIProjectID = strings.TrimPrefix(arg, "--project-id=")
 		case arg == "--status":
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			value, ok := nextProcessFlagValue(args, &i, stderr, "--status")
 			if !ok {
 				return processOptions{}, false
 			}
 			opts.TUIStatus = value
 		case strings.HasPrefix(arg, "--status="):
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			opts.TUIStatus = strings.TrimPrefix(arg, "--status=")
 		case arg == "--type":
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			value, ok := nextProcessFlagValue(args, &i, stderr, "--type")
 			if !ok {
 				return processOptions{}, false
 			}
 			opts.TUIType = value
 		case strings.HasPrefix(arg, "--type="):
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			opts.TUIType = strings.TrimPrefix(arg, "--type=")
 		case arg == "--limit":
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			value, ok := nextProcessFlagValue(args, &i, stderr, "--limit")
 			if !ok {
 				return processOptions{}, false
@@ -1117,6 +1163,10 @@ func parseProcessOptions(args []string, stderr io.Writer) (processOptions, bool)
 			}
 			opts.TUILimit = limit
 		case strings.HasPrefix(arg, "--limit="):
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
 			value := strings.TrimPrefix(arg, "--limit=")
 			limit, err := parsePositiveIntFlag("--limit", value)
 			if err != nil {

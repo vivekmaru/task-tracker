@@ -69,15 +69,22 @@ func LoadQueue(ctx context.Context, lister TicketLister, opts Options) (QueueMod
 
 func Run(ctx context.Context, output io.Writer, lister TicketLister, opts Options) error {
 	model, err := LoadQueue(ctx, lister, opts)
+	programOptions := []tea.ProgramOption{tea.WithOutput(output), tea.WithContext(ctx)}
 	if err != nil {
-		return err
+		programOptions = append(programOptions, tea.WithInput(nil))
 	}
-	program := tea.NewProgram(model, tea.WithOutput(output))
-	_, err = program.Run()
+	program := tea.NewProgram(model, programOptions...)
+	_, runErr := program.Run()
+	if runErr != nil {
+		return runErr
+	}
 	return err
 }
 
 func (m QueueModel) Init() tea.Cmd {
+	if m.err != nil {
+		return tea.Quit
+	}
 	return nil
 }
 
