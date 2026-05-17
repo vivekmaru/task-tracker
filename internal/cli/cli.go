@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -53,8 +54,10 @@ type RuntimeHandle interface {
 	Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error)
 	Checkpoint(context.Context, services.CheckpointRequest) (services.CheckpointResult, error)
 	Complete(context.Context, services.CompleteAttemptRequest) (services.AttemptTransitionResult, error)
+	CompleteWithArtifacts(context.Context, services.CompleteAttemptRequest, []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error)
 	Fail(context.Context, services.FailAttemptRequest) (services.AttemptTransitionResult, error)
 	Block(context.Context, services.BlockAttemptRequest) (services.AttemptTransitionResult, error)
+	BlockWithArtifacts(context.Context, services.BlockAttemptRequest, []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error)
 	Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error)
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
@@ -95,6 +98,12 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 
 	if name == "server" || name == "worker" || name == "mcp" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
+	}
+	if name == "codex" {
+		if deps.OpenRuntime == nil {
+			deps.OpenRuntime = openRuntime
+		}
+		return runCodexCommand(context.Background(), args[1:], stdout, stderr, deps)
 	}
 	if isRuntimeCommand(name) {
 		return runRuntimeCommand(name, args[1:], stdout, stderr, deps)
@@ -284,13 +293,7 @@ func runClaimNextCommand(ctx context.Context, args []string, stdout, stderr io.W
 		fmt.Fprintf(stderr, "claim-next error: %v\n", err)
 		return 1
 	}
-	return writeJSON(stdout, stderr, map[string]any{
-		"ticket":     ticketPayload(result.Ticket),
-		"attempt":    attemptPayload(result.Attempt),
-		"context":    result.Context,
-		"ticket_id":  uuidText(result.Ticket.ID),
-		"attempt_id": uuidText(result.Attempt.ID),
-	})
+	return writeJSON(stdout, stderr, claimPayload(result))
 }
 
 func runListCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -441,12 +444,7 @@ func runCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.
 		fmt.Fprintf(stderr, "checkpoint error: %v\n", err)
 		return 1
 	}
-	return writeJSON(stdout, stderr, map[string]any{
-		"checkpoint_id": uuidText(result.Checkpoint.ID),
-		"attempt_id":    uuidText(result.Checkpoint.AttemptID),
-		"summary":       result.Checkpoint.Summary,
-		"progress":      result.ProgressPercent,
-	})
+	return writeJSON(stdout, stderr, checkpointPayload(result))
 }
 
 func runCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -605,6 +603,419 @@ func runAttachCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	return writeJSON(stdout, stderr, artifactPayload(artifact))
 }
 
+func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		printCodexHelp(stdout)
+		return 0
+	}
+
+	subcommand := args[0]
+	if isCodexSubcommandHelpRequest(args[1:]) {
+		if printCodexSubcommandHelp(stdout, subcommand) {
+			return 0
+		}
+	}
+	switch subcommand {
+	case "claim":
+		return runCodexClaimCommand(ctx, args[1:], stdout, stderr, deps)
+	case "checkpoint":
+		return runCodexCheckpointCommand(ctx, args[1:], stdout, stderr, deps)
+	case "complete":
+		return runCodexCompleteCommand(ctx, args[1:], stdout, stderr, deps)
+	case "follow-up":
+		return runCodexFollowUpCommand(ctx, args[1:], stdout, stderr, deps)
+	case "block":
+		return runCodexBlockCommand(ctx, args[1:], stdout, stderr, deps)
+	default:
+		fmt.Fprintf(stderr, "unknown codex command %q\n\n", subcommand)
+		printCodexHelp(stderr)
+		return 2
+	}
+}
+
+func runCodexClaimCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("codex claim", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, ticketType, agentID, model, lease, idempotencyKey string
+	var tags, capabilities stringList
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&ticketType, "type", "", "ticket type filter")
+	flags.Var(&tags, "tag", "ticket tag filter")
+	flags.Var(&capabilities, "capability", "agent capability")
+	flags.StringVar(&agentID, "agent-id", "codex", "agent id")
+	flags.StringVar(&model, "model", "", "model")
+	flags.StringVar(&lease, "lease", "30m", "attempt lease duration")
+	flags.StringVar(&idempotencyKey, "idempotency-key", "", "idempotency key")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	duration, err := time.ParseDuration(lease)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim argument error: lease must be a duration: %v\n", err)
+		return 2
+	}
+	workspaceUUID, err := requiredUUIDFlag("--workspace-id", workspaceID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim argument error: %v\n", err)
+		return 2
+	}
+	projectUUID, err := requiredUUIDFlag("--project-id", projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim argument error: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.ClaimNext(ctx, services.ClaimNextRequest{
+		WorkspaceID:    workspaceUUID,
+		ProjectID:      projectUUID,
+		Type:           ticketType,
+		Tags:           tags,
+		Harness:        "codex",
+		Capabilities:   capabilities,
+		AgentID:        agentID,
+		Model:          model,
+		Lease:          duration,
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, claimPayload(result))
+}
+
+func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
+	flags := newFlagSet("codex checkpoint", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var attemptID, summary, nextStep, risk string
+	var progress int
+	var files, commands stringList
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&summary, "summary", "", "checkpoint summary")
+	flags.IntVar(&progress, "progress", 0, "progress percent")
+	flags.Var(&files, "file", "file touched")
+	flags.Var(&commands, "command", "command run")
+	flags.StringVar(&nextStep, "next", "", "next step")
+	flags.StringVar(&risk, "risk", "", "risk")
+	if !parseFlags(flags, parseArgs) {
+		return 2
+	}
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
+	}
+	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex checkpoint argument error: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	result, err := rt.Checkpoint(ctx, services.CheckpointRequest{
+		AttemptID:       attemptUUID,
+		Summary:         summary,
+		ProgressPercent: int32(progress),
+		FilesTouched:    files,
+		CommandsRun:     commands,
+		NextStep:        nextStep,
+		Risk:            risk,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex checkpoint error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, checkpointPayload(result))
+}
+
+func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
+	flags := newFlagSet("codex complete", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var proof codexProofFlags
+	proof.bind(flags)
+	var attemptID, summary string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&summary, "summary", "", "output summary")
+	if !parseFlags(flags, parseArgs) {
+		return 2
+	}
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
+	}
+	if !proof.validate("codex complete", stderr) {
+		return 2
+	}
+	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex complete argument error: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
+	if err != nil {
+		if isCLIArgumentError(err) {
+			fmt.Fprintf(stderr, "codex complete argument error: %v\n", err)
+			return 2
+		}
+		fmt.Fprintf(stderr, "codex complete artifact error: %v\n", err)
+		return 1
+	}
+	result, artifacts, err := rt.CompleteWithArtifacts(ctx, services.CompleteAttemptRequest{
+		AttemptID: attemptUUID,
+		Output: map[string]any{
+			"summary": summary,
+			"proofs":  []string(proof.Proofs),
+		},
+	}, artifactReqs)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex complete error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{
+		"transition": transitionPayload(result),
+		"artifacts":  artifactPayloads(artifacts),
+	})
+}
+
+func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("codex follow-up", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, attemptID, artifactID, kind, title, description, reason string
+	var acceptance, verify, paths, tags stringList
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&attemptID, "attempt-id", "", "source attempt id")
+	flags.StringVar(&artifactID, "artifact-id", "", "source artifact id")
+	flags.StringVar(&kind, "type", services.TemplateFollowUp, "ticket template/type")
+	flags.StringVar(&title, "title", "", "ticket title")
+	flags.StringVar(&description, "description", "", "ticket description")
+	flags.Var(&acceptance, "acceptance", "acceptance criterion")
+	flags.Var(&verify, "verify", "verification command")
+	flags.Var(&paths, "path", "relevant path")
+	flags.Var(&tags, "tag", "ticket tag")
+	flags.StringVar(&reason, "reason", "", "creation reason")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	sourceAttemptID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up argument error: %v\n", err)
+		return 2
+	}
+	sourceArtifactID, err := optionalUUID(artifactID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up argument error: --artifact-id must be a UUID: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	sourceAttempt, err := rt.GetAttempt(ctx, sourceAttemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up source attempt error: %v\n", err)
+		return 1
+	}
+	if err := validateOptionalScopeFlags(workspaceID, projectID, sourceAttempt.WorkspaceID, sourceAttempt.ProjectID); err != nil {
+		fmt.Fprintf(stderr, "codex follow-up argument error: %v\n", err)
+		return 2
+	}
+	ticket, err := rt.CreateTicketFromAttempt(ctx, services.CreateTicketFromAttemptRequest{
+		WorkspaceID:          sourceAttempt.WorkspaceID,
+		ProjectID:            sourceAttempt.ProjectID,
+		SourceAttemptID:      sourceAttempt.ID,
+		SourceArtifactID:     sourceArtifactID,
+		TemplateKind:         kind,
+		Title:                title,
+		Description:          description,
+		Tags:                 tags,
+		AcceptanceCriteria:   acceptance,
+		VerificationCommands: verify,
+		RelevantPaths:        paths,
+		CreatedByID:          "codex",
+		CreationReason:       reason,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "codex follow-up error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{"ticket": ticketPayload(ticket)})
+}
+
+func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
+	flags := newFlagSet("codex block", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var proof codexProofFlags
+	proof.bind(flags)
+	var attemptID, reason, category string
+	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
+	flags.StringVar(&reason, "reason", "", "blocker reason")
+	flags.StringVar(&category, "category", "", "failure category")
+	if !parseFlags(flags, parseArgs) {
+		return 2
+	}
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
+	}
+	if !proof.validate("codex block", stderr) {
+		return 2
+	}
+	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex block argument error: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
+	if err != nil {
+		if isCLIArgumentError(err) {
+			fmt.Fprintf(stderr, "codex block argument error: %v\n", err)
+			return 2
+		}
+		fmt.Fprintf(stderr, "codex block artifact error: %v\n", err)
+		return 1
+	}
+	result, artifacts, err := rt.BlockWithArtifacts(ctx, services.BlockAttemptRequest{
+		AttemptID:       attemptUUID,
+		BlockerReason:   reason,
+		FailureCategory: category,
+		Blocker: map[string]any{
+			"reason": reason,
+			"proofs": []string(proof.Proofs),
+		},
+	}, artifactReqs)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex block error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{
+		"transition": transitionPayload(result),
+		"artifacts":  artifactPayloads(artifacts),
+	})
+}
+
+type codexProofFlags struct {
+	WorkspaceID string
+	ProjectID   string
+	Proofs      stringList
+	ProofType   string
+	ProofRole   string
+	MimeType    string
+}
+
+func (f *codexProofFlags) bind(flags *flag.FlagSet) {
+	flags.StringVar(&f.WorkspaceID, "workspace-id", "", "workspace id for proof artifacts")
+	flags.StringVar(&f.ProjectID, "project-id", "", "project id for proof artifacts")
+	flags.Var(&f.Proofs, "proof", "proof artifact URL or local reference")
+	flags.StringVar(&f.ProofType, "proof-type", services.ArtifactTypeOther, "proof artifact type")
+	flags.StringVar(&f.ProofRole, "proof-role", services.ArtifactRoleEvidence, "proof artifact role")
+	flags.StringVar(&f.MimeType, "mime-type", "", "proof artifact MIME type")
+}
+
+func (f codexProofFlags) validate(commandName string, stderr io.Writer) bool {
+	for i, proof := range f.Proofs {
+		if strings.TrimSpace(proof) == "" {
+			fmt.Fprintf(stderr, "%s argument error: --proof[%d] must not be empty\n", commandName, i)
+			return false
+		}
+	}
+	return true
+}
+
+func splitLeadingAttemptID(args []string) (string, []string) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", args
+	}
+	return args[0], args[1:]
+}
+
+func codexProofArtifactRequests(flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) []services.RegisterArtifactRequest {
+	requests := make([]services.RegisterArtifactRequest, 0, len(flags.Proofs))
+	for _, proof := range flags.Proofs {
+		proof = strings.TrimSpace(proof)
+		requests = append(requests, services.RegisterArtifactRequest{
+			WorkspaceID:    workspaceID,
+			ProjectID:      projectID,
+			TicketID:       ticketID,
+			AttemptID:      attemptID,
+			Type:           flags.ProofType,
+			Role:           flags.ProofRole,
+			Name:           proofName(proof),
+			URL:            proof,
+			StorageBackend: services.ArtifactStorageLocal,
+			MimeType:       flags.MimeType,
+		})
+	}
+	return requests
+}
+
+func codexProofArtifactRequestsForAttempt(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, attemptID pgtype.UUID) ([]services.RegisterArtifactRequest, error) {
+	if len(flags.Proofs) == 0 {
+		return []services.RegisterArtifactRequest{}, nil
+	}
+	attempt, err := rt.GetAttempt(ctx, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOptionalScopeFlags(flags.WorkspaceID, flags.ProjectID, attempt.WorkspaceID, attempt.ProjectID); err != nil {
+		return nil, cliArgumentError{err: err}
+	}
+	return codexProofArtifactRequests(flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID), nil
+}
+
+func validateOptionalScopeFlags(workspaceID, projectID string, expectedWorkspaceID, expectedProjectID pgtype.UUID) error {
+	parsedWorkspaceID, err := optionalUUID(workspaceID)
+	if err != nil {
+		return fmt.Errorf("--workspace-id must be a UUID: %w", err)
+	}
+	parsedProjectID, err := optionalUUID(projectID)
+	if err != nil {
+		return fmt.Errorf("--project-id must be a UUID: %w", err)
+	}
+	if parsedWorkspaceID.Valid && parsedWorkspaceID != expectedWorkspaceID {
+		return fmt.Errorf("--workspace-id does not match source attempt")
+	}
+	if parsedProjectID.Valid && parsedProjectID != expectedProjectID {
+		return fmt.Errorf("--project-id does not match source attempt")
+	}
+	return nil
+}
+
 func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
 	var opts config.Options
 	for i := 0; i < len(args); i++ {
@@ -737,6 +1148,47 @@ func mustUUID(value string) pgtype.UUID {
 	return id
 }
 
+func optionalUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return id, nil
+	}
+	if err := id.Scan(value); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return id, nil
+}
+
+func requiredUUIDFlag(name, value string) (pgtype.UUID, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return pgtype.UUID{}, fmt.Errorf("%s is required", name)
+	}
+	id, err := optionalUUID(value)
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("%s must be a UUID: %w", name, err)
+	}
+	return id, nil
+}
+
+type cliArgumentError struct {
+	err error
+}
+
+func (e cliArgumentError) Error() string {
+	return e.err.Error()
+}
+
+func (e cliArgumentError) Unwrap() error {
+	return e.err
+}
+
+func isCLIArgumentError(err error) bool {
+	var target cliArgumentError
+	return errors.As(err, &target)
+}
+
 func uuidText(id pgtype.UUID) string {
 	value, err := id.Value()
 	if err != nil {
@@ -779,6 +1231,25 @@ func transitionPayload(result services.AttemptTransitionResult) map[string]any {
 	}
 }
 
+func claimPayload(result services.ClaimNextResult) map[string]any {
+	return map[string]any{
+		"ticket":     ticketPayload(result.Ticket),
+		"attempt":    attemptPayload(result.Attempt),
+		"context":    result.Context,
+		"ticket_id":  uuidText(result.Ticket.ID),
+		"attempt_id": uuidText(result.Attempt.ID),
+	}
+}
+
+func checkpointPayload(result services.CheckpointResult) map[string]any {
+	return map[string]any{
+		"checkpoint_id": uuidText(result.Checkpoint.ID),
+		"attempt_id":    uuidText(result.Checkpoint.AttemptID),
+		"summary":       result.Checkpoint.Summary,
+		"progress":      result.ProgressPercent,
+	}
+}
+
 func artifactPayload(artifact db.Artifact) map[string]any {
 	return map[string]any{
 		"id":              uuidText(artifact.ID),
@@ -792,6 +1263,26 @@ func artifactPayload(artifact db.Artifact) map[string]any {
 		"size_bytes":      artifact.SizeBytes,
 		"mime_type":       artifact.MimeType,
 	}
+}
+
+func artifactPayloads(artifacts []db.Artifact) []map[string]any {
+	payloads := make([]map[string]any, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		payloads = append(payloads, artifactPayload(artifact))
+	}
+	return payloads
+}
+
+func proofName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "proof"
+	}
+	value = strings.TrimRight(value, "/")
+	if index := strings.LastIndex(value, "/"); index >= 0 && index < len(value)-1 {
+		return value[index+1:]
+	}
+	return value
 }
 
 func writeJSON(stdout, stderr io.Writer, value any) int {
@@ -846,10 +1337,105 @@ func printHelp(w io.Writer) {
 }
 
 func printCommandHelp(w io.Writer, name string) {
+	if name == "codex" {
+		printCodexHelp(w)
+		return
+	}
 	for _, cmd := range commands {
 		if cmd.name == name {
 			fmt.Fprintf(w, "Usage:\n  forge %s [flags]\n\n%s\n", cmd.name, strings.TrimSuffix(cmd.description, "."))
 			return
 		}
+	}
+}
+
+func printCodexHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge codex <command> [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  claim       Claim the next Codex-ready ticket")
+	fmt.Fprintln(w, "  checkpoint  Record resumable progress")
+	fmt.Fprintln(w, "  complete    Complete an attempt and attach proof artifacts")
+	fmt.Fprintln(w, "  follow-up   Create structured follow-up from an attempt")
+	fmt.Fprintln(w, "  block       Mark an attempt blocked with captured context")
+}
+
+func printCodexSubcommandHelp(w io.Writer, name string) bool {
+	switch name {
+	case "claim", "checkpoint", "complete", "follow-up", "block":
+		fmt.Fprintf(w, "Usage:\n  forge codex %s [flags]\n", name)
+		return true
+	default:
+		return false
+	}
+}
+
+func isHelpArg(value string) bool {
+	return value == "help" || value == "--help" || value == "-h"
+}
+
+func isCodexSubcommandHelpRequest(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "help" {
+		return true
+	}
+	for i, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--help" || arg == "-h" {
+			if i > 0 && codexFlagConsumesValue(args[i-1]) && !strings.Contains(args[i-1], "=") {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func codexFlagConsumesValue(arg string) bool {
+	if !strings.HasPrefix(arg, "-") || arg == "-" {
+		return false
+	}
+	name := strings.TrimLeft(arg, "-")
+	if idx := strings.Index(name, "="); idx >= 0 {
+		return false
+	}
+	switch name {
+	case "config",
+		"workspace-id",
+		"project-id",
+		"type",
+		"tag",
+		"capability",
+		"agent-id",
+		"model",
+		"lease",
+		"idempotency-key",
+		"attempt-id",
+		"summary",
+		"progress",
+		"file",
+		"command",
+		"next",
+		"risk",
+		"artifact-id",
+		"title",
+		"description",
+		"acceptance",
+		"verify",
+		"path",
+		"reason",
+		"category",
+		"proof",
+		"proof-type",
+		"proof-role",
+		"mime-type":
+		return true
+	default:
+		return false
 	}
 }
