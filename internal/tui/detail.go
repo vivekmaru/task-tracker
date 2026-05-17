@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
-	"github.com/vivek/agent-task-tracker/internal/services"
 )
 
 type TicketDetailModel struct {
@@ -75,7 +74,7 @@ func (m TicketDetailModel) View() string {
 	b.WriteString("Ticket ID: ")
 	b.WriteString(ticketID)
 	b.WriteString("\n")
-	b.WriteString("forge get --ticket-id ")
+	b.WriteString("forge get --id ")
 	b.WriteString(ticketID)
 	b.WriteString("\n")
 	b.WriteString(mutedStyle.Render("b back  q quit"))
@@ -114,11 +113,6 @@ func writeAttemptSections(b *strings.Builder, attempts []db.Attempt) {
 }
 
 func currentAttemptIndex(attempts []db.Attempt) int {
-	for i, attempt := range attempts {
-		if attempt.Status == services.AttemptStatusRunning || attempt.Status == services.AttemptStatusBlocked {
-			return i
-		}
-	}
 	return 0
 }
 

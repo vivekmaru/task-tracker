@@ -73,7 +73,7 @@ func TestTicketDetailModelRendersDenseInspectionSurface(t *testing.T) {
 		"Failure: timeout",
 		"Copy",
 		"Ticket ID: 00000000-0000-0000-0000-000000000011",
-		"forge get --ticket-id 00000000-0000-0000-0000-000000000011",
+		"forge get --id 00000000-0000-0000-0000-000000000011",
 		"b back",
 	} {
 		if !strings.Contains(view, want) {
@@ -84,6 +84,27 @@ func TestTicketDetailModelRendersDenseInspectionSurface(t *testing.T) {
 		if strings.Contains(view, forbidden) {
 			t.Fatalf("detail view should avoid board-management language %q, got:\n%s", forbidden, view)
 		}
+	}
+}
+
+func TestTicketDetailModelUsesNewestAttemptWhenNoNewestActiveAttemptExists(t *testing.T) {
+	ticket := detailTicketFixture()
+	attempts := []db.Attempt{
+		{ID: testUUID(61), TicketID: ticket.ID, Status: services.AttemptStatusSucceeded, AgentID: "codex", Harness: "codex", Model: "gpt-5"},
+		{ID: testUUID(62), TicketID: ticket.ID, Status: services.AttemptStatusBlocked, AgentID: "opencode", Harness: "opencode", Model: "sonnet"},
+	}
+
+	view := NewTicketDetailModel(ticket, attempts).View()
+
+	current := strings.Index(view, "Current attempt")
+	succeeded := strings.Index(view, "succeeded codex/gpt-5")
+	prior := strings.Index(view, "Prior attempts")
+	blocked := strings.Index(view, "blocked opencode/sonnet")
+	if current == -1 || succeeded == -1 || prior == -1 || blocked == -1 {
+		t.Fatalf("expected current and prior attempt sections, got:\n%s", view)
+	}
+	if !(current < succeeded && succeeded < prior && prior < blocked) {
+		t.Fatalf("expected newest terminal attempt as current and older blocked attempt as prior, got:\n%s", view)
 	}
 }
 
@@ -119,6 +140,45 @@ func TestQueueModelEnterLoadsSelectedTicketDetail(t *testing.T) {
 	updated, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
 	if view := updated.View(); !strings.Contains(view, "Forge Queue") || !strings.Contains(view, "> P0 todo  Second") {
 		t.Fatalf("expected back to return to selected queue row, got:\n%s", view)
+	}
+}
+
+func TestQueueModelIgnoresStaleDetailLoadResponses(t *testing.T) {
+	first := db.Ticket{ID: testUUID(71), Title: "First", Status: services.TicketStatusTodo}
+	second := db.Ticket{ID: testUUID(72), Title: "Second", Status: services.TicketStatusTodo}
+	loader := &fakeDetailLoader{
+		attempts: map[pgtype.UUID][]db.Attempt{
+			first.ID: {
+				{ID: testUUID(73), TicketID: first.ID, Status: services.AttemptStatusRunning, AgentID: "first-agent", Harness: "codex", Model: "gpt-5"},
+			},
+			second.ID: {
+				{ID: testUUID(74), TicketID: second.ID, Status: services.AttemptStatusRunning, AgentID: "second-agent", Harness: "codex", Model: "gpt-5"},
+			},
+		},
+	}
+	model := NewQueueModel([]db.Ticket{first, second}).WithDetailLoader(context.Background(), loader)
+
+	updated, firstCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("expected first enter to start detail load")
+	}
+	queueAfterFirstEnter := updated.(QueueModel).MoveDown()
+	updated, secondCmd := queueAfterFirstEnter.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if secondCmd == nil {
+		t.Fatal("expected second enter to start detail load")
+	}
+
+	updated, _ = updated.Update(secondCmd())
+	updated, _ = updated.Update(firstCmd())
+	view := updated.View()
+
+	if strings.Contains(view, "First") || strings.Contains(view, "first-agent") {
+		t.Fatalf("stale first detail response should not overwrite newer detail, got:\n%s", view)
+	}
+	for _, want := range []string{"Ticket Detail", "Second", "second-agent/gpt-5"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected latest detail view to contain %q, got:\n%s", want, view)
+		}
 	}
 }
 

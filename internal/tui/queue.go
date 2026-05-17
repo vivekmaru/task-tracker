@@ -46,6 +46,7 @@ type QueueModel struct {
 	detailLoader TicketAttemptLister
 	detail       TicketDetailModel
 	showDetail   bool
+	detailTicket pgtype.UUID
 }
 
 type detailLoadedMsg struct {
@@ -135,6 +136,9 @@ func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.loadSelectedDetail()
 		}
 	case detailLoadedMsg:
+		if msg.ticket.ID != m.detailTicket {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.detail = NewTicketDetailModelWithError(msg.ticket, msg.err)
 		} else {
@@ -221,6 +225,7 @@ func (m QueueModel) loadSelectedDetail() (QueueModel, tea.Cmd) {
 		return m, nil
 	}
 	ticket := m.tickets[m.selected]
+	m.detailTicket = ticket.ID
 	ctx := m.detailCtx
 	if ctx == nil {
 		ctx = context.Background()
