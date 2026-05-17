@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
 )
 
 func TestRunPrintsTopLevelHelp(t *testing.T) {
@@ -212,6 +214,51 @@ func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "registered 15 tools") {
 		t.Fatalf("expected registered tool count, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunTUILoadsRuntimeAndDelegatesQueueOptions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{}
+	var gotOptions forgetui.Options
+	var gotRuntime RuntimeHandle
+
+	code := RunWithDependencies([]string{
+		"tui",
+		"--config", path,
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--status", services.TicketStatusTodo,
+		"--type", services.TicketTypeBug,
+		"--limit", "25",
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: fakeRuntimeOpener(fake),
+		RunTUI: func(_ context.Context, _ io.Writer, rt RuntimeHandle, opts forgetui.Options) error {
+			gotRuntime = rt
+			gotOptions = opts
+			return nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if gotRuntime != fake {
+		t.Fatalf("expected TUI runner to receive opened runtime")
+	}
+	if gotOptions.WorkspaceID != testUUID(2) || gotOptions.ProjectID != testUUID(3) {
+		t.Fatalf("unexpected TUI scope: %#v", gotOptions)
+	}
+	if gotOptions.Status != services.TicketStatusTodo || gotOptions.Type != services.TicketTypeBug || gotOptions.Limit != 25 {
+		t.Fatalf("unexpected TUI filters: %#v", gotOptions)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())

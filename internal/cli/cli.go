@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	forgemcp "github.com/vivek/agent-task-tracker/internal/mcp"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
 )
 
 type command struct {
@@ -69,6 +71,7 @@ type RuntimeHandle interface {
 
 type Dependencies struct {
 	OpenRuntime func(context.Context, config.Config) (RuntimeHandle, error)
+	RunTUI      func(context.Context, io.Writer, RuntimeHandle, forgetui.Options) error
 }
 
 // Run executes the Forge CLI and returns a process-style exit code.
@@ -96,7 +99,7 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 		return 0
 	}
 
-	if name == "server" || name == "worker" || name == "mcp" {
+	if name == "server" || name == "worker" || name == "mcp" || name == "tui" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
 	}
 	if name == "codex" {
@@ -152,7 +155,7 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		return 2
 	}
 
-	cfg, err := config.Load(opts)
+	cfg, err := config.Load(opts.Options)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s configuration error: %v\n", name, err)
 		return 2
@@ -162,6 +165,33 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 	}
 
 	switch name {
+	case "tui":
+		if err := cfg.ValidateServer(); err != nil {
+			fmt.Fprintf(stderr, "tui configuration error: %v\n", err)
+			return 2
+		}
+		rt, err := deps.OpenRuntime(context.Background(), cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "tui runtime error: %v\n", err)
+			return 1
+		}
+		defer rt.Close()
+		if deps.RunTUI == nil {
+			deps.RunTUI = func(ctx context.Context, output io.Writer, rt RuntimeHandle, opts forgetui.Options) error {
+				return forgetui.Run(ctx, output, rt, opts)
+			}
+		}
+		tuiOpts := forgetui.Options{
+			WorkspaceID: mustUUID(opts.TUIWorkspaceID),
+			ProjectID:   mustUUID(opts.TUIProjectID),
+			Status:      opts.TUIStatus,
+			Type:        opts.TUIType,
+			Limit:       int32(opts.TUILimit),
+		}
+		if err := deps.RunTUI(context.Background(), stdout, rt, tuiOpts); err != nil {
+			fmt.Fprintf(stderr, "tui error: %v\n", err)
+			return 1
+		}
 	case "server":
 		if err := cfg.ValidateServer(); err != nil {
 			fmt.Fprintf(stderr, "server configuration error: %v\n", err)
@@ -1016,15 +1046,24 @@ func validateOptionalScopeFlags(workspaceID, projectID string, expectedWorkspace
 	return nil
 }
 
-func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool) {
-	var opts config.Options
+type processOptions struct {
+	config.Options
+	TUIWorkspaceID string
+	TUIProjectID   string
+	TUIStatus      string
+	TUIType        string
+	TUILimit       int
+}
+
+func parseProcessOptions(args []string, stderr io.Writer) (processOptions, bool) {
+	var opts processOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--config":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "--config requires a path")
-				return config.Options{}, false
+				return processOptions{}, false
 			}
 			i++
 			opts.ConfigPath = args[i]
@@ -1032,14 +1071,85 @@ func parseProcessOptions(args []string, stderr io.Writer) (config.Options, bool)
 			opts.ConfigPath = strings.TrimPrefix(arg, "--config=")
 			if opts.ConfigPath == "" {
 				fmt.Fprintln(stderr, "--config requires a path")
-				return config.Options{}, false
+				return processOptions{}, false
 			}
+		case arg == "--workspace-id":
+			value, ok := nextProcessFlagValue(args, &i, stderr, "--workspace-id")
+			if !ok {
+				return processOptions{}, false
+			}
+			opts.TUIWorkspaceID = value
+		case strings.HasPrefix(arg, "--workspace-id="):
+			opts.TUIWorkspaceID = strings.TrimPrefix(arg, "--workspace-id=")
+		case arg == "--project-id":
+			value, ok := nextProcessFlagValue(args, &i, stderr, "--project-id")
+			if !ok {
+				return processOptions{}, false
+			}
+			opts.TUIProjectID = value
+		case strings.HasPrefix(arg, "--project-id="):
+			opts.TUIProjectID = strings.TrimPrefix(arg, "--project-id=")
+		case arg == "--status":
+			value, ok := nextProcessFlagValue(args, &i, stderr, "--status")
+			if !ok {
+				return processOptions{}, false
+			}
+			opts.TUIStatus = value
+		case strings.HasPrefix(arg, "--status="):
+			opts.TUIStatus = strings.TrimPrefix(arg, "--status=")
+		case arg == "--type":
+			value, ok := nextProcessFlagValue(args, &i, stderr, "--type")
+			if !ok {
+				return processOptions{}, false
+			}
+			opts.TUIType = value
+		case strings.HasPrefix(arg, "--type="):
+			opts.TUIType = strings.TrimPrefix(arg, "--type=")
+		case arg == "--limit":
+			value, ok := nextProcessFlagValue(args, &i, stderr, "--limit")
+			if !ok {
+				return processOptions{}, false
+			}
+			limit, err := parsePositiveIntFlag("--limit", value)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return processOptions{}, false
+			}
+			opts.TUILimit = limit
+		case strings.HasPrefix(arg, "--limit="):
+			value := strings.TrimPrefix(arg, "--limit=")
+			limit, err := parsePositiveIntFlag("--limit", value)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return processOptions{}, false
+			}
+			opts.TUILimit = limit
 		default:
 			fmt.Fprintf(stderr, "unknown flag %q\n", arg)
-			return config.Options{}, false
+			return processOptions{}, false
 		}
 	}
 	return opts, true
+}
+
+func nextProcessFlagValue(args []string, index *int, stderr io.Writer, name string) (string, bool) {
+	if *index+1 >= len(args) {
+		fmt.Fprintf(stderr, "%s requires a value\n", name)
+		return "", false
+	}
+	*index = *index + 1
+	return args[*index], true
+}
+
+func parsePositiveIntFlag(name, value string) (int, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", name)
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", name)
+	}
+	return parsed, nil
 }
 
 type commandOptions struct {
