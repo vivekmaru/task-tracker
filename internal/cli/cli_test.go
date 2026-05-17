@@ -371,6 +371,65 @@ func TestRunCodexClaimDefaultsHarnessAndWritesJSON(t *testing.T) {
 	}
 }
 
+func TestRunCodexClaimRejectsMalformedScopeBeforeRuntime(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{
+			name: "missing workspace",
+			args: []string{
+				"codex", "claim",
+				"--project-id", uuidString(t, testUUID(3)),
+			},
+			wantStderr: "codex claim argument error: --workspace-id is required",
+		},
+		{
+			name: "malformed workspace",
+			args: []string{
+				"codex", "claim",
+				"--workspace-id", "not-a-uuid",
+				"--project-id", uuidString(t, testUUID(3)),
+			},
+			wantStderr: "codex claim argument error: --workspace-id must be a UUID",
+		},
+		{
+			name: "malformed project",
+			args: []string{
+				"codex", "claim",
+				"--workspace-id", uuidString(t, testUUID(2)),
+				"--project-id", "not-a-uuid",
+			},
+			wantStderr: "codex claim argument error: --project-id must be a UUID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			opened := false
+
+			code := RunWithDependencies(tt.args, &stdout, &stderr, Dependencies{
+				OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+					opened = true
+					return &fakeRuntime{}, nil
+				},
+			})
+
+			if code != 2 {
+				t.Fatalf("expected exit code 2, got %d", code)
+			}
+			if opened {
+				t.Fatalf("runtime should not open for invalid scope")
+			}
+			if !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Fatalf("expected stderr to contain %q, got %q", tt.wantStderr, stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunCodexCheckpointUsesSharedRuntime(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -551,6 +610,33 @@ func TestRunCodexFollowUpRejectsSourceAttemptScopeMismatch(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--workspace-id does not match source attempt") {
 		t.Fatalf("expected scope mismatch error, got %q", stderr.String())
+	}
+}
+
+func TestRunCodexFollowUpAllowsHelpAsFlagValue(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt:                 db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+		createFromAttemptTicket: db.Ticket{ID: testUUID(8), Title: "help", Type: services.TicketTypeBug, Status: services.TicketStatusBacklog},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "follow-up",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--title", "help",
+		"--description", "Observed while completing another task",
+		"--type", services.TemplateBug,
+		"--reason", "Codex discovered this while testing",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.createFromAttemptReq.Title != "help" {
+		t.Fatalf("expected follow-up title to be preserved, got %#v", fake.createFromAttemptReq)
+	}
+	if !strings.Contains(stdout.String(), `"title":"help"`) {
+		t.Fatalf("expected ticket JSON, got %s", stdout.String())
 	}
 }
 
@@ -879,8 +965,8 @@ func TestRunCodexCompleteRejectsProofScopeMismatch(t *testing.T) {
 		"--proof", "local://cli-test.log",
 	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
 
-	if code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
 	}
 	if fake.completeCalls != 0 || len(fake.artifactReqs) != 0 {
 		t.Fatalf("scope mismatch should fail before transition: completeCalls=%d artifacts=%#v", fake.completeCalls, fake.artifactReqs)
@@ -905,8 +991,8 @@ func TestRunCodexBlockRejectsProofScopeMismatch(t *testing.T) {
 		"--proof", "local://blocked.log",
 	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
 
-	if code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
 	}
 	if fake.blockCalls != 0 || len(fake.artifactReqs) != 0 {
 		t.Fatalf("scope mismatch should fail before transition: blockCalls=%d artifacts=%#v", fake.blockCalls, fake.artifactReqs)

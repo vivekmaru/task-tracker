@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -609,7 +610,7 @@ func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	subcommand := args[0]
-	if hasHelpArg(args[1:]) {
+	if isCodexSubcommandHelpRequest(args[1:]) {
 		if printCodexSubcommandHelp(stdout, subcommand) {
 			return 0
 		}
@@ -655,14 +656,24 @@ func runCodexClaimCommand(ctx context.Context, args []string, stdout, stderr io.
 		fmt.Fprintf(stderr, "codex claim argument error: lease must be a duration: %v\n", err)
 		return 2
 	}
+	workspaceUUID, err := requiredUUIDFlag("--workspace-id", workspaceID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim argument error: %v\n", err)
+		return 2
+	}
+	projectUUID, err := requiredUUIDFlag("--project-id", projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex claim argument error: %v\n", err)
+		return 2
+	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
 		return 1
 	}
 	defer rt.Close()
 	result, err := rt.ClaimNext(ctx, services.ClaimNextRequest{
-		WorkspaceID:    mustUUID(workspaceID),
-		ProjectID:      mustUUID(projectID),
+		WorkspaceID:    workspaceUUID,
+		ProjectID:      projectUUID,
 		Type:           ticketType,
 		Tags:           tags,
 		Harness:        "codex",
@@ -765,6 +776,10 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 	defer rt.Close()
 	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
 	if err != nil {
+		if isCLIArgumentError(err) {
+			fmt.Fprintf(stderr, "codex complete argument error: %v\n", err)
+			return 2
+		}
 		fmt.Fprintf(stderr, "codex complete artifact error: %v\n", err)
 		return 1
 	}
@@ -888,6 +903,10 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 	defer rt.Close()
 	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
 	if err != nil {
+		if isCLIArgumentError(err) {
+			fmt.Fprintf(stderr, "codex block argument error: %v\n", err)
+			return 2
+		}
 		fmt.Fprintf(stderr, "codex block artifact error: %v\n", err)
 		return 1
 	}
@@ -974,7 +993,7 @@ func codexProofArtifactRequestsForAttempt(ctx context.Context, rt RuntimeHandle,
 		return nil, err
 	}
 	if err := validateOptionalScopeFlags(flags.WorkspaceID, flags.ProjectID, attempt.WorkspaceID, attempt.ProjectID); err != nil {
-		return nil, err
+		return nil, cliArgumentError{err: err}
 	}
 	return codexProofArtifactRequests(flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID), nil
 }
@@ -1151,6 +1170,23 @@ func requiredUUIDFlag(name, value string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, fmt.Errorf("%s must be a UUID: %w", name, err)
 	}
 	return id, nil
+}
+
+type cliArgumentError struct {
+	err error
+}
+
+func (e cliArgumentError) Error() string {
+	return e.err.Error()
+}
+
+func (e cliArgumentError) Unwrap() error {
+	return e.err
+}
+
+func isCLIArgumentError(err error) bool {
+	var target cliArgumentError
+	return errors.As(err, &target)
 }
 
 func uuidText(id pgtype.UUID) string {
@@ -1339,11 +1375,67 @@ func isHelpArg(value string) bool {
 	return value == "help" || value == "--help" || value == "-h"
 }
 
-func hasHelpArg(args []string) bool {
-	for _, arg := range args {
-		if isHelpArg(arg) {
+func isCodexSubcommandHelpRequest(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "help" {
+		return true
+	}
+	for i, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--help" || arg == "-h" {
+			if i > 0 && codexFlagConsumesValue(args[i-1]) && !strings.Contains(args[i-1], "=") {
+				continue
+			}
 			return true
 		}
 	}
 	return false
+}
+
+func codexFlagConsumesValue(arg string) bool {
+	if !strings.HasPrefix(arg, "-") || arg == "-" {
+		return false
+	}
+	name := strings.TrimLeft(arg, "-")
+	if idx := strings.Index(name, "="); idx >= 0 {
+		return false
+	}
+	switch name {
+	case "config",
+		"workspace-id",
+		"project-id",
+		"type",
+		"tag",
+		"capability",
+		"agent-id",
+		"model",
+		"lease",
+		"idempotency-key",
+		"attempt-id",
+		"summary",
+		"progress",
+		"file",
+		"command",
+		"next",
+		"risk",
+		"artifact-id",
+		"title",
+		"description",
+		"acceptance",
+		"verify",
+		"path",
+		"reason",
+		"category",
+		"proof",
+		"proof-type",
+		"proof-role",
+		"mime-type":
+		return true
+	default:
+		return false
+	}
 }
