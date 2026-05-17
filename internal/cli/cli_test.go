@@ -1325,6 +1325,30 @@ func (f *fakeRuntime) UpdateTicket(context.Context, services.UpdateTicketRequest
 	return db.Ticket{}, nil
 }
 
+func (f *fakeRuntime) MarkReady(context.Context, services.TicketTransitionRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) Reopen(context.Context, services.TicketTransitionRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) Unblock(context.Context, services.TicketTransitionRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) RequestReview(context.Context, services.TicketTransitionRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) Review(context.Context, services.ReviewTicketRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) Archive(context.Context, services.TicketTransitionRequest) (db.Ticket, error) {
+	return db.Ticket{}, nil
+}
+
 func (f *fakeRuntime) ClaimNext(_ context.Context, req services.ClaimNextRequest) (services.ClaimNextResult, error) {
 	f.claimReq = req
 	return f.claimResult, nil

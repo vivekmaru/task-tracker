@@ -337,6 +337,59 @@ func (q *Queries) ListTickets(ctx context.Context, arg ListTicketsParams) ([]Tic
 	return items, nil
 }
 
+const setTicketStatus = `-- name: SetTicketStatus :one
+UPDATE tickets
+SET status = $1::text,
+    updated_at = now()
+WHERE id = $2::uuid
+  AND status = ANY($3::text[])
+RETURNING id, workspace_id, project_id, parent_id, root_id, source_attempt_id, source_artifact_id, title, description, type, status, priority, tags, acceptance_criteria, verification_commands, expected_artifacts, relevant_paths, required_tools, required_permissions, environment, input, input_schema, required_capabilities, allowed_harnesses, retry_policy, created_by, created_by_id, creation_reason, created_at, updated_at
+`
+
+type SetTicketStatusParams struct {
+	Status          string      `db:"status" json:"status"`
+	ID              pgtype.UUID `db:"id" json:"id"`
+	AllowedStatuses []string    `db:"allowed_statuses" json:"allowed_statuses"`
+}
+
+func (q *Queries) SetTicketStatus(ctx context.Context, arg SetTicketStatusParams) (Ticket, error) {
+	row := q.db.QueryRow(ctx, setTicketStatus, arg.Status, arg.ID, arg.AllowedStatuses)
+	var i Ticket
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ProjectID,
+		&i.ParentID,
+		&i.RootID,
+		&i.SourceAttemptID,
+		&i.SourceArtifactID,
+		&i.Title,
+		&i.Description,
+		&i.Type,
+		&i.Status,
+		&i.Priority,
+		&i.Tags,
+		&i.AcceptanceCriteria,
+		&i.VerificationCommands,
+		&i.ExpectedArtifacts,
+		&i.RelevantPaths,
+		&i.RequiredTools,
+		&i.RequiredPermissions,
+		&i.Environment,
+		&i.Input,
+		&i.InputSchema,
+		&i.RequiredCapabilities,
+		&i.AllowedHarnesses,
+		&i.RetryPolicy,
+		&i.CreatedBy,
+		&i.CreatedByID,
+		&i.CreationReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateTicket = `-- name: UpdateTicket :one
 UPDATE tickets
 SET title = COALESCE($1::text, title),

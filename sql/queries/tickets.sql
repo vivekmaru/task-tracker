@@ -64,6 +64,14 @@ SET title = COALESCE(sqlc.narg('title')::text, title),
 WHERE id = sqlc.arg('id')
 RETURNING *;
 
+-- name: SetTicketStatus :one
+UPDATE tickets
+SET status = sqlc.arg('status')::text,
+    updated_at = now()
+WHERE id = sqlc.arg('id')::uuid
+  AND status = ANY(sqlc.arg('allowed_statuses')::text[])
+RETURNING *;
+
 -- name: ListTickets :many
 SELECT *
 FROM tickets

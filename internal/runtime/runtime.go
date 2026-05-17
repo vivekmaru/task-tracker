@@ -73,6 +73,30 @@ func (r *Runtime) UpdateTicket(ctx context.Context, req services.UpdateTicketReq
 	return r.Tickets.UpdateTicket(ctx, req)
 }
 
+func (r *Runtime) MarkReady(ctx context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	return r.Tickets.MarkReady(ctx, req)
+}
+
+func (r *Runtime) Reopen(ctx context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	return r.Tickets.Reopen(ctx, req)
+}
+
+func (r *Runtime) Unblock(ctx context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	return r.Tickets.Unblock(ctx, req)
+}
+
+func (r *Runtime) RequestReview(ctx context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	return r.Tickets.RequestReview(ctx, req)
+}
+
+func (r *Runtime) Review(ctx context.Context, req services.ReviewTicketRequest) (db.Ticket, error) {
+	return r.Tickets.Review(ctx, req)
+}
+
+func (r *Runtime) Archive(ctx context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	return r.Tickets.Archive(ctx, req)
+}
+
 func (r *Runtime) ClaimNext(ctx context.Context, req services.ClaimNextRequest) (services.ClaimNextResult, error) {
 	return r.Claims.ClaimNext(ctx, req)
 }

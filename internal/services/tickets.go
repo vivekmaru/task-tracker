@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 )
@@ -38,12 +39,22 @@ const (
 	TicketStatusFailed      = "failed"
 	TicketStatusArchived    = "archived"
 
-	EventTicketCreated  = "created"
-	EventTicketProposed = "proposed"
-	EventTicketUpdated  = "updated"
+	EventTicketCreated         = "created"
+	EventTicketProposed        = "proposed"
+	EventTicketUpdated         = "updated"
+	EventTicketReady           = "ready"
+	EventTicketReopened        = "reopened"
+	EventTicketUnblocked       = "unblocked"
+	EventTicketReviewRequested = "review_requested"
+	EventTicketReviewed        = "reviewed"
+	EventTicketArchived        = "archived"
+
+	ReviewDecisionApprove = "approve"
+	ReviewDecisionReject  = "reject"
 )
 
 var ErrEnqueuePermissionRequired = errors.New("enqueue permission required")
+var ErrTicketTransitionNotAllowed = errors.New("ticket transition is not allowed")
 
 var (
 	defaultJSONObject  = []byte("{}")
@@ -54,6 +65,7 @@ var (
 type TicketStore interface {
 	CreateTicket(context.Context, db.CreateTicketParams) (db.Ticket, error)
 	UpdateTicket(context.Context, db.UpdateTicketParams) (db.Ticket, error)
+	SetTicketStatus(context.Context, db.SetTicketStatusParams) (db.Ticket, error)
 	CreateTicketDependency(context.Context, db.CreateTicketDependencyParams) (db.TicketDependency, error)
 	CreateTicketEvent(context.Context, db.CreateTicketEventParams) (db.TicketEvent, error)
 	ListTickets(context.Context, db.ListTicketsParams) ([]db.Ticket, error)
@@ -128,6 +140,21 @@ type UpdateTicketRequest struct {
 
 	ActorType string
 	ActorID   string
+}
+
+type TicketTransitionRequest struct {
+	TicketID  pgtype.UUID
+	ActorType string
+	ActorID   string
+	Reason    string
+}
+
+type ReviewTicketRequest struct {
+	TicketID  pgtype.UUID
+	Decision  string
+	ActorType string
+	ActorID   string
+	Reason    string
 }
 
 type ValidationError struct {
@@ -234,6 +261,166 @@ func (s *TicketService) UpdateTicket(ctx context.Context, req UpdateTicketReques
 		ActorType:   req.ActorType,
 		ActorID:     optionalText(req.ActorID),
 		Data:        eventData,
+	})
+	if err != nil {
+		return db.Ticket{}, fmt.Errorf("create ticket event: %w", err)
+	}
+
+	return ticket, nil
+}
+
+func (s *TicketService) MarkReady(ctx context.Context, req TicketTransitionRequest) (db.Ticket, error) {
+	return s.transitionTicket(ctx, req, ticketTransitionSpec{
+		operation:       "ready",
+		eventType:       EventTicketReady,
+		targetStatus:    TicketStatusTodo,
+		allowedStatuses: []string{TicketStatusBacklog},
+	})
+}
+
+func (s *TicketService) Reopen(ctx context.Context, req TicketTransitionRequest) (db.Ticket, error) {
+	return s.transitionTicket(ctx, req, ticketTransitionSpec{
+		operation:       "reopen",
+		eventType:       EventTicketReopened,
+		targetStatus:    TicketStatusTodo,
+		allowedStatuses: []string{TicketStatusDone, TicketStatusFailed},
+	})
+}
+
+func (s *TicketService) Unblock(ctx context.Context, req TicketTransitionRequest) (db.Ticket, error) {
+	return s.transitionTicket(ctx, req, ticketTransitionSpec{
+		operation:       "unblock",
+		eventType:       EventTicketUnblocked,
+		targetStatus:    TicketStatusTodo,
+		allowedStatuses: []string{TicketStatusBlocked},
+	})
+}
+
+func (s *TicketService) RequestReview(ctx context.Context, req TicketTransitionRequest) (db.Ticket, error) {
+	return s.transitionTicket(ctx, req, ticketTransitionSpec{
+		operation:       "request_review",
+		eventType:       EventTicketReviewRequested,
+		targetStatus:    TicketStatusNeedsReview,
+		allowedStatuses: []string{TicketStatusBlocked, TicketStatusTodo, TicketStatusFailed, TicketStatusDone},
+	})
+}
+
+func (s *TicketService) Archive(ctx context.Context, req TicketTransitionRequest) (db.Ticket, error) {
+	return s.transitionTicket(ctx, req, ticketTransitionSpec{
+		operation:    "archive",
+		eventType:    EventTicketArchived,
+		targetStatus: TicketStatusArchived,
+		allowedStatuses: []string{
+			TicketStatusBacklog,
+			TicketStatusTodo,
+			TicketStatusInProgress,
+			TicketStatusBlocked,
+			TicketStatusNeedsReview,
+			TicketStatusDone,
+			TicketStatusFailed,
+		},
+	})
+}
+
+func (s *TicketService) Review(ctx context.Context, req ReviewTicketRequest) (db.Ticket, error) {
+	req = trimReviewTicketRequest(req)
+	if req.ActorType == "" {
+		req.ActorType = ActorHuman
+	}
+	if problems := validateReviewTicketRequest(req); len(problems) > 0 {
+		return db.Ticket{}, ValidationError{Problems: problems}
+	}
+
+	targetStatus := TicketStatusDone
+	if req.Decision == ReviewDecisionReject {
+		targetStatus = TicketStatusTodo
+	}
+	return s.setTicketStatus(ctx, setTicketStatusRequest{
+		ticketID:        req.TicketID,
+		status:          targetStatus,
+		allowedStatuses: []string{TicketStatusNeedsReview},
+		eventType:       EventTicketReviewed,
+		actorType:       req.ActorType,
+		actorID:         req.ActorID,
+		data: map[string]any{
+			"operation": "review",
+			"decision":  req.Decision,
+			"reason":    req.Reason,
+		},
+	})
+}
+
+type ticketTransitionSpec struct {
+	operation       string
+	eventType       string
+	targetStatus    string
+	allowedStatuses []string
+}
+
+type setTicketStatusRequest struct {
+	ticketID        pgtype.UUID
+	status          string
+	allowedStatuses []string
+	eventType       string
+	actorType       string
+	actorID         string
+	data            map[string]any
+}
+
+func (s *TicketService) transitionTicket(ctx context.Context, req TicketTransitionRequest, spec ticketTransitionSpec) (db.Ticket, error) {
+	req = trimTicketTransitionRequest(req)
+	if req.ActorType == "" {
+		req.ActorType = ActorHuman
+	}
+	if problems := validateTicketTransitionRequest(req); len(problems) > 0 {
+		return db.Ticket{}, ValidationError{Problems: problems}
+	}
+	return s.setTicketStatus(ctx, setTicketStatusRequest{
+		ticketID:        req.TicketID,
+		status:          spec.targetStatus,
+		allowedStatuses: spec.allowedStatuses,
+		eventType:       spec.eventType,
+		actorType:       req.ActorType,
+		actorID:         req.ActorID,
+		data: map[string]any{
+			"operation": spec.operation,
+			"reason":    req.Reason,
+		},
+	})
+}
+
+func (s *TicketService) setTicketStatus(ctx context.Context, req setTicketStatusRequest) (db.Ticket, error) {
+	ticket, err := s.store.SetTicketStatus(ctx, db.SetTicketStatusParams{
+		ID:              req.ticketID,
+		Status:          req.status,
+		AllowedStatuses: req.allowedStatuses,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Ticket{}, ErrTicketTransitionNotAllowed
+		}
+		return db.Ticket{}, fmt.Errorf("set ticket status: %w", err)
+	}
+
+	eventData := make(map[string]any, len(req.data)+1)
+	for key, value := range req.data {
+		if value != "" {
+			eventData[key] = value
+		}
+	}
+	eventData["status"] = ticket.Status
+	raw, err := json.Marshal(eventData)
+	if err != nil {
+		return db.Ticket{}, fmt.Errorf("marshal ticket event data: %w", err)
+	}
+	_, err = s.store.CreateTicketEvent(ctx, db.CreateTicketEventParams{
+		WorkspaceID: ticket.WorkspaceID,
+		ProjectID:   ticket.ProjectID,
+		TicketID:    ticket.ID,
+		Type:        req.eventType,
+		ActorType:   req.actorType,
+		ActorID:     optionalText(req.actorID),
+		Data:        raw,
 	})
 	if err != nil {
 		return db.Ticket{}, fmt.Errorf("create ticket event: %w", err)
@@ -464,6 +651,31 @@ func validateUpdateTicketRequest(req UpdateTicketRequest) []string {
 	return problems
 }
 
+func validateTicketTransitionRequest(req TicketTransitionRequest) []string {
+	var problems []string
+	if !req.TicketID.Valid {
+		problems = append(problems, "ticket_id is required")
+	}
+	if !isAllowedActor(req.ActorType) {
+		problems = append(problems, "actor_type must be human, agent, or system")
+	}
+	return problems
+}
+
+func validateReviewTicketRequest(req ReviewTicketRequest) []string {
+	var problems []string
+	if !req.TicketID.Valid {
+		problems = append(problems, "ticket_id is required")
+	}
+	if !isAllowedActor(req.ActorType) {
+		problems = append(problems, "actor_type must be human, agent, or system")
+	}
+	if req.Decision != ReviewDecisionApprove && req.Decision != ReviewDecisionReject {
+		problems = append(problems, "decision must be approve or reject")
+	}
+	return problems
+}
+
 func defaultCreateStatus(req CreateTicketRequest) string {
 	if req.CreatedBy == ActorAgent && !req.Enqueue {
 		return TicketStatusBacklog
@@ -527,6 +739,21 @@ func trimUpdateTicketRequest(req UpdateTicketRequest) UpdateTicketRequest {
 		values := compactStringsPreserveEmpty(*req.RelevantPaths)
 		req.RelevantPaths = &values
 	}
+	return req
+}
+
+func trimTicketTransitionRequest(req TicketTransitionRequest) TicketTransitionRequest {
+	req.ActorType = strings.TrimSpace(req.ActorType)
+	req.ActorID = strings.TrimSpace(req.ActorID)
+	req.Reason = strings.TrimSpace(req.Reason)
+	return req
+}
+
+func trimReviewTicketRequest(req ReviewTicketRequest) ReviewTicketRequest {
+	req.Decision = strings.TrimSpace(req.Decision)
+	req.ActorType = strings.TrimSpace(req.ActorType)
+	req.ActorID = strings.TrimSpace(req.ActorID)
+	req.Reason = strings.TrimSpace(req.Reason)
 	return req
 }
 
