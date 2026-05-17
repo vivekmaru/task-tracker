@@ -182,6 +182,45 @@ func TestQueueModelIgnoresStaleDetailLoadResponses(t *testing.T) {
 	}
 }
 
+func TestQueueModelIgnoresStaleSameTicketDetailLoadResponses(t *testing.T) {
+	ticket := db.Ticket{ID: testUUID(81), Title: "Same", Status: services.TicketStatusTodo}
+	model := NewQueueModel([]db.Ticket{ticket}).WithDetailLoader(context.Background(), &fakeDetailLoader{})
+
+	updated, firstCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if firstCmd == nil {
+		t.Fatal("expected first enter to start detail load")
+	}
+	updated, secondCmd := updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if secondCmd == nil {
+		t.Fatal("expected second enter to start detail load")
+	}
+
+	updated, _ = updated.Update(detailLoadedMsg{
+		requestSeq: 2,
+		ticket:     ticket,
+		attempts: []db.Attempt{
+			{ID: testUUID(82), TicketID: ticket.ID, Status: services.AttemptStatusRunning, AgentID: "fresh-agent", Harness: "codex", Model: "gpt-5", ProgressPercent: 90},
+		},
+	})
+	updated, _ = updated.Update(detailLoadedMsg{
+		requestSeq: 1,
+		ticket:     ticket,
+		attempts: []db.Attempt{
+			{ID: testUUID(83), TicketID: ticket.ID, Status: services.AttemptStatusRunning, AgentID: "stale-agent", Harness: "codex", Model: "gpt-5", ProgressPercent: 10},
+		},
+	})
+	view := updated.View()
+
+	if strings.Contains(view, "stale-agent") || strings.Contains(view, "10%") {
+		t.Fatalf("stale same-ticket detail response should not overwrite newer detail, got:\n%s", view)
+	}
+	for _, want := range []string{"Ticket Detail", "Same", "fresh-agent/gpt-5 90%"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected latest same-ticket detail view to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestQueueModelDetailLoadErrorRendersCalmState(t *testing.T) {
 	ticket := db.Ticket{ID: testUUID(51), Title: "Broken", Status: services.TicketStatusTodo}
 	model := NewQueueModel([]db.Ticket{ticket}).WithDetailLoader(context.Background(), &fakeDetailLoader{

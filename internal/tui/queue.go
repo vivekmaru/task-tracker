@@ -47,12 +47,14 @@ type QueueModel struct {
 	detail       TicketDetailModel
 	showDetail   bool
 	detailTicket pgtype.UUID
+	detailSeq    int64
 }
 
 type detailLoadedMsg struct {
-	ticket   db.Ticket
-	attempts []db.Attempt
-	err      error
+	requestSeq int64
+	ticket     db.Ticket
+	attempts   []db.Attempt
+	err        error
 }
 
 func NewQueueModel(tickets []db.Ticket) QueueModel {
@@ -136,6 +138,9 @@ func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.loadSelectedDetail()
 		}
 	case detailLoadedMsg:
+		if msg.requestSeq != m.detailSeq {
+			return m, nil
+		}
 		if msg.ticket.ID != m.detailTicket {
 			return m, nil
 		}
@@ -225,6 +230,8 @@ func (m QueueModel) loadSelectedDetail() (QueueModel, tea.Cmd) {
 		return m, nil
 	}
 	ticket := m.tickets[m.selected]
+	m.detailSeq++
+	seq := m.detailSeq
 	m.detailTicket = ticket.ID
 	ctx := m.detailCtx
 	if ctx == nil {
@@ -232,7 +239,7 @@ func (m QueueModel) loadSelectedDetail() (QueueModel, tea.Cmd) {
 	}
 	return m, func() tea.Msg {
 		attempts, err := m.detailLoader.ListAttemptsByTicket(ctx, ticket.ID)
-		return detailLoadedMsg{ticket: ticket, attempts: attempts, err: err}
+		return detailLoadedMsg{requestSeq: seq, ticket: ticket, attempts: attempts, err: err}
 	}
 }
 
