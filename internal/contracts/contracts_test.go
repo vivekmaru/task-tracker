@@ -66,7 +66,7 @@ func TestOperationSchemasAreSerializableObjects(t *testing.T) {
 	}
 }
 
-func TestImplementedOperationsExposeSharedSurfaceBindings(t *testing.T) {
+func TestPhaseTwoOperationsExposeSurfaceParityMatrix(t *testing.T) {
 	cases := []struct {
 		name string
 		rest string
@@ -75,15 +75,23 @@ func TestImplementedOperationsExposeSharedSurfaceBindings(t *testing.T) {
 	}{
 		{OperationCreateTicket, RESTCreateTicket, CLICreateTicket, OperationCreateTicket},
 		{OperationProposeTicket, RESTProposeTicket, CLIProposeTicket, OperationProposeTicket},
+		{OperationCreateTicketFromAttempt, "", "", OperationCreateTicketFromAttempt},
 		{OperationClaimNextTicket, RESTClaimNextTicket, CLIClaimNextTicket, OperationClaimNextTicket},
 		{OperationHeartbeatAttempt, RESTHeartbeat, CLIHeartbeat, OperationHeartbeatAttempt},
 		{OperationCheckpointAttempt, RESTCheckpoint, CLICheckpoint, OperationCheckpointAttempt},
+		{OperationUpdateTicket, RESTUpdateTicket, "", OperationUpdateTicket},
 		{OperationCompleteAttempt, RESTCompleteAttempt, CLICompleteAttempt, OperationCompleteAttempt},
 		{OperationFailAttempt, RESTFailAttempt, CLIFailAttempt, OperationFailAttempt},
 		{OperationBlockAttempt, RESTBlockAttempt, CLIBlockAttempt, OperationBlockAttempt},
 		{OperationListTickets, RESTListTickets, CLIListTickets, OperationListTickets},
 		{OperationGetTicket, RESTGetTicket, CLIGetTicket, OperationGetTicket},
 		{OperationAttachArtifact, RESTAttachArtifact, CLIAttachArtifact, OperationAttachArtifact},
+		{OperationDecomposeTicket, RESTDecomposeTicket, "", OperationDecomposeTicket},
+		{OperationRegisterAgentCapabilities, "", "", OperationRegisterAgentCapabilities},
+	}
+
+	if len(cases) != len(AllOperations()) {
+		t.Fatalf("parity matrix covers %d operations, want %d", len(cases), len(AllOperations()))
 	}
 
 	for _, tc := range cases {

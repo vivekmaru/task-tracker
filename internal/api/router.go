@@ -29,7 +29,7 @@ func RegisterPhaseOneRoutes(api huma.API, rt *forgeruntime.Runtime) {
 	register[bodyInput](api, http.MethodPost, "/tickets/propose", contracts.RESTProposeTicket, "Propose ticket")
 	register[listTicketsInput](api, http.MethodGet, "/tickets", contracts.RESTListTickets, "List tickets")
 	register[idInput](api, http.MethodGet, "/tickets/{id}", contracts.RESTGetTicket, "Get ticket")
-	register[idBodyInput](api, http.MethodPatch, "/tickets/{id}", "update-ticket", "Update ticket")
+	register[idBodyInput](api, http.MethodPatch, "/tickets/{id}", contracts.RESTUpdateTicket, "Update ticket")
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/decompose", contracts.RESTDecomposeTicket, "Decompose ticket")
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/ready", "ready-ticket", "Move ticket to todo")
 

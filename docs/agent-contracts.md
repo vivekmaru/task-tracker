@@ -31,3 +31,5 @@ Each operation includes:
 Agent-created ticket flows should prefer `propose_ticket` and `create_ticket_from_attempt`. Their schemas deliberately ask for acceptance criteria, verification commands, relevant paths, and creation reason so agents can create useful work without adding Jira-style ceremony.
 
 See [Harness Integration Examples](harness-integration.md) for copy-pasteable CLI and MCP-oriented flows for Codex, Claude Code, Gemini CLI, OpenCode, and custom agents.
+
+See [Phase 2 Closeout](phase-2-closeout.md) for the current REST, CLI, and MCP parity matrix, test commands, and known adapter boundaries.
