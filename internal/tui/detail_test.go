@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -108,6 +109,129 @@ func TestTicketDetailModelUsesNewestAttemptWhenNoNewestActiveAttemptExists(t *te
 	}
 }
 
+func TestTicketDetailModelRendersTimelineSectionsInOrderAndStates(t *testing.T) {
+	ticket := detailTicketFixture()
+	timeline := TicketTimeline{
+		Attempts: []db.Attempt{
+			{
+				ID:              testUUID(91),
+				TicketID:        ticket.ID,
+				Status:          services.AttemptStatusRunning,
+				AgentID:         "codex",
+				Harness:         "codex",
+				Model:           "gpt-5",
+				ProgressPercent: 60,
+			},
+			{
+				ID:        testUUID(92),
+				TicketID:  ticket.ID,
+				Status:    services.AttemptStatusBlocked,
+				AgentID:   "opencode",
+				Harness:   "opencode",
+				Model:     "sonnet",
+				Blocker:   []byte(`{"reason":"waiting on staging secrets"}`),
+				StartedAt: testTimestamp(9),
+			},
+			{
+				ID:          testUUID(93),
+				TicketID:    ticket.ID,
+				Status:      services.AttemptStatusSucceeded,
+				AgentID:     "verifier",
+				Harness:     "codex",
+				Model:       "gpt-5",
+				CompletedAt: testTimestamp(10),
+			},
+		},
+		Checkpoints: []db.AttemptCheckpoint{
+			{ID: testUUID(101), TicketID: ticket.ID, AttemptID: testUUID(91), Summary: "first checkpoint", CommandsRun: []string{"go test ./internal/tui"}, FilesTouched: []string{"internal/tui/detail.go"}, CreatedAt: testTimestamp(1)},
+			{ID: testUUID(102), TicketID: ticket.ID, AttemptID: testUUID(91), Summary: "second checkpoint", NextStep: pgtype.Text{String: "inspect artifact", Valid: true}, Risk: pgtype.Text{String: "low", Valid: true}, CreatedAt: testTimestamp(2)},
+		},
+		Events: []db.TicketEvent{
+			{ID: testUUID(111), TicketID: ticket.ID, AttemptID: testUUID(91), Type: "ticket.created", ActorType: services.ActorAgent, ActorID: pgtype.Text{String: "codex", Valid: true}, CreatedAt: testTimestamp(3)},
+			{ID: testUUID(112), TicketID: ticket.ID, AttemptID: testUUID(91), Type: "attempt.blocked", ActorType: services.ActorAgent, ActorID: pgtype.Text{String: "opencode", Valid: true}, Data: []byte(`{"reason":"waiting on staging secrets"}`), CreatedAt: testTimestamp(4)},
+		},
+		Artifacts: []db.Artifact{
+			{ID: testUUID(121), TicketID: ticket.ID, AttemptID: testUUID(91), Type: "log", Role: "proof", Name: "test-output.txt", Url: "file:///tmp/test-output.txt", CreatedAt: testTimestamp(5)},
+			{ID: testUUID(122), TicketID: ticket.ID, AttemptID: testUUID(91), Type: "trace", Role: "debug", Name: "trace.json", CreatedAt: testTimestamp(6)},
+		},
+	}
+
+	view := NewTicketDetailModelWithTimeline(ticket, timeline).View()
+
+	for _, want := range []string{
+		"Attempts timeline",
+		"active running codex/gpt-5 60%",
+		"blocked opencode/sonnet",
+		"Blocker: waiting on staging secrets",
+		"terminal succeeded verifier/gpt-5",
+		"Checkpoints timeline",
+		"first checkpoint",
+		"Commands: go test ./internal/tui",
+		"Files: internal/tui/detail.go",
+		"second checkpoint",
+		"Next: inspect artifact",
+		"Risk: low",
+		"Events timeline",
+		"ticket.created by agent/codex",
+		"attempt.blocked by agent/opencode",
+		"waiting on staging secrets",
+		"Proof artifacts",
+		"proof log test-output.txt",
+		"file:///tmp/test-output.txt",
+		"debug trace trace.json",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected timeline view to contain %q, got:\n%s", want, view)
+		}
+	}
+	assertOrdered(t, view, "first checkpoint", "second checkpoint")
+	assertOrdered(t, view, "ticket.created", "attempt.blocked")
+	assertOrdered(t, view, "test-output.txt", "trace.json")
+}
+
+func TestTicketDetailModelRendersTimelineEmptyStates(t *testing.T) {
+	view := NewTicketDetailModelWithTimeline(detailTicketFixture(), TicketTimeline{}).View()
+
+	for _, want := range []string{
+		"Attempts timeline",
+		"No attempts recorded yet.",
+		"Checkpoints timeline",
+		"No checkpoints recorded.",
+		"Events timeline",
+		"No ticket events recorded.",
+		"Proof artifacts",
+		"No proof artifacts recorded.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected empty timeline view to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestLoadTicketTimelineUsesSharedTimelineQueries(t *testing.T) {
+	ticketID := testUUID(130)
+	loader := &fakeDetailLoader{
+		attempts: map[pgtype.UUID][]db.Attempt{
+			ticketID: {{ID: testUUID(131), TicketID: ticketID, Status: services.AttemptStatusRunning}},
+		},
+		checkpoints: []db.AttemptCheckpoint{{ID: testUUID(132), TicketID: ticketID, Summary: "checkpoint"}},
+		events:      []db.TicketEvent{{ID: testUUID(133), TicketID: ticketID, Type: "ticket.created"}},
+		artifacts:   []db.Artifact{{ID: testUUID(134), TicketID: ticketID, Name: "proof.txt"}},
+	}
+
+	timeline, err := LoadTicketTimeline(context.Background(), loader, ticketID)
+	if err != nil {
+		t.Fatalf("load ticket timeline: %v", err)
+	}
+
+	if loader.requested != ticketID || loader.checkpointTicketID != ticketID || loader.eventTicketID != ticketID || loader.artifactTicketID != ticketID {
+		t.Fatalf("expected all timeline queries to use ticket id %v, got loader %#v", ticketID, loader)
+	}
+	if len(timeline.Attempts) != 1 || len(timeline.Checkpoints) != 1 || len(timeline.Events) != 1 || len(timeline.Artifacts) != 1 {
+		t.Fatalf("unexpected timeline payload: %#v", timeline)
+	}
+}
+
 func TestQueueModelEnterLoadsSelectedTicketDetail(t *testing.T) {
 	first := db.Ticket{ID: testUUID(41), Title: "First", Status: services.TicketStatusTodo}
 	second := db.Ticket{ID: testUUID(42), Title: "Second", Status: services.TicketStatusTodo}
@@ -198,15 +322,15 @@ func TestQueueModelIgnoresStaleSameTicketDetailLoadResponses(t *testing.T) {
 	updated, _ = updated.Update(detailLoadedMsg{
 		requestSeq: 2,
 		ticket:     ticket,
-		attempts: []db.Attempt{
-			{ID: testUUID(82), TicketID: ticket.ID, Status: services.AttemptStatusRunning, AgentID: "fresh-agent", Harness: "codex", Model: "gpt-5", ProgressPercent: 90},
+		timeline: TicketTimeline{
+			Attempts: []db.Attempt{{ID: testUUID(82), TicketID: ticket.ID, Status: services.AttemptStatusRunning, AgentID: "fresh-agent", Harness: "codex", Model: "gpt-5", ProgressPercent: 90}},
 		},
 	})
 	updated, _ = updated.Update(detailLoadedMsg{
 		requestSeq: 1,
 		ticket:     ticket,
-		attempts: []db.Attempt{
-			{ID: testUUID(83), TicketID: ticket.ID, Status: services.AttemptStatusRunning, AgentID: "stale-agent", Harness: "codex", Model: "gpt-5", ProgressPercent: 10},
+		timeline: TicketTimeline{
+			Attempts: []db.Attempt{{ID: testUUID(83), TicketID: ticket.ID, Status: services.AttemptStatusRunning, AgentID: "stale-agent", Harness: "codex", Model: "gpt-5", ProgressPercent: 10}},
 		},
 	})
 	view := updated.View()
@@ -242,14 +366,35 @@ func TestQueueModelDetailLoadErrorRendersCalmState(t *testing.T) {
 }
 
 type fakeDetailLoader struct {
-	requested pgtype.UUID
-	attempts  map[pgtype.UUID][]db.Attempt
-	err       error
+	requested          pgtype.UUID
+	checkpointTicketID pgtype.UUID
+	eventTicketID      pgtype.UUID
+	artifactTicketID   pgtype.UUID
+	attempts           map[pgtype.UUID][]db.Attempt
+	checkpoints        []db.AttemptCheckpoint
+	events             []db.TicketEvent
+	artifacts          []db.Artifact
+	err                error
 }
 
 func (f *fakeDetailLoader) ListAttemptsByTicket(_ context.Context, ticketID pgtype.UUID) ([]db.Attempt, error) {
 	f.requested = ticketID
 	return f.attempts[ticketID], f.err
+}
+
+func (f *fakeDetailLoader) ListAttemptCheckpointsByTicket(_ context.Context, ticketID pgtype.UUID) ([]db.AttemptCheckpoint, error) {
+	f.checkpointTicketID = ticketID
+	return f.checkpoints, f.err
+}
+
+func (f *fakeDetailLoader) ListTicketEventsByTicket(_ context.Context, ticketID pgtype.UUID) ([]db.TicketEvent, error) {
+	f.eventTicketID = ticketID
+	return f.events, f.err
+}
+
+func (f *fakeDetailLoader) ListArtifactsByTicket(_ context.Context, ticketID pgtype.UUID) ([]db.Artifact, error) {
+	f.artifactTicketID = ticketID
+	return f.artifacts, f.err
 }
 
 func detailTicketFixture() db.Ticket {
@@ -282,4 +427,20 @@ func mustJSONStrings(values []string) []byte {
 		panic(err)
 	}
 	return data
+}
+
+func testTimestamp(hour int) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: time.Date(2026, time.May, 17, hour, 0, 0, 0, time.UTC), Valid: true}
+}
+
+func assertOrdered(t *testing.T, text, before, after string) {
+	t.Helper()
+	beforeIndex := strings.Index(text, before)
+	afterIndex := strings.Index(text, after)
+	if beforeIndex == -1 || afterIndex == -1 {
+		t.Fatalf("expected %q and %q in text:\n%s", before, after, text)
+	}
+	if beforeIndex >= afterIndex {
+		t.Fatalf("expected %q before %q in text:\n%s", before, after, text)
+	}
 }

@@ -11,13 +11,32 @@ import (
 
 type TicketDetailModel struct {
 	ticket   db.Ticket
-	attempts []db.Attempt
+	timeline TicketTimeline
 	err      error
+}
+
+type TicketTimeline struct {
+	Attempts    []db.Attempt
+	Checkpoints []db.AttemptCheckpoint
+	Events      []db.TicketEvent
+	Artifacts   []db.Artifact
 }
 
 func NewTicketDetailModel(ticket db.Ticket, attempts []db.Attempt) TicketDetailModel {
 	copied := append([]db.Attempt(nil), attempts...)
-	return TicketDetailModel{ticket: ticket, attempts: copied}
+	return NewTicketDetailModelWithTimeline(ticket, TicketTimeline{Attempts: copied})
+}
+
+func NewTicketDetailModelWithTimeline(ticket db.Ticket, timeline TicketTimeline) TicketDetailModel {
+	return TicketDetailModel{
+		ticket: ticket,
+		timeline: TicketTimeline{
+			Attempts:    append([]db.Attempt(nil), timeline.Attempts...),
+			Checkpoints: append([]db.AttemptCheckpoint(nil), timeline.Checkpoints...),
+			Events:      append([]db.TicketEvent(nil), timeline.Events...),
+			Artifacts:   append([]db.Artifact(nil), timeline.Artifacts...),
+		},
+	}
 }
 
 func NewTicketDetailModelWithError(ticket db.Ticket, err error) TicketDetailModel {
@@ -52,7 +71,7 @@ func (m TicketDetailModel) View() string {
 	}
 	if m.err != nil {
 		b.WriteString("\n")
-		b.WriteString("Unable to load attempts: ")
+		b.WriteString("Unable to load attempts and timeline: ")
 		b.WriteString(m.err.Error())
 		b.WriteString("\n")
 		b.WriteString(mutedStyle.Render("b back  q quit"))
@@ -67,7 +86,10 @@ func (m TicketDetailModel) View() string {
 	writeListSection(&b, "Permissions", m.ticket.RequiredPermissions, "- ")
 	writeListSection(&b, "Capabilities", m.ticket.RequiredCapabilities, "- ")
 	writeListSection(&b, "Harnesses", m.ticket.AllowedHarnesses, "- ")
-	writeAttemptSections(&b, m.attempts)
+	writeAttemptSections(&b, m.timeline.Attempts)
+	writeCheckpointTimeline(&b, m.timeline.Checkpoints)
+	writeEventTimeline(&b, m.timeline.Events)
+	writeArtifactTimeline(&b, m.timeline.Artifacts)
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("Copy"))
 	b.WriteString("\n")
@@ -83,15 +105,14 @@ func (m TicketDetailModel) View() string {
 }
 
 func writeAttemptSections(b *strings.Builder, attempts []db.Attempt) {
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("Attempts timeline"))
+	b.WriteString("\n")
 	if len(attempts) == 0 {
-		b.WriteString("\n")
-		b.WriteString(titleStyle.Render("Attempts"))
-		b.WriteString("\n")
 		b.WriteString("No attempts recorded yet.\n")
 		return
 	}
 	currentIndex := currentAttemptIndex(attempts)
-	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("Current attempt"))
 	b.WriteString("\n")
 	writeAttemptLine(b, attempts[currentIndex])
@@ -117,7 +138,12 @@ func currentAttemptIndex(attempts []db.Attempt) int {
 }
 
 func writeAttemptLine(b *strings.Builder, attempt db.Attempt) {
-	b.WriteString(fmt.Sprintf("%s %s/%s", valueOrDash(attempt.Status), valueOrDash(attempt.AgentID), valueOrDash(attempt.Model)))
+	label := attemptStateLabel(attempt.Status)
+	if label == "blocked" {
+		b.WriteString(fmt.Sprintf("%s %s/%s", label, valueOrDash(attempt.AgentID), valueOrDash(attempt.Model)))
+	} else {
+		b.WriteString(fmt.Sprintf("%s %s %s/%s", label, valueOrDash(attempt.Status), valueOrDash(attempt.AgentID), valueOrDash(attempt.Model)))
+	}
 	if attempt.ProgressPercent > 0 {
 		b.WriteString(fmt.Sprintf(" %d%%", attempt.ProgressPercent))
 	}
@@ -143,6 +169,96 @@ func writeAttemptNotes(b *strings.Builder, attempt db.Attempt) {
 			b.WriteString(")")
 		}
 		b.WriteString("\n")
+	}
+	if blocker := timelineReason(attempt.Blocker); blocker != "" {
+		b.WriteString("Blocker: ")
+		b.WriteString(blocker)
+		b.WriteString("\n")
+	}
+}
+
+func writeCheckpointTimeline(b *strings.Builder, checkpoints []db.AttemptCheckpoint) {
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("Checkpoints timeline"))
+	b.WriteString("\n")
+	if len(checkpoints) == 0 {
+		b.WriteString("No checkpoints recorded.\n")
+		return
+	}
+	for _, checkpoint := range checkpoints {
+		b.WriteString("checkpoint ")
+		b.WriteString(checkpoint.Summary)
+		b.WriteString("\n")
+		writeJoinedLine(b, "Commands", checkpoint.CommandsRun)
+		writeJoinedLine(b, "Files", checkpoint.FilesTouched)
+		if checkpoint.NextStep.Valid {
+			b.WriteString("Next: ")
+			b.WriteString(checkpoint.NextStep.String)
+			b.WriteString("\n")
+		}
+		if checkpoint.Risk.Valid {
+			b.WriteString("Risk: ")
+			b.WriteString(checkpoint.Risk.String)
+			b.WriteString("\n")
+		}
+	}
+}
+
+func writeEventTimeline(b *strings.Builder, events []db.TicketEvent) {
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("Events timeline"))
+	b.WriteString("\n")
+	if len(events) == 0 {
+		b.WriteString("No ticket events recorded.\n")
+		return
+	}
+	for _, event := range events {
+		b.WriteString(event.Type)
+		b.WriteString(" by ")
+		b.WriteString(valueOrDash(event.ActorType))
+		b.WriteString("/")
+		b.WriteString(textValue(event.ActorID))
+		b.WriteString("\n")
+		if reason := timelineReason(event.Data); reason != "" {
+			b.WriteString("Data: ")
+			b.WriteString(reason)
+			b.WriteString("\n")
+		}
+	}
+}
+
+func writeArtifactTimeline(b *strings.Builder, artifacts []db.Artifact) {
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("Proof artifacts"))
+	b.WriteString("\n")
+	if len(artifacts) == 0 {
+		b.WriteString("No proof artifacts recorded.\n")
+		return
+	}
+	for _, artifact := range artifacts {
+		b.WriteString(valueOrDash(artifact.Role))
+		b.WriteString(" ")
+		b.WriteString(valueOrDash(artifact.Type))
+		b.WriteString(" ")
+		b.WriteString(valueOrDash(artifact.Name))
+		b.WriteString("\n")
+		if artifact.Url != "" {
+			b.WriteString(artifact.Url)
+			b.WriteString("\n")
+		}
+	}
+}
+
+func attemptStateLabel(status string) string {
+	switch status {
+	case "running":
+		return "active"
+	case "blocked":
+		return "blocked"
+	case "succeeded", "failed", "expired", "cancelled":
+		return "terminal"
+	default:
+		return "state"
 	}
 }
 
@@ -179,6 +295,22 @@ func decodeStringArray(raw []byte) []string {
 		return nil
 	}
 	return values
+}
+
+func timelineReason(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return string(raw)
+	}
+	for _, key := range []string{"reason", "summary", "message", "detail"} {
+		if value, ok := data[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return string(raw)
 }
 
 func textValue(value pgtype.Text) string {

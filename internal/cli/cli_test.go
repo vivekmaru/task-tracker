@@ -1411,6 +1411,18 @@ func (f *fakeRuntime) ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.A
 	return nil, nil
 }
 
+func (f *fakeRuntime) ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error) {
+	return nil, nil
+}
+
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	f.artifactReq = req
 	f.artifactReqs = append(f.artifactReqs, req)
