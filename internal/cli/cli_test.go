@@ -299,6 +299,34 @@ func TestRunTUIRejectsInvalidUUIDFilters(t *testing.T) {
 	}
 }
 
+func TestRunTUIRejectsLimitAboveInt32Range(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	opened := false
+
+	code := RunWithDependencies([]string{
+		"tui",
+		"--limit", "3000000000",
+	}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			opened = true
+			return &fakeRuntime{}, nil
+		},
+	})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if opened {
+		t.Fatal("runtime should not open when TUI limit is out of range")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--limit must be less than or equal to 2147483647") {
+		t.Fatalf("expected limit range error, got %q", stderr.String())
+	}
+}
+
 func TestRunWorkerRejectsTUIOnlyFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	opened := false

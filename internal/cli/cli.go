@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -1198,6 +1199,9 @@ func parsePositiveIntFlag(name, value string) (int, error) {
 	}
 	if parsed < 0 {
 		return 0, fmt.Errorf("%s must be non-negative", name)
+	}
+	if parsed > math.MaxInt32 {
+		return 0, fmt.Errorf("%s must be less than or equal to %d", name, math.MaxInt32)
 	}
 	return parsed, nil
 }
