@@ -1407,6 +1407,10 @@ func (f *fakeRuntime) GetAttempt(context.Context, pgtype.UUID) (db.Attempt, erro
 	return f.attempt, f.attemptErr
 }
 
+func (f *fakeRuntime) ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error) {
+	return nil, nil
+}
+
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	f.artifactReq = req
 	f.artifactReqs = append(f.artifactReqs, req)
