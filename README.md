@@ -229,3 +229,7 @@ Run:
 ```bash
 go test ./...
 ```
+
+## Agent Harnesses
+
+See [Harness Integration Examples](docs/harness-integration.md) for copy-pasteable Codex, Claude Code, Gemini CLI, OpenCode, and custom-agent flows.

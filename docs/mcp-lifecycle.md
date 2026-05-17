@@ -8,6 +8,7 @@ Current lifecycle:
 2. It validates the database-backed runtime configuration.
 3. It opens the shared runtime composition.
 4. It registers MCP tool metadata from `internal/contracts`.
-5. It reports startup success with the registered tool count.
+5. It wires MCP tool calls to the shared runtime services.
+6. It reports startup success with the registered tool count.
 
-This phase does not execute MCP tool calls yet. Tool handlers and protocol serving belong to `P2-06`, and should delegate to runtime services rather than duplicating business logic inside the MCP package.
+The MCP package now has runtime-backed handlers for the Phase 2 operation catalog. Protocol transport remains intentionally thin: it should expose the registered tools and delegate execution to `mcp.Server.Call` rather than duplicating business logic inside the transport layer.

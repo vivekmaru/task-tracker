@@ -1041,6 +1041,35 @@ func TestRunCodexSubcommandHelpSucceeds(t *testing.T) {
 	}
 }
 
+func TestDocumentedCodexHarnessCommandsExposeHelp(t *testing.T) {
+	for _, command := range []string{"claim", "checkpoint", "complete", "follow-up", "block"} {
+		t.Run(command, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			opened := false
+
+			code := RunWithDependencies([]string{"codex", command, "--help"}, &stdout, &stderr, Dependencies{
+				OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+					opened = true
+					return &fakeRuntime{}, nil
+				},
+			})
+
+			if code != 0 {
+				t.Fatalf("expected exit code 0, got %d", code)
+			}
+			if opened {
+				t.Fatalf("runtime should not open for help")
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("expected no stderr, got %q", stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "forge codex "+command) {
+				t.Fatalf("expected codex %s help, got %q", command, stdout.String())
+			}
+		})
+	}
+}
+
 func TestRunCodexSubcommandHelpSucceedsAfterFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	opened := false
