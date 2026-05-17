@@ -65,6 +65,7 @@ type RuntimeHandle interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
 	DecomposeTicket(context.Context, services.DecomposeTicketRequest) (services.DecomposeTicketResult, error)
 	RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error)

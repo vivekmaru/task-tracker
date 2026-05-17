@@ -26,6 +26,10 @@ type TicketLister interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
 }
 
+type TicketAttemptLister interface {
+	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
+}
+
 type Options struct {
 	WorkspaceID pgtype.UUID
 	ProjectID   pgtype.UUID
@@ -35,9 +39,22 @@ type Options struct {
 }
 
 type QueueModel struct {
-	tickets  []db.Ticket
-	selected int
-	err      error
+	tickets      []db.Ticket
+	selected     int
+	err          error
+	detailCtx    context.Context
+	detailLoader TicketAttemptLister
+	detail       TicketDetailModel
+	showDetail   bool
+	detailTicket pgtype.UUID
+	detailSeq    int64
+}
+
+type detailLoadedMsg struct {
+	requestSeq int64
+	ticket     db.Ticket
+	attempts   []db.Attempt
+	err        error
 }
 
 func NewQueueModel(tickets []db.Ticket) QueueModel {
@@ -47,6 +64,12 @@ func NewQueueModel(tickets []db.Ticket) QueueModel {
 
 func NewQueueModelWithError(err error) QueueModel {
 	return QueueModel{err: err}
+}
+
+func (m QueueModel) WithDetailLoader(ctx context.Context, loader TicketAttemptLister) QueueModel {
+	m.detailCtx = ctx
+	m.detailLoader = loader
+	return m
 }
 
 func LoadQueue(ctx context.Context, lister TicketLister, opts Options) (QueueModel, error) {
@@ -69,6 +92,9 @@ func LoadQueue(ctx context.Context, lister TicketLister, opts Options) (QueueMod
 
 func Run(ctx context.Context, output io.Writer, lister TicketLister, opts Options) error {
 	model, err := LoadQueue(ctx, lister, opts)
+	if detailLoader, ok := lister.(TicketAttemptLister); ok {
+		model = model.WithDetailLoader(ctx, detailLoader)
+	}
 	programOptions := []tea.ProgramOption{tea.WithOutput(output), tea.WithContext(ctx)}
 	if err != nil {
 		programOptions = append(programOptions, tea.WithInput(nil))
@@ -91,6 +117,16 @@ func (m QueueModel) Init() tea.Cmd {
 func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.showDetail {
+			switch msg.String() {
+			case "ctrl+c", "q", "esc":
+				return m, tea.Quit
+			case "b":
+				m.showDetail = false
+				return m, nil
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
 			return m, tea.Quit
@@ -98,12 +134,31 @@ func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.MoveDown(), nil
 		case "up", "k":
 			return m.MoveUp(), nil
+		case "enter":
+			return m.loadSelectedDetail()
 		}
+	case detailLoadedMsg:
+		if msg.requestSeq != m.detailSeq {
+			return m, nil
+		}
+		if msg.ticket.ID != m.detailTicket {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.detail = NewTicketDetailModelWithError(msg.ticket, msg.err)
+		} else {
+			m.detail = NewTicketDetailModel(msg.ticket, msg.attempts)
+		}
+		m.showDetail = true
+		return m, nil
 	}
 	return m, nil
 }
 
 func (m QueueModel) View() string {
+	if m.showDetail {
+		return m.detail.View()
+	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Forge Queue"))
 	b.WriteString("\n")
@@ -168,6 +223,24 @@ func (m QueueModel) MoveUp() QueueModel {
 
 func (m QueueModel) SelectedIndex() int {
 	return m.selected
+}
+
+func (m QueueModel) loadSelectedDetail() (QueueModel, tea.Cmd) {
+	if len(m.tickets) == 0 || m.detailLoader == nil {
+		return m, nil
+	}
+	ticket := m.tickets[m.selected]
+	m.detailSeq++
+	seq := m.detailSeq
+	m.detailTicket = ticket.ID
+	ctx := m.detailCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return m, func() tea.Msg {
+		attempts, err := m.detailLoader.ListAttemptsByTicket(ctx, ticket.ID)
+		return detailLoadedMsg{requestSeq: seq, ticket: ticket, attempts: attempts, err: err}
+	}
 }
 
 func summaryLine(tickets []db.Ticket) string {

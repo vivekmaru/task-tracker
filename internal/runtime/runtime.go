@@ -125,6 +125,10 @@ func (r *Runtime) GetAttempt(ctx context.Context, id pgtype.UUID) (db.Attempt, e
 	return r.Queries.GetAttempt(ctx, id)
 }
 
+func (r *Runtime) ListAttemptsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.Attempt, error) {
+	return r.Queries.ListAttemptsByTicket(ctx, ticketID)
+}
+
 func (r *Runtime) RegisterArtifact(ctx context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	return r.Artifacts.RegisterArtifact(ctx, req)
 }
