@@ -129,6 +129,14 @@ func (r *Runtime) ListAttemptsByTicket(ctx context.Context, ticketID pgtype.UUID
 	return r.Queries.ListAttemptsByTicket(ctx, ticketID)
 }
 
+func (r *Runtime) ListAttemptCheckpointsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.AttemptCheckpoint, error) {
+	return r.Queries.ListAttemptCheckpointsByTicket(ctx, ticketID)
+}
+
+func (r *Runtime) ListTicketEventsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.TicketEvent, error) {
+	return r.Queries.ListTicketEventsByTicket(ctx, ticketID)
+}
+
 func (r *Runtime) RegisterArtifact(ctx context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	return r.Artifacts.RegisterArtifact(ctx, req)
 }

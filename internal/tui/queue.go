@@ -30,6 +30,13 @@ type TicketAttemptLister interface {
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 }
 
+type TicketTimelineLoader interface {
+	TicketAttemptLister
+	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
+	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
+	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
+}
+
 type Options struct {
 	WorkspaceID pgtype.UUID
 	ProjectID   pgtype.UUID
@@ -43,7 +50,7 @@ type QueueModel struct {
 	selected     int
 	err          error
 	detailCtx    context.Context
-	detailLoader TicketAttemptLister
+	detailLoader TicketTimelineLoader
 	detail       TicketDetailModel
 	showDetail   bool
 	detailTicket pgtype.UUID
@@ -53,7 +60,7 @@ type QueueModel struct {
 type detailLoadedMsg struct {
 	requestSeq int64
 	ticket     db.Ticket
-	attempts   []db.Attempt
+	timeline   TicketTimeline
 	err        error
 }
 
@@ -66,10 +73,35 @@ func NewQueueModelWithError(err error) QueueModel {
 	return QueueModel{err: err}
 }
 
-func (m QueueModel) WithDetailLoader(ctx context.Context, loader TicketAttemptLister) QueueModel {
+func (m QueueModel) WithDetailLoader(ctx context.Context, loader TicketTimelineLoader) QueueModel {
 	m.detailCtx = ctx
 	m.detailLoader = loader
 	return m
+}
+
+func LoadTicketTimeline(ctx context.Context, loader TicketTimelineLoader, ticketID pgtype.UUID) (TicketTimeline, error) {
+	attempts, err := loader.ListAttemptsByTicket(ctx, ticketID)
+	if err != nil {
+		return TicketTimeline{}, err
+	}
+	checkpoints, err := loader.ListAttemptCheckpointsByTicket(ctx, ticketID)
+	if err != nil {
+		return TicketTimeline{}, err
+	}
+	events, err := loader.ListTicketEventsByTicket(ctx, ticketID)
+	if err != nil {
+		return TicketTimeline{}, err
+	}
+	artifacts, err := loader.ListArtifactsByTicket(ctx, ticketID)
+	if err != nil {
+		return TicketTimeline{}, err
+	}
+	return TicketTimeline{
+		Attempts:    attempts,
+		Checkpoints: checkpoints,
+		Events:      events,
+		Artifacts:   artifacts,
+	}, nil
 }
 
 func LoadQueue(ctx context.Context, lister TicketLister, opts Options) (QueueModel, error) {
@@ -92,7 +124,7 @@ func LoadQueue(ctx context.Context, lister TicketLister, opts Options) (QueueMod
 
 func Run(ctx context.Context, output io.Writer, lister TicketLister, opts Options) error {
 	model, err := LoadQueue(ctx, lister, opts)
-	if detailLoader, ok := lister.(TicketAttemptLister); ok {
+	if detailLoader, ok := lister.(TicketTimelineLoader); ok {
 		model = model.WithDetailLoader(ctx, detailLoader)
 	}
 	programOptions := []tea.ProgramOption{tea.WithOutput(output), tea.WithContext(ctx)}
@@ -147,7 +179,7 @@ func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.detail = NewTicketDetailModelWithError(msg.ticket, msg.err)
 		} else {
-			m.detail = NewTicketDetailModel(msg.ticket, msg.attempts)
+			m.detail = NewTicketDetailModelWithTimeline(msg.ticket, msg.timeline)
 		}
 		m.showDetail = true
 		return m, nil
@@ -238,8 +270,8 @@ func (m QueueModel) loadSelectedDetail() (QueueModel, tea.Cmd) {
 		ctx = context.Background()
 	}
 	return m, func() tea.Msg {
-		attempts, err := m.detailLoader.ListAttemptsByTicket(ctx, ticket.ID)
-		return detailLoadedMsg{requestSeq: seq, ticket: ticket, attempts: attempts, err: err}
+		timeline, err := LoadTicketTimeline(ctx, m.detailLoader, ticket.ID)
+		return detailLoadedMsg{requestSeq: seq, ticket: ticket, timeline: timeline, err: err}
 	}
 }
 
