@@ -55,6 +55,7 @@ const (
 
 var ErrEnqueuePermissionRequired = errors.New("enqueue permission required")
 var ErrTicketNotFound = errors.New("ticket not found")
+var ErrTicketIsNotProposed = errors.New("ticket is not proposed work")
 var ErrTicketTransitionNotAllowed = errors.New("ticket transition is not allowed")
 
 var (
@@ -71,6 +72,7 @@ type TicketStore interface {
 	CreateTicketDependency(context.Context, db.CreateTicketDependencyParams) (db.TicketDependency, error)
 	CreateTicketEvent(context.Context, db.CreateTicketEventParams) (db.TicketEvent, error)
 	ListTickets(context.Context, db.ListTicketsParams) ([]db.Ticket, error)
+	ListProposedTickets(context.Context, db.ListProposedTicketsParams) ([]db.Ticket, error)
 }
 
 var _ TicketStore = (*db.Queries)(nil)
@@ -142,6 +144,7 @@ type UpdateTicketRequest struct {
 
 	ActorType string
 	ActorID   string
+	eventData map[string]any
 }
 
 type TicketTransitionRequest struct {
@@ -154,6 +157,55 @@ type TicketTransitionRequest struct {
 type ReviewTicketRequest struct {
 	TicketID  pgtype.UUID
 	Decision  string
+	ActorType string
+	ActorID   string
+	Reason    string
+}
+
+type ListProposedTicketsRequest struct {
+	WorkspaceID pgtype.UUID
+	ProjectID   pgtype.UUID
+	Type        string
+	Offset      int32
+	Limit       int32
+}
+
+type ProposedTicketTriageItem struct {
+	Ticket               db.Ticket
+	SourceAttemptID      pgtype.UUID
+	SourceArtifactID     pgtype.UUID
+	CreatedByID          string
+	CreationReason       string
+	AcceptanceCriteria   []string
+	VerificationCommands []string
+	RelevantPaths        []string
+}
+
+type ProposedTicketTriageRequest struct {
+	TicketID  pgtype.UUID
+	ActorType string
+	ActorID   string
+	Reason    string
+}
+
+type MergeProposedTicketRequest struct {
+	TicketID       pgtype.UUID
+	TargetTicketID pgtype.UUID
+	ActorType      string
+	ActorID        string
+	Reason         string
+}
+
+type RefineProposedTicketRequest struct {
+	TicketID pgtype.UUID
+
+	Title                *string
+	Description          *string
+	Tags                 *[]string
+	AcceptanceCriteria   *[]string
+	VerificationCommands *[]string
+	RelevantPaths        *[]string
+
 	ActorType string
 	ActorID   string
 	Reason    string
@@ -198,6 +250,51 @@ func (s *TicketService) ListTickets(ctx context.Context, req ListTicketsRequest)
 		Offset:      req.Offset,
 		Limit:       limit,
 	})
+}
+
+func (s *TicketService) ListProposedTickets(ctx context.Context, req ListProposedTicketsRequest) ([]ProposedTicketTriageItem, error) {
+	req.Type = strings.TrimSpace(req.Type)
+	if problems := validateListProposedTicketsRequest(req); len(problems) > 0 {
+		return nil, ValidationError{Problems: problems}
+	}
+	if req.Limit <= 0 {
+		req.Limit = 50
+	}
+	if req.Limit > 200 {
+		req.Limit = 200
+	}
+	tickets, err := s.store.ListProposedTickets(ctx, db.ListProposedTicketsParams{
+		WorkspaceID: req.WorkspaceID,
+		ProjectID:   req.ProjectID,
+		Type:        optionalText(req.Type),
+		Offset:      req.Offset,
+		Limit:       req.Limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]ProposedTicketTriageItem, 0, len(tickets))
+	for _, ticket := range tickets {
+		if ticket.CreatedBy != ActorAgent {
+			continue
+		}
+		verificationCommands, err := decodeJSONArray(ticket.VerificationCommands)
+		if err != nil {
+			return nil, fmt.Errorf("decode proposed ticket verification commands: %w", err)
+		}
+		items = append(items, ProposedTicketTriageItem{
+			Ticket:               ticket,
+			SourceAttemptID:      ticket.SourceAttemptID,
+			SourceArtifactID:     ticket.SourceArtifactID,
+			CreatedByID:          textValue(ticket.CreatedByID),
+			CreationReason:       textValue(ticket.CreationReason),
+			AcceptanceCriteria:   append([]string(nil), ticket.AcceptanceCriteria...),
+			VerificationCommands: verificationCommands,
+			RelevantPaths:        append([]string(nil), ticket.RelevantPaths...),
+		})
+	}
+	return items, nil
 }
 
 func (s *TicketService) UpdateTicket(ctx context.Context, req UpdateTicketRequest) (db.Ticket, error) {
@@ -249,9 +346,15 @@ func (s *TicketService) UpdateTicket(ctx context.Context, req UpdateTicketReques
 		return db.Ticket{}, fmt.Errorf("update ticket: %w", err)
 	}
 
-	eventData, err := json.Marshal(map[string]any{
+	data := map[string]any{
 		"changed_fields": changedFields,
-	})
+	}
+	for key, value := range req.eventData {
+		if value != "" {
+			data[key] = value
+		}
+	}
+	eventData, err := json.Marshal(data)
 	if err != nil {
 		return db.Ticket{}, fmt.Errorf("marshal ticket event data: %w", err)
 	}
@@ -269,6 +372,76 @@ func (s *TicketService) UpdateTicket(ctx context.Context, req UpdateTicketReques
 	}
 
 	return ticket, nil
+}
+
+func (s *TicketService) ReadyProposedTicket(ctx context.Context, req ProposedTicketTriageRequest) (db.Ticket, error) {
+	return s.transitionProposedTicket(ctx, req, "ready_proposed", EventTicketReady, TicketStatusTodo)
+}
+
+func (s *TicketService) EnqueueProposedTicket(ctx context.Context, req ProposedTicketTriageRequest) (db.Ticket, error) {
+	return s.transitionProposedTicket(ctx, req, "enqueue_proposed", EventTicketReady, TicketStatusTodo)
+}
+
+func (s *TicketService) RejectProposedTicket(ctx context.Context, req ProposedTicketTriageRequest) (db.Ticket, error) {
+	return s.transitionProposedTicket(ctx, req, "reject_proposed", EventTicketArchived, TicketStatusArchived)
+}
+
+func (s *TicketService) ArchiveProposedTicket(ctx context.Context, req ProposedTicketTriageRequest) (db.Ticket, error) {
+	return s.transitionProposedTicket(ctx, req, "archive_proposed", EventTicketArchived, TicketStatusArchived)
+}
+
+func (s *TicketService) MergeProposedTicket(ctx context.Context, req MergeProposedTicketRequest) (db.Ticket, error) {
+	req = trimMergeProposedTicketRequest(req)
+	if req.ActorType == "" {
+		req.ActorType = ActorHuman
+	}
+	if problems := validateMergeProposedTicketRequest(req); len(problems) > 0 {
+		return db.Ticket{}, ValidationError{Problems: problems}
+	}
+	if _, err := s.requireProposedTicket(ctx, req.TicketID); err != nil {
+		return db.Ticket{}, err
+	}
+	return s.setTicketStatus(ctx, setTicketStatusRequest{
+		ticketID:        req.TicketID,
+		status:          TicketStatusArchived,
+		allowedStatuses: []string{TicketStatusBacklog},
+		eventType:       EventTicketArchived,
+		actorType:       req.ActorType,
+		actorID:         req.ActorID,
+		data: map[string]any{
+			"operation":             "merge_proposed",
+			"reason":                req.Reason,
+			"merged_into_ticket_id": ticketUUIDString(req.TargetTicketID),
+		},
+	})
+}
+
+func (s *TicketService) RefineProposedTicket(ctx context.Context, req RefineProposedTicketRequest) (db.Ticket, error) {
+	req = trimRefineProposedTicketRequest(req)
+	if req.ActorType == "" {
+		req.ActorType = ActorHuman
+	}
+	if problems := validateRefineProposedTicketRequest(req); len(problems) > 0 {
+		return db.Ticket{}, ValidationError{Problems: problems}
+	}
+	if _, err := s.requireProposedTicket(ctx, req.TicketID); err != nil {
+		return db.Ticket{}, err
+	}
+	return s.UpdateTicket(ctx, UpdateTicketRequest{
+		TicketID:             req.TicketID,
+		Title:                req.Title,
+		Description:          req.Description,
+		Tags:                 req.Tags,
+		AcceptanceCriteria:   req.AcceptanceCriteria,
+		VerificationCommands: req.VerificationCommands,
+		RelevantPaths:        req.RelevantPaths,
+		ActorType:            req.ActorType,
+		ActorID:              req.ActorID,
+		eventData: map[string]any{
+			"operation": "refine_proposed",
+			"reason":    req.Reason,
+		},
+	})
 }
 
 func (s *TicketService) MarkReady(ctx context.Context, req TicketTransitionRequest) (db.Ticket, error) {
@@ -388,6 +561,45 @@ func (s *TicketService) transitionTicket(ctx context.Context, req TicketTransiti
 			"reason":    req.Reason,
 		},
 	})
+}
+
+func (s *TicketService) transitionProposedTicket(ctx context.Context, req ProposedTicketTriageRequest, operation string, eventType string, targetStatus string) (db.Ticket, error) {
+	req = trimProposedTicketTriageRequest(req)
+	if req.ActorType == "" {
+		req.ActorType = ActorHuman
+	}
+	if problems := validateProposedTicketTriageRequest(req); len(problems) > 0 {
+		return db.Ticket{}, ValidationError{Problems: problems}
+	}
+	if _, err := s.requireProposedTicket(ctx, req.TicketID); err != nil {
+		return db.Ticket{}, err
+	}
+	return s.setTicketStatus(ctx, setTicketStatusRequest{
+		ticketID:        req.TicketID,
+		status:          targetStatus,
+		allowedStatuses: []string{TicketStatusBacklog},
+		eventType:       eventType,
+		actorType:       req.ActorType,
+		actorID:         req.ActorID,
+		data: map[string]any{
+			"operation": operation,
+			"reason":    req.Reason,
+		},
+	})
+}
+
+func (s *TicketService) requireProposedTicket(ctx context.Context, ticketID pgtype.UUID) (db.Ticket, error) {
+	ticket, err := s.store.GetTicket(ctx, ticketID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Ticket{}, ErrTicketNotFound
+		}
+		return db.Ticket{}, fmt.Errorf("get proposed ticket: %w", err)
+	}
+	if ticket.Status != TicketStatusBacklog || ticket.CreatedBy != ActorAgent {
+		return db.Ticket{}, ErrTicketIsNotProposed
+	}
+	return ticket, nil
 }
 
 func (s *TicketService) setTicketStatus(ctx context.Context, req setTicketStatusRequest) (db.Ticket, error) {
@@ -659,6 +871,26 @@ func validateListTicketsRequest(req ListTicketsRequest) []string {
 	return problems
 }
 
+func validateListProposedTicketsRequest(req ListProposedTicketsRequest) []string {
+	var problems []string
+	if !req.WorkspaceID.Valid {
+		problems = append(problems, "workspace_id is required")
+	}
+	if !req.ProjectID.Valid {
+		problems = append(problems, "project_id is required")
+	}
+	if req.Type != "" && !isAllowedTicketType(req.Type) {
+		problems = append(problems, "type filter is not valid")
+	}
+	if req.Offset < 0 {
+		problems = append(problems, "offset must be non-negative")
+	}
+	if req.Limit < 0 {
+		problems = append(problems, "limit must be non-negative")
+	}
+	return problems
+}
+
 func validateUpdateTicketRequest(req UpdateTicketRequest) []string {
 	var problems []string
 	if !req.TicketID.Valid {
@@ -705,6 +937,59 @@ func validateReviewTicketRequest(req ReviewTicketRequest) []string {
 	}
 	if req.Decision != ReviewDecisionApprove && req.Decision != ReviewDecisionReject {
 		problems = append(problems, "decision must be approve or reject")
+	}
+	return problems
+}
+
+func validateProposedTicketTriageRequest(req ProposedTicketTriageRequest) []string {
+	var problems []string
+	if !req.TicketID.Valid {
+		problems = append(problems, "ticket_id is required")
+	}
+	if !isAllowedActor(req.ActorType) {
+		problems = append(problems, "actor_type must be human, agent, or system")
+	}
+	return problems
+}
+
+func validateMergeProposedTicketRequest(req MergeProposedTicketRequest) []string {
+	var problems []string
+	if !req.TicketID.Valid {
+		problems = append(problems, "ticket_id is required")
+	}
+	if !req.TargetTicketID.Valid {
+		problems = append(problems, "target_ticket_id is required")
+	}
+	if req.TicketID == req.TargetTicketID {
+		problems = append(problems, "target_ticket_id must differ from ticket_id")
+	}
+	if !isAllowedActor(req.ActorType) {
+		problems = append(problems, "actor_type must be human, agent, or system")
+	}
+	return problems
+}
+
+func validateRefineProposedTicketRequest(req RefineProposedTicketRequest) []string {
+	var problems []string
+	if !req.TicketID.Valid {
+		problems = append(problems, "ticket_id is required")
+	}
+	if !isAllowedActor(req.ActorType) {
+		problems = append(problems, "actor_type must be human, agent, or system")
+	}
+	if req.Title == nil &&
+		req.Description == nil &&
+		req.Tags == nil &&
+		req.AcceptanceCriteria == nil &&
+		req.VerificationCommands == nil &&
+		req.RelevantPaths == nil {
+		problems = append(problems, "patch must include at least one supported field")
+	}
+	if req.Title != nil && *req.Title == "" {
+		problems = append(problems, "title cannot be empty")
+	}
+	if req.AcceptanceCriteria != nil && len(*req.AcceptanceCriteria) == 0 {
+		problems = append(problems, "acceptance_criteria cannot be empty")
 	}
 	return problems
 }
@@ -790,6 +1075,51 @@ func trimReviewTicketRequest(req ReviewTicketRequest) ReviewTicketRequest {
 	return req
 }
 
+func trimProposedTicketTriageRequest(req ProposedTicketTriageRequest) ProposedTicketTriageRequest {
+	req.ActorType = strings.TrimSpace(req.ActorType)
+	req.ActorID = strings.TrimSpace(req.ActorID)
+	req.Reason = strings.TrimSpace(req.Reason)
+	return req
+}
+
+func trimMergeProposedTicketRequest(req MergeProposedTicketRequest) MergeProposedTicketRequest {
+	req.ActorType = strings.TrimSpace(req.ActorType)
+	req.ActorID = strings.TrimSpace(req.ActorID)
+	req.Reason = strings.TrimSpace(req.Reason)
+	return req
+}
+
+func trimRefineProposedTicketRequest(req RefineProposedTicketRequest) RefineProposedTicketRequest {
+	if req.Title != nil {
+		value := strings.TrimSpace(*req.Title)
+		req.Title = &value
+	}
+	if req.Description != nil {
+		value := strings.TrimSpace(*req.Description)
+		req.Description = &value
+	}
+	req.ActorType = strings.TrimSpace(req.ActorType)
+	req.ActorID = strings.TrimSpace(req.ActorID)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.Tags != nil {
+		values := compactStringsPreserveEmpty(*req.Tags)
+		req.Tags = &values
+	}
+	if req.AcceptanceCriteria != nil {
+		values := compactStringsPreserveEmpty(*req.AcceptanceCriteria)
+		req.AcceptanceCriteria = &values
+	}
+	if req.VerificationCommands != nil {
+		values := compactStringsPreserveEmpty(*req.VerificationCommands)
+		req.VerificationCommands = &values
+	}
+	if req.RelevantPaths != nil {
+		values := compactStringsPreserveEmpty(*req.RelevantPaths)
+		req.RelevantPaths = &values
+	}
+	return req
+}
+
 func compactStrings(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -823,6 +1153,22 @@ func requiredText(value string) pgtype.Text {
 	return pgtype.Text{String: value, Valid: true}
 }
 
+func textValue(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func ticketUUIDString(id pgtype.UUID) string {
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
+}
+
 func encodeJSONObject(value map[string]any) ([]byte, error) {
 	if len(value) == 0 {
 		return defaultJSONObject, nil
@@ -835,6 +1181,17 @@ func encodeJSONArray(value []string) ([]byte, error) {
 		return defaultJSONArray, nil
 	}
 	return json.Marshal(value)
+}
+
+func decodeJSONArray(value []byte) ([]string, error) {
+	if len(value) == 0 {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal(value, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func isAllowedActor(value string) bool {
