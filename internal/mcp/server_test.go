@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,6 +268,104 @@ func TestServerCallUpdateTicketDelegatesToRuntime(t *testing.T) {
 	}
 }
 
+func TestServerCallTicketTransitionsDelegateToRuntime(t *testing.T) {
+	tests := []struct {
+		name       string
+		operation  string
+		wantCall   func(*fakeRuntime) services.TicketTransitionRequest
+		wantStatus string
+		wantReason string
+	}{
+		{
+			name:       "ready",
+			operation:  contracts.OperationMarkTicketReady,
+			wantCall:   func(rt *fakeRuntime) services.TicketTransitionRequest { return rt.markReadyReq },
+			wantStatus: services.TicketStatusTodo,
+			wantReason: "ready for an agent",
+		},
+		{
+			name:       "reopen",
+			operation:  contracts.OperationReopenTicket,
+			wantCall:   func(rt *fakeRuntime) services.TicketTransitionRequest { return rt.reopenReq },
+			wantStatus: services.TicketStatusTodo,
+			wantReason: "needs another attempt",
+		},
+		{
+			name:       "unblock",
+			operation:  contracts.OperationUnblockTicket,
+			wantCall:   func(rt *fakeRuntime) services.TicketTransitionRequest { return rt.unblockReq },
+			wantStatus: services.TicketStatusTodo,
+			wantReason: "secret configured",
+		},
+		{
+			name:       "request review",
+			operation:  contracts.OperationRequestTicketReview,
+			wantCall:   func(rt *fakeRuntime) services.TicketTransitionRequest { return rt.requestReviewReq },
+			wantStatus: services.TicketStatusNeedsReview,
+			wantReason: "human decision needed",
+		},
+		{
+			name:       "archive",
+			operation:  contracts.OperationArchiveTicket,
+			wantCall:   func(rt *fakeRuntime) services.TicketTransitionRequest { return rt.archiveReq },
+			wantStatus: services.TicketStatusArchived,
+			wantReason: "superseded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &fakeRuntime{}
+			server, err := NewServer(rt, contracts.AllOperations())
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+
+			out, err := server.Call(context.Background(), tt.operation, json.RawMessage(fmt.Sprintf(`{
+				"ticket_id":"00000000-0000-0000-0000-000000000003",
+				"actor_id":"codex",
+				"reason":%q
+			}`, tt.wantReason)))
+			if err != nil {
+				t.Fatalf("call %s: %v", tt.operation, err)
+			}
+
+			req := tt.wantCall(rt)
+			if req.ActorType != services.ActorAgent || req.ActorID != "codex" || req.Reason != tt.wantReason {
+				t.Fatalf("unexpected transition request: %#v", req)
+			}
+			if !req.TicketID.Valid {
+				t.Fatalf("expected ticket id in request: %#v", req)
+			}
+			if !strings.Contains(string(out), `"status":"`+tt.wantStatus+`"`) {
+				t.Fatalf("expected status %q in output, got %s", tt.wantStatus, string(out))
+			}
+		})
+	}
+}
+
+func TestServerCallReviewTicketDelegatesToRuntime(t *testing.T) {
+	rt := &fakeRuntime{}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationReviewTicket, json.RawMessage(`{
+		"ticket_id":"00000000-0000-0000-0000-000000000003",
+		"decision":"reject",
+		"actor_id":"codex",
+		"reason":"tests failed"
+	}`))
+	if err != nil {
+		t.Fatalf("call review ticket: %v", err)
+	}
+
+	if rt.reviewReq.Decision != services.ReviewDecisionReject || rt.reviewReq.ActorType != services.ActorAgent || rt.reviewReq.ActorID != "codex" || rt.reviewReq.Reason != "tests failed" {
+		t.Fatalf("unexpected review request: %#v", rt.reviewReq)
+	}
+}
+
 func TestServerCallListTicketsDefaultsLimit(t *testing.T) {
 	rt := &fakeRuntime{}
 	server, err := NewServer(rt, contracts.AllOperations())
@@ -514,6 +614,12 @@ type fakeRuntime struct {
 	createReq               services.CreateTicketRequest
 	proposeReq              services.CreateTicketRequest
 	updateReq               services.UpdateTicketRequest
+	markReadyReq            services.TicketTransitionRequest
+	reopenReq               services.TicketTransitionRequest
+	unblockReq              services.TicketTransitionRequest
+	requestReviewReq        services.TicketTransitionRequest
+	reviewReq               services.ReviewTicketRequest
+	archiveReq              services.TicketTransitionRequest
 	claimReq                services.ClaimNextRequest
 	heartbeatReq            services.HeartbeatRequest
 	checkpointReq           services.CheckpointRequest
@@ -549,6 +655,40 @@ func (f *fakeRuntime) UpdateTicket(_ context.Context, req services.UpdateTicketR
 		title = *req.Title
 	}
 	return db.Ticket{ID: req.TicketID, Title: title, Type: services.TicketTypeDocumentation, Status: services.TicketStatusTodo}, nil
+}
+
+func (f *fakeRuntime) MarkReady(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.markReadyReq = req
+	return transitionedTicket(req.TicketID, services.TicketStatusTodo), nil
+}
+
+func (f *fakeRuntime) Reopen(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.reopenReq = req
+	return transitionedTicket(req.TicketID, services.TicketStatusTodo), nil
+}
+
+func (f *fakeRuntime) Unblock(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.unblockReq = req
+	return transitionedTicket(req.TicketID, services.TicketStatusTodo), nil
+}
+
+func (f *fakeRuntime) RequestReview(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.requestReviewReq = req
+	return transitionedTicket(req.TicketID, services.TicketStatusNeedsReview), nil
+}
+
+func (f *fakeRuntime) Review(_ context.Context, req services.ReviewTicketRequest) (db.Ticket, error) {
+	f.reviewReq = req
+	status := services.TicketStatusDone
+	if req.Decision == services.ReviewDecisionReject {
+		status = services.TicketStatusTodo
+	}
+	return transitionedTicket(req.TicketID, status), nil
+}
+
+func (f *fakeRuntime) Archive(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.archiveReq = req
+	return transitionedTicket(req.TicketID, services.TicketStatusArchived), nil
 }
 
 func (f *fakeRuntime) ClaimNext(_ context.Context, req services.ClaimNextRequest) (services.ClaimNextResult, error) {
@@ -632,6 +772,10 @@ func (f *fakeRuntime) RegisterCapabilities(_ context.Context, req services.Regis
 
 func ticketFor(req services.CreateTicketRequest) db.Ticket {
 	return db.Ticket{ID: testUUID(1), WorkspaceID: req.WorkspaceID, ProjectID: req.ProjectID, Title: req.Title, Type: req.Type, Status: services.TicketStatusTodo, CreatedBy: req.CreatedBy}
+}
+
+func transitionedTicket(id pgtype.UUID, status string) db.Ticket {
+	return db.Ticket{ID: id, Title: "Transitioned", Type: services.TicketTypeFeature, Status: status}
 }
 
 func transitionFor(attemptID pgtype.UUID, attemptStatus, ticketStatus string) services.AttemptTransitionResult {

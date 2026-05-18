@@ -129,7 +129,7 @@ CREATE TABLE ticket_events (
     actor_id text,
     data jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (type IN ('created', 'proposed', 'claimed', 'heartbeat', 'checkpointed', 'updated', 'completed', 'failed', 'blocked', 'expired', 'reviewed', 'archived')),
+    CHECK (type IN ('created', 'proposed', 'claimed', 'heartbeat', 'checkpointed', 'updated', 'completed', 'failed', 'blocked', 'expired', 'ready', 'reopened', 'unblocked', 'review_requested', 'reviewed', 'archived')),
     CHECK (actor_type IN ('human', 'agent', 'system'))
 );
 

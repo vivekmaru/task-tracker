@@ -250,6 +250,46 @@ type updateTicketPatch struct {
 	RelevantPaths        *[]string `json:"relevant_paths"`
 }
 
+type ticketTransitionInput struct {
+	TicketID string `json:"ticket_id"`
+	ActorID  string `json:"actor_id"`
+	Reason   string `json:"reason"`
+}
+
+func (p ticketTransitionInput) request() (services.TicketTransitionRequest, error) {
+	ticketID, err := requiredUUIDField("ticket_id", p.TicketID)
+	if err != nil {
+		return services.TicketTransitionRequest{}, err
+	}
+	return services.TicketTransitionRequest{
+		TicketID:  ticketID,
+		ActorType: services.ActorAgent,
+		ActorID:   p.ActorID,
+		Reason:    p.Reason,
+	}, nil
+}
+
+type reviewTicketInput struct {
+	TicketID string `json:"ticket_id"`
+	Decision string `json:"decision"`
+	ActorID  string `json:"actor_id"`
+	Reason   string `json:"reason"`
+}
+
+func (p reviewTicketInput) request() (services.ReviewTicketRequest, error) {
+	ticketID, err := requiredUUIDField("ticket_id", p.TicketID)
+	if err != nil {
+		return services.ReviewTicketRequest{}, err
+	}
+	return services.ReviewTicketRequest{
+		TicketID:  ticketID,
+		Decision:  p.Decision,
+		ActorType: services.ActorAgent,
+		ActorID:   p.ActorID,
+		Reason:    p.Reason,
+	}, nil
+}
+
 func (p updateTicketInput) request() (services.UpdateTicketRequest, error) {
 	ticketID, err := requiredUUIDField("ticket_id", p.TicketID)
 	if err != nil {

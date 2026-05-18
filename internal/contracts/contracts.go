@@ -13,6 +13,12 @@ const (
 	OperationHeartbeatAttempt          = "heartbeat_attempt"
 	OperationCheckpointAttempt         = "checkpoint_attempt"
 	OperationUpdateTicket              = "update_ticket"
+	OperationMarkTicketReady           = "mark_ticket_ready"
+	OperationReopenTicket              = "reopen_ticket"
+	OperationUnblockTicket             = "unblock_ticket"
+	OperationRequestTicketReview       = "request_ticket_review"
+	OperationReviewTicket              = "review_ticket"
+	OperationArchiveTicket             = "archive_ticket"
 	OperationCompleteAttempt           = "complete_attempt"
 	OperationFailAttempt               = "fail_attempt"
 	OperationBlockAttempt              = "block_attempt"
@@ -28,6 +34,12 @@ const (
 	RESTHeartbeat       = "heartbeat-attempt"
 	RESTCheckpoint      = "checkpoint-attempt"
 	RESTUpdateTicket    = "update-ticket"
+	RESTMarkTicketReady = "ready-ticket"
+	RESTReopenTicket    = "reopen-ticket"
+	RESTUnblockTicket   = "unblock-ticket"
+	RESTRequestReview   = "request-ticket-review"
+	RESTReviewTicket    = "review-ticket"
+	RESTArchiveTicket   = "archive-ticket"
 	RESTCompleteAttempt = "complete-attempt"
 	RESTFailAttempt     = "fail-attempt"
 	RESTBlockAttempt    = "block-attempt"
@@ -241,6 +253,77 @@ var operations = []Operation{
 			}),
 		}),
 		OutputSchema: ticketOutputSchema("Updated ticket"),
+	},
+	{
+		Name:        OperationMarkTicketReady,
+		Summary:     "Mark ticket ready",
+		Description: "Move backlog work into the claimable todo queue.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTMarkTicketReady,
+			MCPTool:         OperationMarkTicketReady,
+		},
+		InputSchema:  ticketTransitionInputSchema("Mark ticket ready input"),
+		OutputSchema: ticketOutputSchema("Ready ticket"),
+	},
+	{
+		Name:        OperationReopenTicket,
+		Summary:     "Reopen ticket",
+		Description: "Move terminal work back to todo for another attempt.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTReopenTicket,
+			MCPTool:         OperationReopenTicket,
+		},
+		InputSchema:  ticketTransitionInputSchema("Reopen ticket input"),
+		OutputSchema: ticketOutputSchema("Reopened ticket"),
+	},
+	{
+		Name:        OperationUnblockTicket,
+		Summary:     "Unblock ticket",
+		Description: "Move blocked work back to todo after the blocker is resolved.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTUnblockTicket,
+			MCPTool:         OperationUnblockTicket,
+		},
+		InputSchema:  ticketTransitionInputSchema("Unblock ticket input"),
+		OutputSchema: ticketOutputSchema("Unblocked ticket"),
+	},
+	{
+		Name:        OperationRequestTicketReview,
+		Summary:     "Request ticket review",
+		Description: "Move work into needs_review for a human or authorized reviewer decision.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTRequestReview,
+			MCPTool:         OperationRequestTicketReview,
+		},
+		InputSchema:  ticketTransitionInputSchema("Request ticket review input"),
+		OutputSchema: ticketOutputSchema("Ticket needing review"),
+	},
+	{
+		Name:        OperationReviewTicket,
+		Summary:     "Review ticket",
+		Description: "Approve or reject work that is waiting in needs_review.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTReviewTicket,
+			MCPTool:         OperationReviewTicket,
+		},
+		InputSchema: objectSchema("Review ticket input", []string{"ticket_id", "decision"}, map[string]any{
+			"ticket_id": uuidSchema("Ticket ID"),
+			"decision":  enumSchema("Review decision", "approve", "reject"),
+			"actor_id":  stringSchema("Actor ID for ticket-event attribution"),
+			"reason":    stringSchema("Reason for the review decision"),
+		}),
+		OutputSchema: ticketOutputSchema("Reviewed ticket"),
+	},
+	{
+		Name:        OperationArchiveTicket,
+		Summary:     "Archive ticket",
+		Description: "Move non-running work out of active queues.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTArchiveTicket,
+			MCPTool:         OperationArchiveTicket,
+		},
+		InputSchema:  ticketTransitionInputSchema("Archive ticket input"),
+		OutputSchema: ticketOutputSchema("Archived ticket"),
 	},
 	{
 		Name:        OperationCompleteAttempt,
@@ -459,6 +542,14 @@ func transitionInputSchema(title string, required []string, extra map[string]any
 		properties[key] = value
 	}
 	return objectSchema(title, required, properties)
+}
+
+func ticketTransitionInputSchema(title string) Schema {
+	return objectSchema(title, []string{"ticket_id"}, map[string]any{
+		"ticket_id": uuidSchema("Ticket ID"),
+		"actor_id":  stringSchema("Actor ID for ticket-event attribution"),
+		"reason":    stringSchema("Reason for the transition"),
+	})
 }
 
 func ticketOutputSchema(title string) Schema {
