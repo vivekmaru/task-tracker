@@ -54,6 +54,7 @@ const (
 )
 
 var ErrEnqueuePermissionRequired = errors.New("enqueue permission required")
+var ErrTicketNotFound = errors.New("ticket not found")
 var ErrTicketTransitionNotAllowed = errors.New("ticket transition is not allowed")
 
 var (
@@ -64,6 +65,7 @@ var (
 
 type TicketStore interface {
 	CreateTicket(context.Context, db.CreateTicketParams) (db.Ticket, error)
+	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	UpdateTicket(context.Context, db.UpdateTicketParams) (db.Ticket, error)
 	TransitionTicket(context.Context, db.TransitionTicketParams) (db.TransitionTicketRow, error)
 	CreateTicketDependency(context.Context, db.CreateTicketDependencyParams) (db.TicketDependency, error)
@@ -412,6 +414,11 @@ func (s *TicketService) setTicketStatus(ctx context.Context, req setTicketStatus
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			if _, getErr := s.store.GetTicket(ctx, req.ticketID); errors.Is(getErr, pgx.ErrNoRows) {
+				return db.Ticket{}, ErrTicketNotFound
+			} else if getErr != nil {
+				return db.Ticket{}, fmt.Errorf("get ticket after transition miss: %w", getErr)
+			}
 			return db.Ticket{}, ErrTicketTransitionNotAllowed
 		}
 		return db.Ticket{}, fmt.Errorf("transition ticket: %w", err)

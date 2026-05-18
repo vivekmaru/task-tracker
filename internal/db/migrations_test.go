@@ -89,6 +89,8 @@ func TestForwardMigrationAddsHumanTransitionEventTypes(t *testing.T) {
 		"review_requested",
 		"reviewed",
 		"archived",
+		"downgraded_type",
+		"type = 'updated'",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("expected event-type migration to contain %q", want)

@@ -29,6 +29,12 @@ type Runtime interface {
 	ProposeTicket(context.Context, services.CreateTicketRequest) (db.Ticket, error)
 	CreateTicketFromAttempt(context.Context, services.CreateTicketFromAttemptRequest) (db.Ticket, error)
 	UpdateTicket(context.Context, services.UpdateTicketRequest) (db.Ticket, error)
+	MarkReady(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	Reopen(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	Unblock(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	RequestReview(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	Review(context.Context, services.ReviewTicketRequest) (db.Ticket, error)
+	Archive(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
 	ClaimNext(context.Context, services.ClaimNextRequest) (services.ClaimNextResult, error)
 	Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error)
 	Checkpoint(context.Context, services.CheckpointRequest) (services.CheckpointResult, error)
@@ -165,6 +171,12 @@ func (s *Server) registerHandlers() {
 	s.handlers[contracts.OperationHeartbeatAttempt] = s.callHeartbeatAttempt
 	s.handlers[contracts.OperationCheckpointAttempt] = s.callCheckpointAttempt
 	s.handlers[contracts.OperationUpdateTicket] = s.callUpdateTicket
+	s.handlers[contracts.OperationMarkTicketReady] = s.callMarkTicketReady
+	s.handlers[contracts.OperationReopenTicket] = s.callReopenTicket
+	s.handlers[contracts.OperationUnblockTicket] = s.callUnblockTicket
+	s.handlers[contracts.OperationRequestTicketReview] = s.callRequestTicketReview
+	s.handlers[contracts.OperationReviewTicket] = s.callReviewTicket
+	s.handlers[contracts.OperationArchiveTicket] = s.callArchiveTicket
 	s.handlers[contracts.OperationCompleteAttempt] = s.callCompleteAttempt
 	s.handlers[contracts.OperationFailAttempt] = s.callFailAttempt
 	s.handlers[contracts.OperationBlockAttempt] = s.callBlockAttempt
@@ -309,6 +321,58 @@ func (s *Server) callUpdateTicket(ctx context.Context, input json.RawMessage) (a
 		return nil, err
 	}
 	ticket, err := s.runtime.UpdateTicket(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ticket": ticketPayload(ticket)}, nil
+}
+
+func (s *Server) callMarkTicketReady(ctx context.Context, input json.RawMessage) (any, error) {
+	return s.callTicketTransition(ctx, input, s.runtime.MarkReady)
+}
+
+func (s *Server) callReopenTicket(ctx context.Context, input json.RawMessage) (any, error) {
+	return s.callTicketTransition(ctx, input, s.runtime.Reopen)
+}
+
+func (s *Server) callUnblockTicket(ctx context.Context, input json.RawMessage) (any, error) {
+	return s.callTicketTransition(ctx, input, s.runtime.Unblock)
+}
+
+func (s *Server) callRequestTicketReview(ctx context.Context, input json.RawMessage) (any, error) {
+	return s.callTicketTransition(ctx, input, s.runtime.RequestReview)
+}
+
+func (s *Server) callArchiveTicket(ctx context.Context, input json.RawMessage) (any, error) {
+	return s.callTicketTransition(ctx, input, s.runtime.Archive)
+}
+
+func (s *Server) callTicketTransition(ctx context.Context, input json.RawMessage, transition func(context.Context, services.TicketTransitionRequest) (db.Ticket, error)) (any, error) {
+	var payload ticketTransitionInput
+	if err := decodeInput(input, &payload); err != nil {
+		return nil, err
+	}
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := transition(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ticket": ticketPayload(ticket)}, nil
+}
+
+func (s *Server) callReviewTicket(ctx context.Context, input json.RawMessage) (any, error) {
+	var payload reviewTicketInput
+	if err := decodeInput(input, &payload); err != nil {
+		return nil, err
+	}
+	req, err := payload.request()
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := s.runtime.Review(ctx, req)
 	if err != nil {
 		return nil, err
 	}

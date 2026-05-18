@@ -748,7 +748,7 @@ func TestReviewTicketApprovesOrRejectsNeedsReviewWork(t *testing.T) {
 }
 
 func TestHumanTicketTransitionsRejectInvalidTransitions(t *testing.T) {
-	store := &fakeTicketStore{transitionErr: pgx.ErrNoRows}
+	store := &fakeTicketStore{transitionErr: pgx.ErrNoRows, existingTicket: true}
 	service := NewTicketService(store)
 
 	_, err := service.MarkReady(context.Background(), TicketTransitionRequest{
@@ -761,6 +761,19 @@ func TestHumanTicketTransitionsRejectInvalidTransitions(t *testing.T) {
 	}
 	if len(store.createdEvents) != 0 {
 		t.Fatalf("expected no event for rejected transition, got %d", len(store.createdEvents))
+	}
+}
+
+func TestHumanTicketTransitionsReturnNotFoundForMissingTickets(t *testing.T) {
+	store := &fakeTicketStore{transitionErr: pgx.ErrNoRows}
+	service := NewTicketService(store)
+
+	_, err := service.MarkReady(context.Background(), TicketTransitionRequest{
+		TicketID:  testUUID(51),
+		ActorType: ActorHuman,
+	})
+	if !errors.Is(err, ErrTicketNotFound) {
+		t.Fatalf("expected ErrTicketNotFound, got %v", err)
 	}
 }
 
@@ -809,6 +822,7 @@ type fakeTicketStore struct {
 	createdEvents       []db.CreateTicketEventParams
 	listParams          []db.ListTicketsParams
 	transitionErr       error
+	existingTicket      bool
 }
 
 func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicketParams) (db.Ticket, error) {
@@ -843,6 +857,13 @@ func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicket
 		CreatedByID:          params.CreatedByID,
 		CreationReason:       params.CreationReason,
 	}, nil
+}
+
+func (s *fakeTicketStore) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
+	if !s.existingTicket {
+		return db.Ticket{}, pgx.ErrNoRows
+	}
+	return db.Ticket{ID: id, WorkspaceID: testUUID(1), ProjectID: testUUID(2), Status: TicketStatusTodo}, nil
 }
 
 func (s *fakeTicketStore) UpdateTicket(_ context.Context, params db.UpdateTicketParams) (db.Ticket, error) {

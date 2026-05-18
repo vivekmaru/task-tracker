@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -212,7 +213,7 @@ func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
 	if !strings.Contains(stdout.String(), "mcp runtime configuration ok") {
 		t.Fatalf("expected MCP startup message, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "registered 15 tools") {
+	if !strings.Contains(stdout.String(), fmt.Sprintf("registered %d tools", len(contracts.AllOperations()))) {
 		t.Fatalf("expected registered tool count, got %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
