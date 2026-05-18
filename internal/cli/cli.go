@@ -22,6 +22,7 @@ import (
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 	"github.com/vivek/agent-task-tracker/internal/services"
 	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
+	"github.com/vivek/agent-task-tracker/internal/web"
 )
 
 type command struct {
@@ -180,7 +181,7 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 
 	switch name {
 	case "tui":
-		if err := cfg.ValidateServer(); err != nil {
+		if err := cfg.ValidateRuntime(); err != nil {
 			fmt.Fprintf(stderr, "tui configuration error: %v\n", err)
 			return 2
 		}
@@ -231,12 +232,12 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			deps.ServeHTTP = serveHTTP
 		}
 		fmt.Fprintf(stdout, "server listening on %s\n", cfg.HTTPAddr)
-		if err := deps.ServeHTTP(context.Background(), cfg.HTTPAddr, api.NewRouterWithRuntime(rt)); err != nil {
+		if err := deps.ServeHTTP(context.Background(), cfg.HTTPAddr, api.NewRouterWithRuntimeAndAuth(rt, webAuthOptions(cfg))); err != nil {
 			fmt.Fprintf(stderr, "server HTTP error: %v\n", err)
 			return 1
 		}
 	case "mcp":
-		if err := cfg.ValidateServer(); err != nil {
+		if err := cfg.ValidateRuntime(); err != nil {
 			fmt.Fprintf(stderr, "mcp configuration error: %v\n", err)
 			return 2
 		}
@@ -266,6 +267,10 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		fmt.Fprintln(stdout, "worker runtime configuration ok; River worker loop not implemented yet")
 	}
 	return 0
+}
+
+func webAuthOptions(cfg config.Config) web.AuthOptions {
+	return web.AuthOptions{AdminToken: cfg.AdminToken}
 }
 
 func openRuntime(ctx context.Context, cfg config.Config) (RuntimeHandle, error) {

@@ -17,10 +17,15 @@ func NewRouter() http.Handler {
 }
 
 func NewRouterWithRuntime(rt web.Runtime) http.Handler {
+	return NewRouterWithRuntimeAndAuth(rt, web.AuthOptions{})
+}
+
+func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Handler {
 	mux := http.NewServeMux()
 	api := humago.NewWithPrefix(mux, basePath, huma.DefaultConfig("Forge API", "0.1.0"))
 	RegisterPhaseOneRoutes(api, rt)
-	webHandler := web.NewHandler(rt)
+	webHandler := web.NewHandlerWithAuth(rt, auth)
+	mux.Handle("/login", webHandler)
 	mux.Handle("/tickets", webHandler)
 	mux.Handle("/tickets/", webHandler)
 	return mux

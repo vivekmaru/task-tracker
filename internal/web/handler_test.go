@@ -58,6 +58,78 @@ func TestTicketListRendersRowsAndStableDetailLinks(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedHandlerRedirectsUnauthenticatedWebRequests(t *testing.T) {
+	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect to login, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/login?next=%2Ftickets%3Fworkspace_id%3D00000000-0000-0000-0000-000000000001%26project_id%3D00000000-0000-0000-0000-000000000002" {
+		t.Fatalf("unexpected login redirect: %q", got)
+	}
+}
+
+func TestAuthenticatedHandlerAcceptsBearerToken(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	runtime := &fakeRuntime{}
+	handler := NewHandlerWithAuth(runtime, AuthOptions{AdminToken: "secret-token"})
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID), nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected authorized request status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.listReq.WorkspaceID != workspaceID || runtime.listReq.ProjectID != projectID {
+		t.Fatalf("expected authorized request to reach runtime, got %#v", runtime.listReq)
+	}
+}
+
+func TestLoginCreatesSessionCookieWithoutEchoingToken(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	runtime := &fakeRuntime{}
+	handler := NewHandlerWithAuth(runtime, AuthOptions{AdminToken: "secret-token"})
+	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("admin_token=secret-token&next=%2Ftickets%3Fworkspace_id%3D"+uuidString(workspaceID)+"%26project_id%3D"+uuidString(projectID)))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRec := httptest.NewRecorder()
+
+	handler.ServeHTTP(loginRec, login)
+
+	if loginRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected successful login redirect, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	if strings.Contains(loginRec.Body.String(), "secret-token") {
+		t.Fatalf("login response should not echo the admin token:\n%s", loginRec.Body.String())
+	}
+	cookies := loginRec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected one session cookie, got %#v", cookies)
+	}
+	if cookies[0].Value == "" || cookies[0].Value == "secret-token" {
+		t.Fatalf("session cookie should be opaque, got %q", cookies[0].Value)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, loginRec.Header().Get("Location"), nil)
+	req.AddCookie(cookies[0])
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected session request status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.listReq.WorkspaceID != workspaceID || runtime.listReq.ProjectID != projectID {
+		t.Fatalf("expected session request to reach runtime, got %#v", runtime.listReq)
+	}
+}
+
 func TestTicketListRendersEmptyAndBadRequestStates(t *testing.T) {
 	handler := NewHandler(&fakeRuntime{})
 	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)

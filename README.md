@@ -43,6 +43,7 @@ Environment variables:
 export FORGE_DATABASE_URL='postgres://localhost:5432/forge?sslmode=disable'
 export FORGE_HTTP_ADDR='127.0.0.1:3017'
 export FORGE_WORKER_CONCURRENCY=1
+export FORGE_ADMIN_TOKEN='change-me-local-admin-token'
 ```
 
 Equivalent config file:
@@ -51,7 +52,8 @@ Equivalent config file:
 {
   "database_url": "postgres://localhost:5432/forge?sslmode=disable",
   "http_addr": "127.0.0.1:3017",
-  "worker_concurrency": 1
+  "worker_concurrency": 1,
+  "admin_token": "change-me-local-admin-token"
 }
 ```
 
@@ -98,7 +100,7 @@ go build -o forge ./cmd/forge
 
 ## Runtime Commands
 
-The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/tickets`, and `/tickets/{id}`:
+The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/login`, `/tickets`, and `/tickets/{id}`. Human web views require `admin_token`; sign in at `/login`, or pass `Authorization: Bearer $FORGE_ADMIN_TOKEN` for scripted checks:
 
 ```bash
 forge server --config forge.json

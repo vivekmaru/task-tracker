@@ -2,6 +2,10 @@ package web
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +24,7 @@ import (
 )
 
 const defaultTicketListLimit int32 = 50
+const defaultSessionCookieName = "forge_admin_session"
 
 type Runtime interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
@@ -32,13 +37,35 @@ type Runtime interface {
 
 type Handler struct {
 	runtime Runtime
+	auth    AuthOptions
 }
 
 func NewHandler(runtime Runtime) http.Handler {
 	return Handler{runtime: runtime}
 }
 
+func NewHandlerWithAuth(runtime Runtime, auth AuthOptions) http.Handler {
+	return Handler{runtime: runtime, auth: auth.normalized()}
+}
+
+type AuthOptions struct {
+	AdminToken   string
+	CookieName   string
+	SecureCookie bool
+}
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.auth.enabled() {
+		switch r.URL.Path {
+		case "/login":
+			h.handleLogin(w, r)
+			return
+		}
+		if !h.isAuthorized(r) {
+			h.requireLogin(w, r)
+			return
+		}
+	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		renderStatus(r.Context(), w, http.StatusMethodNotAllowed, "Method not allowed", "Only GET requests are supported for web inspection pages.")
@@ -52,6 +79,110 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (h Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		renderComponent(r.Context(), w, http.StatusOK, loginPage(sanitizeNext(r.URL.Query().Get("next")), ""))
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			renderComponent(r.Context(), w, http.StatusBadRequest, loginPage(sanitizeNext(r.FormValue("next")), "Unable to read login form."))
+			return
+		}
+		next := sanitizeNext(r.FormValue("next"))
+		if !constantTimeTokenEqual(r.FormValue("admin_token"), h.auth.AdminToken) {
+			renderComponent(r.Context(), w, http.StatusUnauthorized, loginPage(next, "Invalid admin token."))
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     h.auth.cookieName(),
+			Value:    h.auth.sessionValue(),
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   h.auth.SecureCookie,
+			MaxAge:   8 * 60 * 60,
+		})
+		http.Redirect(w, r, next, http.StatusSeeOther)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		renderStatus(r.Context(), w, http.StatusMethodNotAllowed, "Method not allowed", "Login accepts GET and POST requests.")
+	}
+}
+
+func (h Handler) requireLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		loginURL := "/login?next=" + url.QueryEscape(r.URL.RequestURI())
+		http.Redirect(w, r, loginURL, http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("WWW-Authenticate", `Bearer realm="Forge human web"`)
+	renderStatus(r.Context(), w, http.StatusUnauthorized, "Login required", "Open /login or provide a valid bearer token.")
+}
+
+func (h Handler) isAuthorized(r *http.Request) bool {
+	if token := bearerToken(r.Header.Get("Authorization")); token != "" && constantTimeTokenEqual(token, h.auth.AdminToken) {
+		return true
+	}
+	if token := r.Header.Get("X-Forge-Admin-Token"); token != "" && constantTimeTokenEqual(token, h.auth.AdminToken) {
+		return true
+	}
+	cookie, err := r.Cookie(h.auth.cookieName())
+	if err != nil {
+		return false
+	}
+	return constantTimeTokenEqual(cookie.Value, h.auth.sessionValue())
+}
+
+func (a AuthOptions) normalized() AuthOptions {
+	if a.CookieName == "" {
+		a.CookieName = defaultSessionCookieName
+	}
+	return a
+}
+
+func (a AuthOptions) enabled() bool {
+	return strings.TrimSpace(a.AdminToken) != ""
+}
+
+func (a AuthOptions) cookieName() string {
+	if a.CookieName == "" {
+		return defaultSessionCookieName
+	}
+	return a.CookieName
+}
+
+func (a AuthOptions) sessionValue() string {
+	mac := hmac.New(sha256.New, []byte(a.AdminToken))
+	_, _ = mac.Write([]byte("forge-human-session-v1"))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func bearerToken(value string) string {
+	parts := strings.Fields(value)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return parts[1]
+}
+
+func constantTimeTokenEqual(got string, want string) bool {
+	got = strings.TrimSpace(got)
+	want = strings.TrimSpace(want)
+	if got == "" || want == "" {
+		return false
+	}
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+}
+
+func sanitizeNext(value string) string {
+	if strings.TrimSpace(value) == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
+		return "/tickets"
+	}
+	return value
 }
 
 func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +356,19 @@ func renderComponent(ctx context.Context, w http.ResponseWriter, status int, com
 func statusPage(title string, message string) templ.Component {
 	return layout(title, func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="panel"><h1>%s</h1><p>%s</p><p><a href="/tickets">Back to tickets</a></p></section>`, esc(title), esc(message))
+	})
+}
+
+func loginPage(next string, message string) templ.Component {
+	return layout("Forge Login", func(w io.Writer) {
+		fmt.Fprint(w, `<section class="auth-panel panel"><h1>Forge Login</h1>`)
+		if message != "" {
+			fmt.Fprintf(w, `<p class="auth-error">%s</p>`, esc(message))
+		}
+		fmt.Fprint(w, `<form method="post" action="/login">`)
+		fmt.Fprintf(w, `<input type="hidden" name="next" value="%s">`, esc(sanitizeNext(next)))
+		fmt.Fprint(w, `<label><span>Admin token</span><input type="password" name="admin_token" autocomplete="current-password" autofocus></label>`)
+		fmt.Fprint(w, `<button type="submit">Sign in</button></form></section>`)
 	})
 }
 
@@ -437,5 +581,5 @@ func esc(value string) string {
 }
 
 func pageCSS() string {
-	return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202124;background:#f7f7f4}body{margin:0}main{max-width:1120px;margin:0 auto;padding:32px 20px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:32px;line-height:1.1;letter-spacing:0}.page-head p{margin:0;color:#5c625d;max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:700;color:#5b6b5b}.button,button{border:1px solid #202124;background:#202124;color:#fff;text-decoration:none;padding:9px 12px;border-radius:6px;font-weight:700;white-space:nowrap}.panel{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:18px}.filters form{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;align-items:end}.filters span{display:block;font-size:12px;font-weight:700;color:#5c625d;margin-bottom:5px;text-transform:capitalize}.filters input{width:100%;box-sizing:border-box;border:1px solid #c7ccc3;border-radius:6px;padding:9px;background:#fff}.ticket-list{display:grid;gap:10px;margin-top:16px}.ticket-card{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:14px}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:800}.summary,.meta span,.empty-text{color:#61665f}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:700;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:#3c463e}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid #e5e8e1;padding:12px 0}.timeline-item strong{display:block}.timeline-item span{color:#61665f;font-size:13px}.warning{border-color:#d8b45f;background:#fffaf0}@media(max-width:760px){main{padding:20px 14px}.page-head,.ticket-card a{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}}`
+	return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202124;background:#f7f7f4}body{margin:0}main{max-width:1120px;margin:0 auto;padding:32px 20px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:32px;line-height:1.1;letter-spacing:0}.page-head p{margin:0;color:#5c625d;max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:700;color:#5b6b5b}.button,button{border:1px solid #202124;background:#202124;color:#fff;text-decoration:none;padding:9px 12px;border-radius:6px;font-weight:700;white-space:nowrap}.panel{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:18px}.filters form{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;align-items:end}.filters span,.auth-panel span{display:block;font-size:12px;font-weight:700;color:#5c625d;margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input{width:100%;box-sizing:border-box;border:1px solid #c7ccc3;border-radius:6px;padding:9px;background:#fff}.auth-panel{max-width:360px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:#8c2f1a;font-weight:700}.ticket-list{display:grid;gap:10px;margin-top:16px}.ticket-card{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:14px}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:800}.summary,.meta span,.empty-text{color:#61665f}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:700;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:#3c463e}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid #e5e8e1;padding:12px 0}.timeline-item strong{display:block}.timeline-item span{color:#61665f;font-size:13px}.warning{border-color:#d8b45f;background:#fffaf0}@media(max-width:760px){main{padding:20px 14px}.page-head,.ticket-card a{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}}`
 }

@@ -20,6 +20,7 @@ type Config struct {
 	HTTPAddr          string `json:"http_addr"`
 	LogLevel          string `json:"log_level"`
 	WorkerConcurrency int    `json:"worker_concurrency"`
+	AdminToken        string `json:"admin_token"`
 }
 
 // Options controls configuration loading.
@@ -58,6 +59,9 @@ func Load(opts Options) (Config, error) {
 		}
 		cfg.WorkerConcurrency = n
 	}
+	if value := os.Getenv("FORGE_ADMIN_TOKEN"); value != "" {
+		cfg.AdminToken = value
+	}
 
 	return cfg, nil
 }
@@ -70,6 +74,9 @@ func (c Config) ValidateServer() error {
 	if c.HTTPAddr == "" {
 		return errors.New("http_addr is required")
 	}
+	if c.AdminToken == "" {
+		return errors.New("admin_token is required")
+	}
 	return nil
 }
 
@@ -80,6 +87,13 @@ func (c Config) ValidateWorker() error {
 	}
 	if c.WorkerConcurrency <= 0 {
 		return errors.New("worker_concurrency must be greater than zero")
+	}
+	return nil
+}
+
+func (c Config) ValidateRuntime() error {
+	if c.DatabaseURL == "" {
+		return errors.New("database_url is required")
 	}
 	return nil
 }
