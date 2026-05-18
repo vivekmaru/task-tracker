@@ -89,3 +89,67 @@ func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, 
 	)
 	return i, err
 }
+
+const listProjectsByWorkspace = `-- name: ListProjectsByWorkspace :many
+SELECT id, workspace_id, name, created_at, updated_at
+FROM projects
+WHERE workspace_id = $1
+ORDER BY name ASC
+`
+
+func (q *Queries) ListProjectsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]Project, error) {
+	rows, err := q.db.Query(ctx, listProjectsByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Project{}
+	for rows.Next() {
+		var i Project
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspaces = `-- name: ListWorkspaces :many
+SELECT id, name, created_at, updated_at
+FROM workspaces
+ORDER BY name ASC
+`
+
+func (q *Queries) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
+	rows, err := q.db.Query(ctx, listWorkspaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Workspace{}
+	for rows.Next() {
+		var i Workspace
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

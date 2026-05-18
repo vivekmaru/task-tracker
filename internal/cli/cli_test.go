@@ -1511,6 +1511,34 @@ func (f *fakeRuntime) ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.
 	return nil, nil
 }
 
+func (f *fakeRuntime) ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
+	return db.Artifact{}, nil
+}
+
+func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error) {
+	return db.Workspace{}, nil
+}
+
+func (f *fakeRuntime) CreateWorkspace(context.Context, string) (db.Workspace, error) {
+	return db.Workspace{}, nil
+}
+
+func (f *fakeRuntime) ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) CreateProject(context.Context, pgtype.UUID, string) (db.Project, error) {
+	return db.Project{}, nil
+}
+
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	f.artifactReq = req
 	f.artifactReqs = append(f.artifactReqs, req)

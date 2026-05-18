@@ -79,6 +79,13 @@ type RuntimeHandle interface {
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
+	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
+	ListWorkspaces(context.Context) ([]db.Workspace, error)
+	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
+	CreateWorkspace(context.Context, string) (db.Workspace, error)
+	ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error)
+	CreateProject(context.Context, pgtype.UUID, string) (db.Project, error)
 	DecomposeTicket(context.Context, services.DecomposeTicketRequest) (services.DecomposeTicketResult, error)
 	RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error)
 }

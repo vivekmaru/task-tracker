@@ -100,13 +100,25 @@ go build -o forge ./cmd/forge
 
 ## Runtime Commands
 
-The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/login`, `/tickets`, and `/tickets/{id}`. Human web views require `admin_token`; sign in at `/login`, or pass `Authorization: Bearer $FORGE_ADMIN_TOKEN` for scripted checks:
+The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/login`, `/workspaces`, `/tickets`, and `/tickets/{id}`. Human web views require `admin_token`; sign in at `/login`, or pass `Authorization: Bearer $FORGE_ADMIN_TOKEN` for scripted checks:
 
 ```bash
 forge server --config forge.json
 forge worker --config forge.json
 forge tui --config forge.json --workspace-id "$WORKSPACE_ID" --project-id "$PROJECT_ID"
 ```
+
+Human web routes are stable inspection links:
+
+- `/workspaces` lists workspaces and creates minimal workspace scopes.
+- `/workspaces/{workspace_id}` shows projects for a workspace and creates minimal project scopes.
+- `/tickets?workspace_id={workspace_id}&project_id={project_id}` opens a scoped ticket queue.
+- `/tickets/{ticket_id}` opens ticket detail.
+- `/attempts/{attempt_id}` opens attempt detail.
+- `/artifacts/{artifact_id}` opens artifact metadata.
+- `/proposed/{ticket_id}` opens a proposed follow-up inspection view.
+
+The TUI detail view prints the same route paths in its copy section so links can be pasted into chat, PRs, and handoffs.
 
 The JSON-first execution commands call the same runtime services:
 
@@ -205,7 +217,7 @@ forge get --json --kind attempt "$ATTEMPT_ID"
 
 The first end-to-end dogfood path should prove this sequence:
 
-1. Create a workspace and project directly in Postgres or through a temporary seed script.
+1. Create a workspace and project from `/workspaces`, or seed them directly in Postgres.
 2. Create tickets with `forge create --json`.
 3. Have an agent claim eligible work with `forge claim-next --json`.
 4. Heartbeat during execution.

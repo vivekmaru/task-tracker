@@ -14,7 +14,7 @@ import (
 
 func TestQueueModelRendersSummaryListAndPreview(t *testing.T) {
 	model := NewQueueModel([]db.Ticket{
-		{Title: "Fix auth", Type: services.TicketTypeBug, Status: services.TicketStatusTodo, Priority: 1},
+		{ID: testUUID(9), Title: "Fix auth", Type: services.TicketTypeBug, Status: services.TicketStatusTodo, Priority: 1},
 		{Title: "Write docs", Type: services.TicketTypeDocumentation, Status: services.TicketStatusBlocked, Priority: 2},
 	})
 
@@ -28,6 +28,7 @@ func TestQueueModelRendersSummaryListAndPreview(t *testing.T) {
 		"  P2 blocked documentation Write docs",
 		"Selected",
 		"Fix auth",
+		"Link: /tickets/00000000-0000-0000-0000-000000000009",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected queue view to contain %q, got:\n%s", want, view)
