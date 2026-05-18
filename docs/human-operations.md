@@ -90,6 +90,18 @@ The triage flow should support:
 
 The interface should preserve the source attempt, source artifact, creation reason, acceptance criteria, verification commands, and relevant paths. Agents should be rewarded for preserving context, not for creating a lot of vague tickets.
 
+Agents should propose work when they discover adjacent work, missing tests, unclear requirements, or follow-up tasks that should not silently expand the current scope. Proposed work stays in `backlog`, keeps `created_by=agent`, and must include source attribution plus enough context for another worker to start.
+
+Enqueueing is an explicit approval path. A human or authorized planner can move proposed work into `todo` after triage; agents should only create directly claimable work when the caller has enqueue authority and the request is intentionally scoped for immediate execution.
+
+Shared triage operations should remain service/runtime-backed so TUI, web, CLI, and MCP callers all use the same validation and event history:
+
+- list proposed tickets as UI-ready inbox items
+- mark a proposal ready or enqueue it into `todo`
+- refine proposal metadata while preserving source attribution
+- merge a proposal into an existing ticket
+- reject or archive proposals that should leave active review
+
 ### Web Inspection Surface
 
 The web UI is the shared inspection surface for links in chats, PRs, and handoffs. It should use Go handlers with templ plus htmx where partial updates help. It should not become a React or Next.js app.

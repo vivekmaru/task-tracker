@@ -108,6 +108,18 @@ ORDER BY priority ASC, created_at ASC
 LIMIT sqlc.arg('limit')::integer
 OFFSET sqlc.arg('offset')::integer;
 
+-- name: ListProposedTickets :many
+SELECT *
+FROM tickets
+WHERE workspace_id = $1
+  AND project_id = $2
+  AND status = 'backlog'
+  AND created_by = 'agent'
+  AND (sqlc.narg('type')::text IS NULL OR type = sqlc.narg('type')::text)
+ORDER BY priority ASC, created_at ASC
+LIMIT sqlc.arg('limit')::integer
+OFFSET sqlc.arg('offset')::integer;
+
 -- name: CreateTicketDependency :one
 INSERT INTO ticket_dependencies (
     ticket_id,

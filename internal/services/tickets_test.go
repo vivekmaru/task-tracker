@@ -132,6 +132,368 @@ func TestProposeTicketCreatesBacklogProposedEventWithSourceAttribution(t *testin
 	}
 }
 
+func TestListProposedTicketsReturnsUIReadySourceAttribution(t *testing.T) {
+	sourceAttemptID := testUUID(21)
+	sourceArtifactID := testUUID(22)
+	store := &fakeTicketStore{
+		listTickets: []db.Ticket{
+			{
+				ID:                   testUUID(23),
+				WorkspaceID:          testUUID(1),
+				ProjectID:            testUUID(2),
+				SourceAttemptID:      sourceAttemptID,
+				SourceArtifactID:     sourceArtifactID,
+				Title:                "Add retry regression",
+				Type:                 TicketTypeBug,
+				Status:               TicketStatusBacklog,
+				CreatedBy:            ActorAgent,
+				CreatedByID:          pgtype.Text{String: "codex", Valid: true},
+				CreationReason:       pgtype.Text{String: "Found while fixing auth", Valid: true},
+				AcceptanceCriteria:   []string{"Regression catches retry drift"},
+				VerificationCommands: []byte(`["go test ./internal/services"]`),
+				RelevantPaths:        []string{"internal/services/tickets.go"},
+			},
+			{
+				ID:        testUUID(24),
+				Status:    TicketStatusBacklog,
+				CreatedBy: ActorHuman,
+				Title:     "Manual backlog item",
+			},
+		},
+	}
+	service := NewTicketService(store)
+
+	items, err := service.ListProposedTickets(context.Background(), ListProposedTicketsRequest{
+		WorkspaceID: testUUID(1),
+		ProjectID:   testUUID(2),
+	})
+	if err != nil {
+		t.Fatalf("list proposed tickets: %v", err)
+	}
+
+	if len(store.listProposedParams) != 1 {
+		t.Fatalf("expected one proposed list query, got %#v", store.listProposedParams)
+	}
+	if store.listProposedParams[0].Limit != 50 {
+		t.Fatalf("expected default proposed list limit, got %#v", store.listProposedParams[0])
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one agent-created proposal, got %#v", items)
+	}
+	item := items[0]
+	if item.Ticket.ID != testUUID(23) || item.SourceAttemptID != sourceAttemptID || item.SourceArtifactID != sourceArtifactID {
+		t.Fatalf("expected source attribution in triage item, got %#v", item)
+	}
+	if item.CreatedByID != "codex" || item.CreationReason != "Found while fixing auth" {
+		t.Fatalf("expected creator context, got %#v", item)
+	}
+	assertStringSlicesEqual(t, item.VerificationCommands, []string{"go test ./internal/services"})
+	assertStringSlicesEqual(t, item.RelevantPaths, []string{"internal/services/tickets.go"})
+}
+
+func TestListProposedTicketsValidatesScopeAndFilters(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+
+	_, err := service.ListProposedTickets(context.Background(), ListProposedTicketsRequest{
+		WorkspaceID: testUUID(1),
+		ProjectID:   testUUID(2),
+		Type:        "not-a-type",
+	})
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !strings.Contains(strings.Join(validationErr.Problems, "\n"), "type filter is not valid") {
+		t.Fatalf("expected type validation problem, got %#v", validationErr.Problems)
+	}
+	if len(store.listProposedParams) != 0 {
+		t.Fatalf("expected validation to skip store call, got %#v", store.listProposedParams)
+	}
+}
+
+func TestProposedTicketTriageTransitionsPreserveDecisionData(t *testing.T) {
+	proposedID := testUUID(31)
+	targetID := testUUID(32)
+	tests := []struct {
+		name        string
+		run         func(*TicketService) (db.Ticket, error)
+		wantStatus  string
+		wantEvent   string
+		wantPayload map[string]any
+	}{
+		{
+			name: "ready",
+			run: func(service *TicketService) (db.Ticket, error) {
+				return service.ReadyProposedTicket(context.Background(), ProposedTicketTriageRequest{
+					TicketID:  proposedID,
+					ActorType: ActorHuman,
+					ActorID:   "vivek",
+					Reason:    "ready for implementation",
+				})
+			},
+			wantStatus: TicketStatusTodo,
+			wantEvent:  EventTicketReady,
+			wantPayload: map[string]any{
+				"operation": "ready_proposed",
+				"reason":    "ready for implementation",
+			},
+		},
+		{
+			name: "enqueue",
+			run: func(service *TicketService) (db.Ticket, error) {
+				return service.EnqueueProposedTicket(context.Background(), ProposedTicketTriageRequest{
+					TicketID:  proposedID,
+					ActorType: ActorHuman,
+					ActorID:   "vivek",
+					Reason:    "approved for the queue",
+				})
+			},
+			wantStatus: TicketStatusTodo,
+			wantEvent:  EventTicketReady,
+			wantPayload: map[string]any{
+				"operation": "enqueue_proposed",
+				"reason":    "approved for the queue",
+			},
+		},
+		{
+			name: "reject",
+			run: func(service *TicketService) (db.Ticket, error) {
+				return service.RejectProposedTicket(context.Background(), ProposedTicketTriageRequest{
+					TicketID:  proposedID,
+					ActorType: ActorHuman,
+					ActorID:   "vivek",
+					Reason:    "not worth tracking",
+				})
+			},
+			wantStatus: TicketStatusArchived,
+			wantEvent:  EventTicketArchived,
+			wantPayload: map[string]any{
+				"operation": "reject_proposed",
+				"reason":    "not worth tracking",
+			},
+		},
+		{
+			name: "merge",
+			run: func(service *TicketService) (db.Ticket, error) {
+				return service.MergeProposedTicket(context.Background(), MergeProposedTicketRequest{
+					TicketID:       proposedID,
+					TargetTicketID: targetID,
+					ActorType:      ActorHuman,
+					ActorID:        "vivek",
+					Reason:         "covered by existing ticket",
+				})
+			},
+			wantStatus: TicketStatusArchived,
+			wantEvent:  EventTicketArchived,
+			wantPayload: map[string]any{
+				"operation":             "merge_proposed",
+				"reason":                "covered by existing ticket",
+				"merged_into_ticket_id": ticketUUIDString(targetID),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeTicketStore{
+				getTickets: map[pgtype.UUID]db.Ticket{
+					proposedID: {
+						ID:          proposedID,
+						WorkspaceID: testUUID(1),
+						ProjectID:   testUUID(2),
+						Status:      TicketStatusBacklog,
+						CreatedBy:   ActorAgent,
+					},
+					targetID: {
+						ID:          targetID,
+						WorkspaceID: testUUID(1),
+						ProjectID:   testUUID(2),
+						Status:      TicketStatusTodo,
+						CreatedBy:   ActorHuman,
+					},
+				},
+			}
+			service := NewTicketService(store)
+
+			ticket, err := tt.run(service)
+			if err != nil {
+				t.Fatalf("triage proposed ticket: %v", err)
+			}
+
+			if ticket.Status != tt.wantStatus {
+				t.Fatalf("expected status %q, got %q", tt.wantStatus, ticket.Status)
+			}
+			if len(store.transitions) != 1 {
+				t.Fatalf("expected one transition, got %#v", store.transitions)
+			}
+			if store.transitions[0].Type != tt.wantEvent {
+				t.Fatalf("expected event %q, got %#v", tt.wantEvent, store.transitions[0])
+			}
+			assertJSONFields(t, store.transitions[0].Data, tt.wantPayload)
+		})
+	}
+}
+
+func TestEnqueueProposedTicketRequiresAgentEnqueueAuthority(t *testing.T) {
+	proposedID := testUUID(33)
+	store := &fakeTicketStore{
+		getTicket: db.Ticket{
+			ID:          proposedID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Status:      TicketStatusBacklog,
+			CreatedBy:   ActorAgent,
+		},
+	}
+	service := NewTicketService(store)
+
+	_, err := service.EnqueueProposedTicket(context.Background(), ProposedTicketTriageRequest{
+		TicketID:  proposedID,
+		ActorType: ActorAgent,
+		ActorID:   "codex",
+		Reason:    "self-approve follow-up",
+	})
+	if !errors.Is(err, ErrEnqueuePermissionRequired) {
+		t.Fatalf("expected ErrEnqueuePermissionRequired, got %v", err)
+	}
+	if len(store.transitions) != 0 {
+		t.Fatalf("expected no transition without enqueue authority, got %#v", store.transitions)
+	}
+}
+
+func TestMergeProposedTicketValidatesTargetScopeBeforeArchiving(t *testing.T) {
+	proposedID := testUUID(34)
+	targetID := testUUID(35)
+	store := &fakeTicketStore{
+		getTickets: map[pgtype.UUID]db.Ticket{
+			proposedID: {
+				ID:          proposedID,
+				WorkspaceID: testUUID(1),
+				ProjectID:   testUUID(2),
+				Status:      TicketStatusBacklog,
+				CreatedBy:   ActorAgent,
+			},
+			targetID: {
+				ID:          targetID,
+				WorkspaceID: testUUID(1),
+				ProjectID:   testUUID(9),
+				Status:      TicketStatusTodo,
+				CreatedBy:   ActorHuman,
+			},
+		},
+	}
+	service := NewTicketService(store)
+
+	_, err := service.MergeProposedTicket(context.Background(), MergeProposedTicketRequest{
+		TicketID:       proposedID,
+		TargetTicketID: targetID,
+		ActorType:      ActorHuman,
+		ActorID:        "vivek",
+		Reason:         "covered elsewhere",
+	})
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !strings.Contains(strings.Join(validationErr.Problems, "\n"), "target_ticket_id must belong to the same workspace and project") {
+		t.Fatalf("expected merge target scope validation problem, got %#v", validationErr.Problems)
+	}
+	if len(store.transitions) != 0 {
+		t.Fatalf("expected no archive transition for invalid merge target, got %#v", store.transitions)
+	}
+}
+
+func TestMergeProposedTicketRejectsMissingTargetBeforeArchiving(t *testing.T) {
+	proposedID := testUUID(36)
+	targetID := testUUID(37)
+	store := &fakeTicketStore{
+		getTickets: map[pgtype.UUID]db.Ticket{
+			proposedID: {
+				ID:          proposedID,
+				WorkspaceID: testUUID(1),
+				ProjectID:   testUUID(2),
+				Status:      TicketStatusBacklog,
+				CreatedBy:   ActorAgent,
+			},
+		},
+	}
+	service := NewTicketService(store)
+
+	_, err := service.MergeProposedTicket(context.Background(), MergeProposedTicketRequest{
+		TicketID:       proposedID,
+		TargetTicketID: targetID,
+		ActorType:      ActorHuman,
+		ActorID:        "vivek",
+		Reason:         "covered elsewhere",
+	})
+	if !errors.Is(err, ErrTicketNotFound) {
+		t.Fatalf("expected ErrTicketNotFound, got %v", err)
+	}
+	if len(store.transitions) != 0 {
+		t.Fatalf("expected no archive transition for missing merge target, got %#v", store.transitions)
+	}
+}
+
+func TestRefineProposedTicketPatchesOnlyProposedWork(t *testing.T) {
+	title := "Sharper follow-up"
+	criteria := []string{"Follow-up has a concrete regression"}
+	store := &fakeTicketStore{
+		getTicket: db.Ticket{
+			ID:        testUUID(41),
+			Status:    TicketStatusBacklog,
+			CreatedBy: ActorAgent,
+		},
+	}
+	service := NewTicketService(store)
+
+	ticket, err := service.RefineProposedTicket(context.Background(), RefineProposedTicketRequest{
+		TicketID:           testUUID(41),
+		Title:              &title,
+		AcceptanceCriteria: &criteria,
+		ActorType:          ActorHuman,
+		ActorID:            "vivek",
+		Reason:             "make the proposal actionable",
+	})
+	if err != nil {
+		t.Fatalf("refine proposed ticket: %v", err)
+	}
+
+	if ticket.ID != testUUID(41) {
+		t.Fatalf("expected refined ticket, got %#v", ticket)
+	}
+	if len(store.updatedTickets) != 1 || store.updatedTickets[0].Title.String != title {
+		t.Fatalf("expected update patch, got %#v", store.updatedTickets)
+	}
+	assertStringSlicesEqual(t, store.updatedTickets[0].AcceptanceCriteria, criteria)
+	if len(store.createdEvents) != 1 {
+		t.Fatalf("expected update event, got %#v", store.createdEvents)
+	}
+	assertJSONFields(t, store.createdEvents[0].Data, map[string]any{"operation": "refine_proposed", "reason": "make the proposal actionable"})
+}
+
+func TestProposedTicketTriageRejectsNonProposedTickets(t *testing.T) {
+	store := &fakeTicketStore{
+		getTicket: db.Ticket{
+			ID:        testUUID(51),
+			Status:    TicketStatusTodo,
+			CreatedBy: ActorHuman,
+		},
+	}
+	service := NewTicketService(store)
+
+	_, err := service.RejectProposedTicket(context.Background(), ProposedTicketTriageRequest{
+		TicketID:  testUUID(51),
+		ActorType: ActorHuman,
+	})
+	if !errors.Is(err, ErrTicketIsNotProposed) {
+		t.Fatalf("expected ErrTicketIsNotProposed, got %v", err)
+	}
+	if len(store.transitions) != 0 {
+		t.Fatalf("expected no transition for non-proposed ticket, got %#v", store.transitions)
+	}
+}
+
 func TestTicketTemplatesCoverAgentCreatedWorkTypes(t *testing.T) {
 	templates := TicketTemplates()
 	seen := map[string]TicketTemplate{}
@@ -821,6 +1183,10 @@ type fakeTicketStore struct {
 	createdDependencies []db.CreateTicketDependencyParams
 	createdEvents       []db.CreateTicketEventParams
 	listParams          []db.ListTicketsParams
+	listProposedParams  []db.ListProposedTicketsParams
+	listTickets         []db.Ticket
+	getTickets          map[pgtype.UUID]db.Ticket
+	getTicket           db.Ticket
 	transitionErr       error
 	existingTicket      bool
 }
@@ -860,6 +1226,16 @@ func (s *fakeTicketStore) CreateTicket(_ context.Context, params db.CreateTicket
 }
 
 func (s *fakeTicketStore) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
+	if s.getTickets != nil {
+		ticket, ok := s.getTickets[id]
+		if !ok {
+			return db.Ticket{}, pgx.ErrNoRows
+		}
+		return ticket, nil
+	}
+	if s.getTicket.ID.Valid {
+		return s.getTicket, nil
+	}
 	if !s.existingTicket {
 		return db.Ticket{}, pgx.ErrNoRows
 	}
@@ -933,7 +1309,12 @@ func (s *fakeTicketStore) CreateTicketEvent(_ context.Context, params db.CreateT
 
 func (s *fakeTicketStore) ListTickets(_ context.Context, params db.ListTicketsParams) ([]db.Ticket, error) {
 	s.listParams = append(s.listParams, params)
-	return nil, nil
+	return s.listTickets, nil
+}
+
+func (s *fakeTicketStore) ListProposedTickets(_ context.Context, params db.ListProposedTicketsParams) ([]db.Ticket, error) {
+	s.listProposedParams = append(s.listProposedParams, params)
+	return s.listTickets, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {

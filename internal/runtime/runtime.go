@@ -141,6 +141,34 @@ func (r *Runtime) ListTickets(ctx context.Context, req services.ListTicketsReque
 	return r.Tickets.ListTickets(ctx, req)
 }
 
+func (r *Runtime) ListProposedTickets(ctx context.Context, req services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error) {
+	return r.Tickets.ListProposedTickets(ctx, req)
+}
+
+func (r *Runtime) ReadyProposedTicket(ctx context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	return r.Tickets.ReadyProposedTicket(ctx, req)
+}
+
+func (r *Runtime) EnqueueProposedTicket(ctx context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	return r.Tickets.EnqueueProposedTicket(ctx, req)
+}
+
+func (r *Runtime) RefineProposedTicket(ctx context.Context, req services.RefineProposedTicketRequest) (db.Ticket, error) {
+	return r.Tickets.RefineProposedTicket(ctx, req)
+}
+
+func (r *Runtime) RejectProposedTicket(ctx context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	return r.Tickets.RejectProposedTicket(ctx, req)
+}
+
+func (r *Runtime) MergeProposedTicket(ctx context.Context, req services.MergeProposedTicketRequest) (db.Ticket, error) {
+	return r.Tickets.MergeProposedTicket(ctx, req)
+}
+
+func (r *Runtime) ArchiveProposedTicket(ctx context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	return r.Tickets.ArchiveProposedTicket(ctx, req)
+}
+
 func (r *Runtime) GetTicket(ctx context.Context, id pgtype.UUID) (db.Ticket, error) {
 	return r.Queries.GetTicket(ctx, id)
 }

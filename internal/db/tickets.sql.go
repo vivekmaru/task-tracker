@@ -225,6 +225,84 @@ func (q *Queries) GetTicket(ctx context.Context, id pgtype.UUID) (Ticket, error)
 	return i, err
 }
 
+const listProposedTickets = `-- name: ListProposedTickets :many
+SELECT id, workspace_id, project_id, parent_id, root_id, source_attempt_id, source_artifact_id, title, description, type, status, priority, tags, acceptance_criteria, verification_commands, expected_artifacts, relevant_paths, required_tools, required_permissions, environment, input, input_schema, required_capabilities, allowed_harnesses, retry_policy, created_by, created_by_id, creation_reason, created_at, updated_at
+FROM tickets
+WHERE workspace_id = $1
+  AND project_id = $2
+  AND status = 'backlog'
+  AND created_by = 'agent'
+  AND ($3::text IS NULL OR type = $3::text)
+ORDER BY priority ASC, created_at ASC
+LIMIT $5::integer
+OFFSET $4::integer
+`
+
+type ListProposedTicketsParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
+	Type        pgtype.Text `db:"type" json:"type"`
+	Offset      int32       `db:"offset" json:"offset"`
+	Limit       int32       `db:"limit" json:"limit"`
+}
+
+func (q *Queries) ListProposedTickets(ctx context.Context, arg ListProposedTicketsParams) ([]Ticket, error) {
+	rows, err := q.db.Query(ctx, listProposedTickets,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.Type,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Ticket{}
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.ParentID,
+			&i.RootID,
+			&i.SourceAttemptID,
+			&i.SourceArtifactID,
+			&i.Title,
+			&i.Description,
+			&i.Type,
+			&i.Status,
+			&i.Priority,
+			&i.Tags,
+			&i.AcceptanceCriteria,
+			&i.VerificationCommands,
+			&i.ExpectedArtifacts,
+			&i.RelevantPaths,
+			&i.RequiredTools,
+			&i.RequiredPermissions,
+			&i.Environment,
+			&i.Input,
+			&i.InputSchema,
+			&i.RequiredCapabilities,
+			&i.AllowedHarnesses,
+			&i.RetryPolicy,
+			&i.CreatedBy,
+			&i.CreatedByID,
+			&i.CreationReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTicketDependencies = `-- name: ListTicketDependencies :many
 SELECT ticket_id, depends_on_ticket_id, workspace_id, project_id, created_at
 FROM ticket_dependencies
