@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
@@ -127,6 +128,34 @@ func TestLoginCreatesSessionCookieWithoutEchoingToken(t *testing.T) {
 	}
 	if runtime.listReq.WorkspaceID != workspaceID || runtime.listReq.ProjectID != projectID {
 		t.Fatalf("expected session request to reach runtime, got %#v", runtime.listReq)
+	}
+}
+
+func TestAuthenticatedHandlerRejectsExpiredSessionCookie(t *testing.T) {
+	now := time.Date(2026, 5, 18, 20, 0, 0, 0, time.UTC)
+	auth := AuthOptions{
+		AdminToken: "secret-token",
+		SessionTTL: time.Hour,
+		Now: func() time.Time {
+			return now
+		},
+	}.normalized()
+	runtime := &fakeRuntime{}
+	handler := NewHandlerWithAuth(runtime, auth)
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
+	req.AddCookie(&http.Cookie{
+		Name:  auth.cookieName(),
+		Value: auth.sessionValue(now.Add(-time.Minute)),
+	})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected expired session redirect, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.listReq.WorkspaceID.Valid || runtime.listReq.ProjectID.Valid {
+		t.Fatalf("expired session should not reach runtime, got %#v", runtime.listReq)
 	}
 }
 

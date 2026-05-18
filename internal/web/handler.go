@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"
@@ -60,6 +61,8 @@ type AuthOptions struct {
 	AdminToken   string
 	CookieName   string
 	SecureCookie bool
+	SessionTTL   time.Duration
+	Now          func() time.Time
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -134,14 +137,16 @@ func (h Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			renderComponent(r.Context(), w, http.StatusUnauthorized, loginPage(next, "Invalid admin token."))
 			return
 		}
+		expiresAt := h.auth.now().Add(h.auth.sessionTTL())
 		http.SetCookie(w, &http.Cookie{
 			Name:     h.auth.cookieName(),
-			Value:    h.auth.sessionValue(),
+			Value:    h.auth.sessionValue(expiresAt),
 			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			Secure:   h.auth.SecureCookie,
-			MaxAge:   8 * 60 * 60,
+			Expires:  expiresAt,
+			MaxAge:   int(h.auth.sessionTTL().Seconds()),
 		})
 		http.Redirect(w, r, next, http.StatusSeeOther)
 	default:
@@ -171,12 +176,19 @@ func (h Handler) isAuthorized(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	return constantTimeTokenEqual(cookie.Value, h.auth.sessionValue())
+	return h.auth.validSessionValue(cookie.Value)
 }
 
 func (a AuthOptions) normalized() AuthOptions {
+	a.AdminToken = strings.TrimSpace(a.AdminToken)
 	if a.CookieName == "" {
 		a.CookieName = defaultSessionCookieName
+	}
+	if a.SessionTTL <= 0 {
+		a.SessionTTL = 8 * time.Hour
+	}
+	if a.Now == nil {
+		a.Now = time.Now
 	}
 	return a
 }
@@ -192,10 +204,42 @@ func (a AuthOptions) cookieName() string {
 	return a.CookieName
 }
 
-func (a AuthOptions) sessionValue() string {
+func (a AuthOptions) sessionTTL() time.Duration {
+	if a.SessionTTL <= 0 {
+		return 8 * time.Hour
+	}
+	return a.SessionTTL
+}
+
+func (a AuthOptions) now() time.Time {
+	if a.Now == nil {
+		return time.Now()
+	}
+	return a.Now()
+}
+
+func (a AuthOptions) sessionValue(expiresAt time.Time) string {
+	expiresUnix := expiresAt.Unix()
+	message := fmt.Sprintf("forge-human-session-v1|%d", expiresUnix)
 	mac := hmac.New(sha256.New, []byte(a.AdminToken))
-	_, _ = mac.Write([]byte("forge-human-session-v1"))
-	return hex.EncodeToString(mac.Sum(nil))
+	_, _ = mac.Write([]byte(message))
+	return fmt.Sprintf("%d.%s", expiresUnix, hex.EncodeToString(mac.Sum(nil)))
+}
+
+func (a AuthOptions) validSessionValue(value string) bool {
+	expiresText, sig, ok := strings.Cut(strings.TrimSpace(value), ".")
+	if !ok || expiresText == "" || sig == "" {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(expiresText, 10, 64)
+	if err != nil {
+		return false
+	}
+	expiresAt := time.Unix(expiresUnix, 0)
+	if !a.now().Before(expiresAt) {
+		return false
+	}
+	return constantTimeTokenEqual(value, a.sessionValue(expiresAt))
 }
 
 func bearerToken(value string) string {

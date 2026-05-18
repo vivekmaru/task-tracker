@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -74,7 +75,7 @@ func (c Config) ValidateServer() error {
 	if c.HTTPAddr == "" {
 		return errors.New("http_addr is required")
 	}
-	if c.AdminToken == "" {
+	if strings.TrimSpace(c.AdminToken) == "" {
 		return errors.New("admin_token is required")
 	}
 	return nil

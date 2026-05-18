@@ -92,6 +92,19 @@ func TestValidateServerRequiresAdminToken(t *testing.T) {
 	}
 }
 
+func TestValidateServerRejectsWhitespaceAdminToken(t *testing.T) {
+	cfg := Config{DatabaseURL: "postgres://db", HTTPAddr: "127.0.0.1:3017", WorkerConcurrency: 1, AdminToken: "   "}
+
+	err := cfg.ValidateServer()
+
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if got, want := err.Error(), "admin_token is required"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestValidateWorkerRequiresPositiveConcurrency(t *testing.T) {
 	cfg := Config{DatabaseURL: "postgres://db", WorkerConcurrency: 0}
 

@@ -283,6 +283,21 @@ func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
 	}
 }
 
+func TestWebAuthOptionsUseSecureCookiesForNonLoopbackServerBinds(t *testing.T) {
+	if webAuthOptions(config.Config{HTTPAddr: "0.0.0.0:4100", AdminToken: "secret"}).SecureCookie != true {
+		t.Fatal("expected non-loopback bind to use secure auth cookies")
+	}
+	if webAuthOptions(config.Config{HTTPAddr: ":4100", AdminToken: "secret"}).SecureCookie != true {
+		t.Fatal("expected all-interface bind to use secure auth cookies")
+	}
+	if webAuthOptions(config.Config{HTTPAddr: "127.0.0.1:4100", AdminToken: "secret"}).SecureCookie != false {
+		t.Fatal("expected loopback bind to keep local HTTP login usable")
+	}
+	if webAuthOptions(config.Config{HTTPAddr: "localhost:4100", AdminToken: "secret"}).SecureCookie != false {
+		t.Fatal("expected localhost bind to keep local HTTP login usable")
+	}
+}
+
 func TestRunTUILoadsRuntimeAndDelegatesQueueOptions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "forge.json")
