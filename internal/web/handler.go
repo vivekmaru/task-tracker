@@ -8,6 +8,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -65,6 +66,11 @@ func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
 	}
 	tickets, err := h.runtime.ListTickets(r.Context(), req)
 	if err != nil {
+		var validationErr services.ValidationError
+		if errors.As(err, &validationErr) {
+			renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid ticket filters", validationErr.Error())
+			return
+		}
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load tickets", err.Error())
 		return
 	}
@@ -135,10 +141,6 @@ func loadTimeline(ctx context.Context, runtime Runtime, ticketID pgtype.UUID) (t
 	if err != nil {
 		return ticketTimeline{}, err
 	}
-	checkpoints, err := runtime.ListAttemptCheckpointsByTicket(ctx, ticketID)
-	if err != nil {
-		return ticketTimeline{}, err
-	}
 	events, err := runtime.ListTicketEventsByTicket(ctx, ticketID)
 	if err != nil {
 		return ticketTimeline{}, err
@@ -148,10 +150,9 @@ func loadTimeline(ctx context.Context, runtime Runtime, ticketID pgtype.UUID) (t
 		return ticketTimeline{}, err
 	}
 	return ticketTimeline{
-		Attempts:    attempts,
-		Checkpoints: checkpoints,
-		Events:      events,
-		Artifacts:   artifacts,
+		Attempts:  attempts,
+		Events:    events,
+		Artifacts: artifacts,
 	}, nil
 }
 
@@ -330,8 +331,10 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 	}
 	for _, artifact := range view.Timeline.Artifacts {
 		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s %s</span>`, esc(artifact.Name), esc(artifact.Role), esc(artifact.Type))
-		if artifact.Url != "" {
-			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifact.Url), esc(artifact.Url))
+		if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
+			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
+		} else if artifact.Url != "" {
+			fmt.Fprint(w, `<p class="empty-text">Artifact link hidden because its URL scheme is not supported.</p>`)
 		}
 		fmt.Fprint(w, `</div>`)
 	}
@@ -381,6 +384,23 @@ func timelineReason(raw []byte) string {
 		}
 	}
 	return string(raw)
+}
+
+func safeArtifactURL(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return value, true
+	default:
+		return "", false
+	}
 }
 
 func textValue(value pgtype.Text) string {

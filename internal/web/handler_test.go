@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,6 +83,24 @@ func TestTicketListRendersEmptyAndBadRequestStates(t *testing.T) {
 	}
 }
 
+func TestTicketListReturnsBadRequestForInvalidFilterValidation(t *testing.T) {
+	runtime := &fakeRuntime{
+		listErr: services.ValidationError{Problems: []string{"status filter is not valid"}},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2))+"&status=not-real", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid filter status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "status filter is not valid") {
+		t.Fatalf("expected validation message, got:\n%s", rec.Body.String())
+	}
+}
+
 func TestTicketDetailRendersContextAndTimeline(t *testing.T) {
 	ticketID := testUUID(9)
 	attemptID := testUUID(10)
@@ -158,6 +177,86 @@ func TestTicketDetailRendersContextAndTimeline(t *testing.T) {
 	}
 }
 
+func TestTicketDetailDoesNotHideTimelineWhenUnusedCheckpointsFail(t *testing.T) {
+	ticketID := testUUID(11)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Keep visible timeline",
+			Status:      services.TicketStatusTodo,
+			Type:        services.TicketTypeBug,
+		},
+		attempts: []db.Attempt{
+			{
+				ID:             testUUID(12),
+				TicketID:       ticketID,
+				Status:         "running",
+				AgentID:        "codex",
+				CurrentSummary: pgtype.Text{String: "Still visible", Valid: true},
+			},
+		},
+		events: []db.TicketEvent{
+			{TicketID: ticketID, Type: services.EventTicketReady, Data: []byte(`{"reason":"still visible"}`)},
+		},
+		artifacts:      []db.Artifact{{TicketID: ticketID, Name: "proof", Url: "https://example.test/proof"}},
+		checkpointsErr: errors.New("checkpoint store unavailable"),
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Still visible", "still visible", "https://example.test/proof"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected detail body to keep %q, got:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Timeline unavailable") {
+		t.Fatalf("checkpoint failure should not hide displayed timeline sections:\n%s", body)
+	}
+}
+
+func TestTicketDetailSuppressesUnsafeArtifactLinks(t *testing.T) {
+	ticketID := testUUID(13)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Unsafe proof",
+			Status:      services.TicketStatusTodo,
+			Type:        services.TicketTypeBug,
+		},
+		artifacts: []db.Artifact{
+			{TicketID: ticketID, Name: "safe", Url: "https://example.test/proof.png"},
+			{TicketID: ticketID, Name: "unsafe", Url: "javascript:alert(1)"},
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="https://example.test/proof.png"`) {
+		t.Fatalf("expected safe proof link, got:\n%s", body)
+	}
+	if strings.Contains(body, "javascript:alert") || strings.Contains(body, `href="javascript`) {
+		t.Fatalf("unsafe artifact URL should not render as text or href:\n%s", body)
+	}
+}
+
 func TestTicketDetailHandlesBadIDAndMissingRuntime(t *testing.T) {
 	handler := NewHandler(&fakeRuntime{})
 	req := httptest.NewRequest(http.MethodGet, "/tickets/not-a-uuid", nil)
@@ -188,15 +287,20 @@ type fakeRuntime struct {
 	listReq        services.ListTicketsRequest
 	detailTicketID pgtype.UUID
 	tickets        []db.Ticket
+	listErr        error
 	ticket         db.Ticket
 	attempts       []db.Attempt
 	checkpoints    []db.AttemptCheckpoint
+	checkpointsErr error
 	events         []db.TicketEvent
 	artifacts      []db.Artifact
 }
 
 func (f *fakeRuntime) ListTickets(_ context.Context, req services.ListTicketsRequest) ([]db.Ticket, error) {
 	f.listReq = req
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.tickets, nil
 }
 
@@ -212,6 +316,9 @@ func (f *fakeRuntime) ListAttemptsByTicket(_ context.Context, id pgtype.UUID) ([
 
 func (f *fakeRuntime) ListAttemptCheckpointsByTicket(_ context.Context, id pgtype.UUID) ([]db.AttemptCheckpoint, error) {
 	f.detailTicketID = id
+	if f.checkpointsErr != nil {
+		return nil, f.checkpointsErr
+	}
 	return f.checkpoints, nil
 }
 

@@ -273,10 +273,7 @@ func openRuntime(ctx context.Context, cfg config.Config) (RuntimeHandle, error) 
 }
 
 func serveHTTP(ctx context.Context, addr string, handler http.Handler) error {
-	server := &http.Server{
-		Addr:    addr,
-		Handler: handler,
-	}
+	server := newHTTPServer(addr, handler)
 	go func() {
 		<-ctx.Done()
 		_ = server.Shutdown(context.Background())
@@ -286,6 +283,17 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler) error {
 		return nil
 	}
 	return err
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 }
 
 func runCreateCommand(ctx context.Context, name string, args []string, stdout, stderr io.Writer, deps Dependencies) int {
