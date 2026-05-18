@@ -61,7 +61,12 @@ func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := listTicketsRequestFromQuery(r)
 	if err != nil {
-		renderStatus(r.Context(), w, http.StatusBadRequest, "Ticket list needs a scope", err.Error())
+		query := r.URL.Query()
+		renderComponent(r.Context(), w, http.StatusBadRequest, ticketListPage(ticketListView{
+			Status:  strings.TrimSpace(query.Get("status")),
+			Type:    strings.TrimSpace(query.Get("type")),
+			Message: err.Error(),
+		}))
 		return
 	}
 	tickets, err := h.runtime.ListTickets(r.Context(), req)
@@ -121,6 +126,7 @@ type ticketListView struct {
 	ProjectID   pgtype.UUID
 	Status      string
 	Type        string
+	Message     string
 }
 
 type ticketDetailView struct {
@@ -232,6 +238,10 @@ func ticketListPage(view ticketListView) templ.Component {
 		input(w, "status", view.Status)
 		input(w, "type", view.Type)
 		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
+		if view.Message != "" {
+			fmt.Fprintf(w, `<section class="panel empty"><h2>Ticket list needs a scope</h2><p>%s</p></section>`, esc(view.Message))
+			return
+		}
 		if len(view.Tickets) == 0 {
 			fmt.Fprint(w, `<section class="panel empty"><h2>No tickets match</h2><p>Change the scope or filters to inspect a different queue.</p></section>`)
 			return

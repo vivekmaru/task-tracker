@@ -70,16 +70,27 @@ func TestTicketListRendersEmptyAndBadRequestStates(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "No tickets match") {
 		t.Fatalf("expected empty state, got:\n%s", rec.Body.String())
 	}
+}
 
-	req = httptest.NewRequest(http.MethodGet, "/tickets", nil)
-	rec = httptest.NewRecorder()
+func TestTicketListRendersFilterFormWhenScopeIsMissing(t *testing.T) {
+	runtime := &fakeRuntime{}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets", nil)
+	rec := httptest.NewRecorder()
+
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected missing scope status 400, got %d", rec.Code)
+		t.Fatalf("expected missing scope status 400, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "workspace_id and project_id are required") {
-		t.Fatalf("expected scope guidance, got:\n%s", rec.Body.String())
+	body := rec.Body.String()
+	for _, want := range []string{`<form method="get" action="/tickets">`, `name="workspace_id"`, `name="project_id"`, "workspace_id and project_id are required"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected missing scope page to contain %q, got:\n%s", want, body)
+		}
+	}
+	if runtime.listReq.WorkspaceID.Valid || runtime.listReq.ProjectID.Valid {
+		t.Fatalf("missing scope should not call ListTickets, got %#v", runtime.listReq)
 	}
 }
 
