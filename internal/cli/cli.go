@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/vivek/agent-task-tracker/internal/api"
 	"github.com/vivek/agent-task-tracker/internal/config"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
@@ -83,6 +85,7 @@ type RuntimeHandle interface {
 type Dependencies struct {
 	OpenRuntime func(context.Context, config.Config) (RuntimeHandle, error)
 	RunTUI      func(context.Context, io.Writer, RuntimeHandle, forgetui.Options) error
+	ServeHTTP   func(context.Context, string, http.Handler) error
 }
 
 // Run executes the Forge CLI and returns a process-style exit code.
@@ -224,7 +227,14 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			return 1
 		}
 		defer rt.Close()
-		fmt.Fprintln(stdout, "server runtime configuration ok; HTTP serving not implemented yet")
+		if deps.ServeHTTP == nil {
+			deps.ServeHTTP = serveHTTP
+		}
+		fmt.Fprintf(stdout, "server listening on %s\n", cfg.HTTPAddr)
+		if err := deps.ServeHTTP(context.Background(), cfg.HTTPAddr, api.NewRouterWithRuntime(rt)); err != nil {
+			fmt.Fprintf(stderr, "server HTTP error: %v\n", err)
+			return 1
+		}
 	case "mcp":
 		if err := cfg.ValidateServer(); err != nil {
 			fmt.Fprintf(stderr, "mcp configuration error: %v\n", err)
@@ -260,6 +270,30 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 
 func openRuntime(ctx context.Context, cfg config.Config) (RuntimeHandle, error) {
 	return forgeruntime.Open(ctx, cfg)
+}
+
+func serveHTTP(ctx context.Context, addr string, handler http.Handler) error {
+	server := newHTTPServer(addr, handler)
+	go func() {
+		<-ctx.Done()
+		_ = server.Shutdown(context.Background())
+	}()
+	err := server.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 }
 
 func runCreateCommand(ctx context.Context, name string, args []string, stdout, stderr io.Writer, deps Dependencies) int {

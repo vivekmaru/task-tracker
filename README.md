@@ -19,11 +19,12 @@ Implemented:
 - Lightweight artifact metadata registration.
 - JSON-first CLI commands over the shared runtime.
 - Huma OpenAPI route registration under `/api/v1`.
+- Server-rendered web ticket list and detail inspection pages under `/tickets`.
 - Phase 1 correctness regression tests.
 
 Known current limitation:
 
-- `forge server` and `forge worker` open the live runtime and validate configuration, but they do not yet run long-lived HTTP/River loops. The route surface exists in code and OpenAPI tests, but live HTTP handler wiring is a follow-up.
+- `forge server` starts the HTTP router with the OpenAPI surface and the first web inspection pages. `forge worker` opens the live runtime and validates configuration, but it does not yet run a long-lived River loop.
 
 ## Requirements
 
@@ -97,7 +98,7 @@ go build -o forge ./cmd/forge
 
 ## Runtime Commands
 
-The process commands currently validate config and open the shared runtime:
+The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/tickets`, and `/tickets/{id}`:
 
 ```bash
 forge server --config forge.json

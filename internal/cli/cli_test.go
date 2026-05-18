@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +219,60 @@ func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunServerStartsHTTPRouter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db","http_addr":"127.0.0.1:4100"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{}
+	var gotAddr string
+	var gotHandler http.Handler
+
+	code := RunWithDependencies([]string{"server", "--config", path}, &stdout, &stderr, Dependencies{
+		OpenRuntime: fakeRuntimeOpener(fake),
+		ServeHTTP: func(_ context.Context, addr string, handler http.Handler) error {
+			gotAddr = addr
+			gotHandler = handler
+			return nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if gotAddr != "127.0.0.1:4100" {
+		t.Fatalf("expected configured HTTP address, got %q", gotAddr)
+	}
+	if gotHandler == nil {
+		t.Fatal("expected server to receive a router")
+	}
+	if !strings.Contains(stdout.String(), "server listening on 127.0.0.1:4100") {
+		t.Fatalf("expected server listening message, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
+	server := newHTTPServer("127.0.0.1:4100", http.NewServeMux())
+
+	if server.ReadHeaderTimeout <= 0 {
+		t.Fatal("expected ReadHeaderTimeout to be configured")
+	}
+	if server.ReadTimeout <= 0 {
+		t.Fatal("expected ReadTimeout to be configured")
+	}
+	if server.WriteTimeout <= 0 {
+		t.Fatal("expected WriteTimeout to be configured")
+	}
+	if server.IdleTimeout <= 0 {
+		t.Fatal("expected IdleTimeout to be configured")
 	}
 }
 
