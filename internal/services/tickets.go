@@ -182,10 +182,11 @@ type ProposedTicketTriageItem struct {
 }
 
 type ProposedTicketTriageRequest struct {
-	TicketID  pgtype.UUID
-	ActorType string
-	ActorID   string
-	Reason    string
+	TicketID   pgtype.UUID
+	ActorType  string
+	ActorID    string
+	Reason     string
+	CanEnqueue bool
 }
 
 type MergeProposedTicketRequest struct {
@@ -379,6 +380,13 @@ func (s *TicketService) ReadyProposedTicket(ctx context.Context, req ProposedTic
 }
 
 func (s *TicketService) EnqueueProposedTicket(ctx context.Context, req ProposedTicketTriageRequest) (db.Ticket, error) {
+	req = trimProposedTicketTriageRequest(req)
+	if req.ActorType == "" {
+		req.ActorType = ActorHuman
+	}
+	if req.ActorType == ActorAgent && !req.CanEnqueue {
+		return db.Ticket{}, ErrEnqueuePermissionRequired
+	}
 	return s.transitionProposedTicket(ctx, req, "enqueue_proposed", EventTicketReady, TicketStatusTodo)
 }
 
@@ -398,8 +406,19 @@ func (s *TicketService) MergeProposedTicket(ctx context.Context, req MergePropos
 	if problems := validateMergeProposedTicketRequest(req); len(problems) > 0 {
 		return db.Ticket{}, ValidationError{Problems: problems}
 	}
-	if _, err := s.requireProposedTicket(ctx, req.TicketID); err != nil {
+	proposed, err := s.requireProposedTicket(ctx, req.TicketID)
+	if err != nil {
 		return db.Ticket{}, err
+	}
+	target, err := s.store.GetTicket(ctx, req.TargetTicketID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Ticket{}, ErrTicketNotFound
+		}
+		return db.Ticket{}, fmt.Errorf("get proposed ticket merge target: %w", err)
+	}
+	if target.WorkspaceID != proposed.WorkspaceID || target.ProjectID != proposed.ProjectID {
+		return db.Ticket{}, ValidationError{Problems: []string{"target_ticket_id must belong to the same workspace and project"}}
 	}
 	return s.setTicketStatus(ctx, setTicketStatusRequest{
 		ticketID:        req.TicketID,
