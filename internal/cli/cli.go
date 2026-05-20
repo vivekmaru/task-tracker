@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -280,27 +279,8 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 func webAuthOptions(cfg config.Config) web.AuthOptions {
 	return web.AuthOptions{
 		AdminToken:   cfg.AdminToken,
-		SecureCookie: secureCookieForAddr(cfg.HTTPAddr),
+		SecureCookie: true,
 	}
-}
-
-func secureCookieForAddr(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
-	host = strings.Trim(host, "[]")
-	if host == "" {
-		return true
-	}
-	if strings.EqualFold(host, "localhost") {
-		return false
-	}
-	ip := net.ParseIP(host)
-	if ip != nil {
-		return !ip.IsLoopback()
-	}
-	return true
 }
 
 func openRuntime(ctx context.Context, cfg config.Config) (RuntimeHandle, error) {

@@ -468,6 +468,39 @@ func TestWorkspaceAdminRendersAndCreatesWorkspaceAndProject(t *testing.T) {
 	}
 }
 
+func TestWorkspaceAdminReturnsServerErrorForCreateFailures(t *testing.T) {
+	workspaceID := testUUID(61)
+	handler := NewHandler(&fakeRuntime{
+		workspaces:         []db.Workspace{{ID: workspaceID, Name: "Core"}},
+		createWorkspaceErr: errors.New("database unavailable"),
+		createProjectErr:   errors.New("transaction failed"),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/workspaces", strings.NewReader("name=Docs"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected workspace create status 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "database unavailable") {
+		t.Fatalf("expected workspace create failure detail, got:\n%s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/workspaces/"+uuidString(workspaceID)+"/projects", strings.NewReader("name=Web"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected project create status 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "transaction failed") {
+		t.Fatalf("expected project create failure detail, got:\n%s", rec.Body.String())
+	}
+}
+
 func TestTicketDetailDoesNotHideTimelineWhenUnusedCheckpointsFail(t *testing.T) {
 	ticketID := testUUID(11)
 	runtime := &fakeRuntime{
@@ -592,9 +625,11 @@ type fakeRuntime struct {
 	projects                  []db.Project
 	createdWorkspace          db.Workspace
 	createdWorkspaceName      string
+	createWorkspaceErr        error
 	createdProject            db.Project
 	createdProjectWorkspaceID pgtype.UUID
 	createdProjectName        string
+	createProjectErr          error
 }
 
 func (f *fakeRuntime) ListTickets(_ context.Context, req services.ListTicketsRequest) ([]db.Ticket, error) {
@@ -663,6 +698,9 @@ func (f *fakeRuntime) GetWorkspace(_ context.Context, id pgtype.UUID) (db.Worksp
 
 func (f *fakeRuntime) CreateWorkspace(_ context.Context, name string) (db.Workspace, error) {
 	f.createdWorkspaceName = name
+	if f.createWorkspaceErr != nil {
+		return db.Workspace{}, f.createWorkspaceErr
+	}
 	return f.createdWorkspace, nil
 }
 
@@ -674,6 +712,9 @@ func (f *fakeRuntime) ListProjectsByWorkspace(_ context.Context, id pgtype.UUID)
 func (f *fakeRuntime) CreateProject(_ context.Context, workspaceID pgtype.UUID, name string) (db.Project, error) {
 	f.createdProjectWorkspaceID = workspaceID
 	f.createdProjectName = name
+	if f.createProjectErr != nil {
+		return db.Project{}, f.createProjectErr
+	}
 	return f.createdProject, nil
 }
 

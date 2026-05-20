@@ -430,7 +430,7 @@ func (h Handler) renderWorkspaceIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		workspace, err := h.runtime.CreateWorkspace(r.Context(), name)
 		if err != nil {
-			renderComponent(r.Context(), w, http.StatusBadRequest, workspaceIndexPage(workspaceIndexView{Message: err.Error()}))
+			renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to create workspace", err.Error())
 			return
 		}
 		http.Redirect(w, r, "/workspaces/"+uuidText(workspace.ID), http.StatusSeeOther)
@@ -498,7 +498,7 @@ func (h Handler) createProject(w http.ResponseWriter, r *http.Request, workspace
 		return
 	}
 	if _, err := h.runtime.CreateProject(r.Context(), workspaceID, name); err != nil {
-		renderStatus(r.Context(), w, http.StatusBadRequest, "Unable to create project", err.Error())
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to create project", err.Error())
 		return
 	}
 	http.Redirect(w, r, "/workspaces/"+uuidText(workspaceID), http.StatusSeeOther)
