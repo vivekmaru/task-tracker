@@ -22,6 +22,7 @@ type Config struct {
 	LogLevel          string `json:"log_level"`
 	WorkerConcurrency int    `json:"worker_concurrency"`
 	AdminToken        string `json:"admin_token"`
+	AuthCookieSecure  bool   `json:"auth_cookie_secure"`
 }
 
 // Options controls configuration loading.
@@ -62,6 +63,13 @@ func Load(opts Options) (Config, error) {
 	}
 	if value := os.Getenv("FORGE_ADMIN_TOKEN"); value != "" {
 		cfg.AdminToken = value
+	}
+	if value := os.Getenv("FORGE_AUTH_COOKIE_SECURE"); value != "" {
+		secure, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("FORGE_AUTH_COOKIE_SECURE must be a boolean: %w", err)
+		}
+		cfg.AuthCookieSecure = secure
 	}
 
 	return cfg, nil

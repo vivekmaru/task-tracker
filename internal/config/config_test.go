@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -11,6 +12,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("FORGE_HTTP_ADDR", "")
 	t.Setenv("FORGE_LOG_LEVEL", "")
 	t.Setenv("FORGE_WORKER_CONCURRENCY", "")
+	t.Setenv("FORGE_AUTH_COOKIE_SECURE", "")
 
 	cfg, err := Load(Options{})
 	if err != nil {
@@ -26,6 +28,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.WorkerConcurrency != 1 {
 		t.Fatalf("unexpected WorkerConcurrency: %d", cfg.WorkerConcurrency)
 	}
+	if cfg.AuthCookieSecure {
+		t.Fatal("expected auth cookies to default to non-secure for local HTTP")
+	}
 }
 
 func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
@@ -36,7 +41,8 @@ func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
 		"http_addr": "127.0.0.1:4000",
 		"log_level": "debug",
 		"worker_concurrency": 2,
-		"admin_token": "file-secret"
+		"admin_token": "file-secret",
+		"auth_cookie_secure": false
 	}`), 0o600)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -46,6 +52,7 @@ func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
 	t.Setenv("FORGE_LOG_LEVEL", "")
 	t.Setenv("FORGE_WORKER_CONCURRENCY", "4")
 	t.Setenv("FORGE_ADMIN_TOKEN", "env-secret")
+	t.Setenv("FORGE_AUTH_COOKIE_SECURE", "true")
 
 	cfg, err := Load(Options{ConfigPath: path})
 	if err != nil {
@@ -63,6 +70,22 @@ func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
 	}
 	if cfg.AdminToken != "env-secret" {
 		t.Fatalf("expected env admin token override, got %q", cfg.AdminToken)
+	}
+	if !cfg.AuthCookieSecure {
+		t.Fatal("expected env auth cookie secure override")
+	}
+}
+
+func TestLoadRejectsInvalidAuthCookieSecureEnv(t *testing.T) {
+	t.Setenv("FORGE_AUTH_COOKIE_SECURE", "sometimes")
+
+	_, err := Load(Options{})
+
+	if err == nil {
+		t.Fatal("expected invalid boolean env error")
+	}
+	if got, want := err.Error(), "FORGE_AUTH_COOKIE_SECURE must be a boolean"; !strings.Contains(got, want) {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 

@@ -44,6 +44,7 @@ export FORGE_DATABASE_URL='postgres://localhost:5432/forge?sslmode=disable'
 export FORGE_HTTP_ADDR='127.0.0.1:3017'
 export FORGE_WORKER_CONCURRENCY=1
 export FORGE_ADMIN_TOKEN='change-me-local-admin-token'
+export FORGE_AUTH_COOKIE_SECURE=false
 ```
 
 Equivalent config file:
@@ -53,9 +54,12 @@ Equivalent config file:
   "database_url": "postgres://localhost:5432/forge?sslmode=disable",
   "http_addr": "127.0.0.1:3017",
   "worker_concurrency": 1,
-  "admin_token": "change-me-local-admin-token"
+  "admin_token": "change-me-local-admin-token",
+  "auth_cookie_secure": false
 }
 ```
+
+Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Keep it `false` for direct plain HTTP access.
 
 Pass it with:
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
@@ -402,6 +403,10 @@ func (h Handler) renderProposedDetail(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load proposed follow-up", err.Error())
 		return
 	}
+	if !isProposedTicket(ticket) {
+		renderStatus(r.Context(), w, http.StatusNotFound, "Proposed follow-up not found", "That ticket is not proposed follow-up work.")
+		return
+	}
 	renderComponent(r.Context(), w, http.StatusOK, proposedDetailPage(ticket))
 }
 
@@ -430,7 +435,7 @@ func (h Handler) renderWorkspaceIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		workspace, err := h.runtime.CreateWorkspace(r.Context(), name)
 		if err != nil {
-			renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to create workspace", err.Error())
+			renderCreateError(r.Context(), w, "Unable to create workspace", err)
 			return
 		}
 		http.Redirect(w, r, "/workspaces/"+uuidText(workspace.ID), http.StatusSeeOther)
@@ -498,10 +503,31 @@ func (h Handler) createProject(w http.ResponseWriter, r *http.Request, workspace
 		return
 	}
 	if _, err := h.runtime.CreateProject(r.Context(), workspaceID, name); err != nil {
-		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to create project", err.Error())
+		renderCreateError(r.Context(), w, "Unable to create project", err)
 		return
 	}
 	http.Redirect(w, r, "/workspaces/"+uuidText(workspaceID), http.StatusSeeOther)
+}
+
+func renderCreateError(ctx context.Context, w http.ResponseWriter, title string, err error) {
+	status := http.StatusInternalServerError
+	message := err.Error()
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			status = http.StatusNotFound
+			message = "Referenced workspace does not exist."
+		case "23505":
+			status = http.StatusConflict
+			message = "A workspace or project with that name already exists."
+		case "23502", "23514":
+			status = http.StatusBadRequest
+		}
+	}
+
+	renderStatus(ctx, w, status, title, message)
 }
 
 type ticketListView struct {

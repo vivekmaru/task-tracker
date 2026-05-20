@@ -279,7 +279,7 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 func webAuthOptions(cfg config.Config) web.AuthOptions {
 	return web.AuthOptions{
 		AdminToken:   cfg.AdminToken,
-		SecureCookie: true,
+		SecureCookie: cfg.AuthCookieSecure,
 	}
 }
 

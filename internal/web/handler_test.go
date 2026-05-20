@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
@@ -403,6 +404,33 @@ func TestAttemptArtifactAndProposedRoutesRenderStableInspectionPages(t *testing.
 	}
 }
 
+func TestProposedRouteRejectsNormalTickets(t *testing.T) {
+	ticketID := testUUID(44)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Normal ticket",
+			Type:        services.TicketTypeFeature,
+			Status:      services.TicketStatusTodo,
+			CreatedBy:   services.ActorHuman,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/proposed/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected normal ticket status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Proposed Follow-up") {
+		t.Fatalf("normal ticket should not render proposed detail page:\n%s", rec.Body.String())
+	}
+}
+
 func TestWorkspaceAdminRendersAndCreatesWorkspaceAndProject(t *testing.T) {
 	workspaceID := testUUID(51)
 	projectID := testUUID(52)
@@ -498,6 +526,65 @@ func TestWorkspaceAdminReturnsServerErrorForCreateFailures(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "transaction failed") {
 		t.Fatalf("expected project create failure detail, got:\n%s", rec.Body.String())
+	}
+}
+
+func TestWorkspaceAdminClassifiesConstraintFailures(t *testing.T) {
+	workspaceID := testUUID(62)
+
+	for _, tc := range []struct {
+		name               string
+		createWorkspaceErr error
+		createProjectErr   error
+		path               string
+		body               string
+		wantStatus         int
+		wantBody           string
+	}{
+		{
+			name:               "duplicate workspace",
+			createWorkspaceErr: &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"},
+			path:               "/workspaces",
+			body:               "name=Core",
+			wantStatus:         http.StatusConflict,
+			wantBody:           "already exists",
+		},
+		{
+			name:             "duplicate project",
+			createProjectErr: &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"},
+			path:             "/workspaces/" + uuidString(workspaceID) + "/projects",
+			body:             "name=Runtime",
+			wantStatus:       http.StatusConflict,
+			wantBody:         "already exists",
+		},
+		{
+			name:             "missing project workspace",
+			createProjectErr: &pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"},
+			path:             "/workspaces/" + uuidString(workspaceID) + "/projects",
+			body:             "name=Runtime",
+			wantStatus:       http.StatusNotFound,
+			wantBody:         "Referenced workspace does not exist.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewHandler(&fakeRuntime{
+				workspaces:         []db.Workspace{{ID: workspaceID, Name: "Core"}},
+				createWorkspaceErr: tc.createWorkspaceErr,
+				createProjectErr:   tc.createProjectErr,
+			})
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Fatalf("expected body to contain %q, got:\n%s", tc.wantBody, rec.Body.String())
+			}
+		})
 	}
 }
 
