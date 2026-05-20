@@ -247,6 +247,26 @@ func (r *Runtime) GetArtifact(ctx context.Context, id pgtype.UUID) (db.Artifact,
 	return r.Artifacts.GetArtifact(ctx, id)
 }
 
+func (r *Runtime) CreateWorkspace(ctx context.Context, name string) (db.Workspace, error) {
+	return r.Queries.CreateWorkspace(ctx, name)
+}
+
+func (r *Runtime) GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error) {
+	return r.Queries.GetWorkspace(ctx, id)
+}
+
+func (r *Runtime) ListWorkspaces(ctx context.Context) ([]db.Workspace, error) {
+	return r.Queries.ListWorkspaces(ctx)
+}
+
+func (r *Runtime) CreateProject(ctx context.Context, workspaceID pgtype.UUID, name string) (db.Project, error) {
+	return r.Queries.CreateProject(ctx, db.CreateProjectParams{WorkspaceID: workspaceID, Name: name})
+}
+
+func (r *Runtime) ListProjectsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]db.Project, error) {
+	return r.Queries.ListProjectsByWorkspace(ctx, workspaceID)
+}
+
 func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
 	return r.Capabilities.Register(ctx, req)
 }

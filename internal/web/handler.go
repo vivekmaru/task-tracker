@@ -2,6 +2,10 @@ package web
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,47 +15,258 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
 )
 
 const defaultTicketListLimit int32 = 50
+const defaultSessionCookieName = "forge_admin_session"
 
 type Runtime interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
+	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
+	ListWorkspaces(context.Context) ([]db.Workspace, error)
+	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
+	CreateWorkspace(context.Context, string) (db.Workspace, error)
+	ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error)
+	CreateProject(context.Context, pgtype.UUID, string) (db.Project, error)
 }
 
 type Handler struct {
 	runtime Runtime
+	auth    AuthOptions
 }
 
 func NewHandler(runtime Runtime) http.Handler {
 	return Handler{runtime: runtime}
 }
 
+func NewHandlerWithAuth(runtime Runtime, auth AuthOptions) http.Handler {
+	return Handler{runtime: runtime, auth: auth.normalized()}
+}
+
+type AuthOptions struct {
+	AdminToken   string
+	CookieName   string
+	SecureCookie bool
+	SessionTTL   time.Duration
+	Now          func() time.Time
+}
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		renderStatus(r.Context(), w, http.StatusMethodNotAllowed, "Method not allowed", "Only GET requests are supported for web inspection pages.")
-		return
+	if h.auth.enabled() {
+		switch r.URL.Path {
+		case "/login":
+			h.handleLogin(w, r)
+			return
+		}
+		if !h.isAuthorized(r) {
+			h.requireLogin(w, r)
+			return
+		}
 	}
 	switch {
 	case r.URL.Path == "/tickets":
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		h.renderTicketList(w, r)
 	case strings.HasPrefix(r.URL.Path, "/tickets/"):
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		h.renderTicketDetail(w, r)
+	case strings.HasPrefix(r.URL.Path, "/attempts/"):
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderAttemptDetail(w, r)
+	case strings.HasPrefix(r.URL.Path, "/artifacts/"):
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderArtifactDetail(w, r)
+	case strings.HasPrefix(r.URL.Path, "/proposed/"):
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderProposedDetail(w, r)
+	case r.URL.Path == "/workspaces":
+		h.renderWorkspaceIndex(w, r)
+	case strings.HasPrefix(r.URL.Path, "/workspaces/"):
+		h.renderWorkspaceRoute(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func requireMethod(w http.ResponseWriter, r *http.Request, methods ...string) bool {
+	for _, method := range methods {
+		if r.Method == method {
+			return true
+		}
+	}
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	renderStatus(r.Context(), w, http.StatusMethodNotAllowed, "Method not allowed", "This page does not support that request method.")
+	return false
+}
+
+func (h Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		renderComponent(r.Context(), w, http.StatusOK, loginPage(sanitizeNext(r.URL.Query().Get("next")), ""))
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			renderComponent(r.Context(), w, http.StatusBadRequest, loginPage(sanitizeNext(r.FormValue("next")), "Unable to read login form."))
+			return
+		}
+		next := sanitizeNext(r.FormValue("next"))
+		if !constantTimeTokenEqual(r.FormValue("admin_token"), h.auth.AdminToken) {
+			renderComponent(r.Context(), w, http.StatusUnauthorized, loginPage(next, "Invalid admin token."))
+			return
+		}
+		expiresAt := h.auth.now().Add(h.auth.sessionTTL())
+		http.SetCookie(w, &http.Cookie{
+			Name:     h.auth.cookieName(),
+			Value:    h.auth.sessionValue(expiresAt),
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   h.auth.SecureCookie,
+			Expires:  expiresAt,
+			MaxAge:   int(h.auth.sessionTTL().Seconds()),
+		})
+		http.Redirect(w, r, next, http.StatusSeeOther)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		renderStatus(r.Context(), w, http.StatusMethodNotAllowed, "Method not allowed", "Login accepts GET and POST requests.")
+	}
+}
+
+func (h Handler) requireLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		loginURL := "/login?next=" + url.QueryEscape(r.URL.RequestURI())
+		http.Redirect(w, r, loginURL, http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("WWW-Authenticate", `Bearer realm="Forge human web"`)
+	renderStatus(r.Context(), w, http.StatusUnauthorized, "Login required", "Open /login or provide a valid bearer token.")
+}
+
+func (h Handler) isAuthorized(r *http.Request) bool {
+	if token := bearerToken(r.Header.Get("Authorization")); token != "" && constantTimeTokenEqual(token, h.auth.AdminToken) {
+		return true
+	}
+	if token := r.Header.Get("X-Forge-Admin-Token"); token != "" && constantTimeTokenEqual(token, h.auth.AdminToken) {
+		return true
+	}
+	cookie, err := r.Cookie(h.auth.cookieName())
+	if err != nil {
+		return false
+	}
+	return h.auth.validSessionValue(cookie.Value)
+}
+
+func (a AuthOptions) normalized() AuthOptions {
+	a.AdminToken = strings.TrimSpace(a.AdminToken)
+	if a.CookieName == "" {
+		a.CookieName = defaultSessionCookieName
+	}
+	if a.SessionTTL <= 0 {
+		a.SessionTTL = 8 * time.Hour
+	}
+	if a.Now == nil {
+		a.Now = time.Now
+	}
+	return a
+}
+
+func (a AuthOptions) enabled() bool {
+	return strings.TrimSpace(a.AdminToken) != ""
+}
+
+func (a AuthOptions) cookieName() string {
+	if a.CookieName == "" {
+		return defaultSessionCookieName
+	}
+	return a.CookieName
+}
+
+func (a AuthOptions) sessionTTL() time.Duration {
+	if a.SessionTTL <= 0 {
+		return 8 * time.Hour
+	}
+	return a.SessionTTL
+}
+
+func (a AuthOptions) now() time.Time {
+	if a.Now == nil {
+		return time.Now()
+	}
+	return a.Now()
+}
+
+func (a AuthOptions) sessionValue(expiresAt time.Time) string {
+	expiresUnix := expiresAt.Unix()
+	message := fmt.Sprintf("forge-human-session-v1|%d", expiresUnix)
+	mac := hmac.New(sha256.New, []byte(a.AdminToken))
+	_, _ = mac.Write([]byte(message))
+	return fmt.Sprintf("%d.%s", expiresUnix, hex.EncodeToString(mac.Sum(nil)))
+}
+
+func (a AuthOptions) validSessionValue(value string) bool {
+	expiresText, sig, ok := strings.Cut(strings.TrimSpace(value), ".")
+	if !ok || expiresText == "" || sig == "" {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(expiresText, 10, 64)
+	if err != nil {
+		return false
+	}
+	expiresAt := time.Unix(expiresUnix, 0)
+	if !a.now().Before(expiresAt) {
+		return false
+	}
+	return constantTimeTokenEqual(value, a.sessionValue(expiresAt))
+}
+
+func bearerToken(value string) string {
+	parts := strings.Fields(value)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return parts[1]
+}
+
+func constantTimeTokenEqual(got string, want string) bool {
+	got = strings.TrimSpace(got)
+	want = strings.TrimSpace(want)
+	if got == "" || want == "" {
+		return false
+	}
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+}
+
+func sanitizeNext(value string) string {
+	if strings.TrimSpace(value) == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
+		return "/tickets"
+	}
+	return value
 }
 
 func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +335,201 @@ func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
+func (h Handler) renderAttemptDetail(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	attemptID, err := parseIDFromPath(r.URL.Path, "/attempts/")
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid attempt id", "attempt id must be a UUID")
+		return
+	}
+	attempt, err := h.runtime.GetAttempt(r.Context(), attemptID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusNotFound, "Attempt not found", "No attempt exists for that id.")
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt", err.Error())
+		return
+	}
+	artifacts, err := h.runtime.ListArtifactsByAttempt(r.Context(), attemptID)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt artifacts", err.Error())
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, attemptDetailPage(attempt, artifacts))
+}
+
+func (h Handler) renderArtifactDetail(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	artifactID, err := parseIDFromPath(r.URL.Path, "/artifacts/")
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid artifact id", "artifact id must be a UUID")
+		return
+	}
+	artifact, err := h.runtime.GetArtifact(r.Context(), artifactID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusNotFound, "Artifact not found", "No artifact exists for that id.")
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifact", err.Error())
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, artifactDetailPage(artifact))
+}
+
+func (h Handler) renderProposedDetail(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	ticketID, err := parseIDFromPath(r.URL.Path, "/proposed/")
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid proposed ticket id", "proposed ticket id must be a UUID")
+		return
+	}
+	ticket, err := h.runtime.GetTicket(r.Context(), ticketID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusNotFound, "Proposed follow-up not found", "No proposed follow-up exists for that id.")
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load proposed follow-up", err.Error())
+		return
+	}
+	if !isProposedTicket(ticket) {
+		renderStatus(r.Context(), w, http.StatusNotFound, "Proposed follow-up not found", "That ticket is not proposed follow-up work.")
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, proposedDetailPage(ticket))
+}
+
+func (h Handler) renderWorkspaceIndex(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		workspaces, err := h.runtime.ListWorkspaces(r.Context())
+		if err != nil {
+			renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load workspaces", err.Error())
+			return
+		}
+		renderComponent(r.Context(), w, http.StatusOK, workspaceIndexPage(workspaceIndexView{Workspaces: workspaces}))
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			renderComponent(r.Context(), w, http.StatusBadRequest, workspaceIndexPage(workspaceIndexView{Message: "Unable to read workspace form."}))
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("name"))
+		if name == "" {
+			renderComponent(r.Context(), w, http.StatusBadRequest, workspaceIndexPage(workspaceIndexView{Message: "Workspace name is required."}))
+			return
+		}
+		workspace, err := h.runtime.CreateWorkspace(r.Context(), name)
+		if err != nil {
+			renderCreateError(r.Context(), w, "Unable to create workspace", err)
+			return
+		}
+		http.Redirect(w, r, "/workspaces/"+uuidText(workspace.ID), http.StatusSeeOther)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		renderStatus(r.Context(), w, http.StatusMethodNotAllowed, "Method not allowed", "Workspaces accept GET and POST requests.")
+	}
+}
+
+func (h Handler) renderWorkspaceRoute(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/workspaces/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	workspaceID, err := parseUUID(parts[0])
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid workspace id", "workspace id must be a UUID")
+		return
+	}
+	if len(parts) == 2 && parts[1] == "projects" {
+		h.createProject(w, r, workspaceID)
+		return
+	}
+	if len(parts) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	workspace, err := h.runtime.GetWorkspace(r.Context(), workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusNotFound, "Workspace not found", "No workspace exists for that id.")
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load workspace", err.Error())
+		return
+	}
+	projects, err := h.runtime.ListProjectsByWorkspace(r.Context(), workspaceID)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load projects", err.Error())
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, workspaceDetailPage(workspaceDetailView{Workspace: workspace, Projects: projects}))
+}
+
+func (h Handler) createProject(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Unable to create project", "Unable to read project form.")
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Unable to create project", "Project name is required.")
+		return
+	}
+	if _, err := h.runtime.CreateProject(r.Context(), workspaceID, name); err != nil {
+		renderCreateError(r.Context(), w, "Unable to create project", err)
+		return
+	}
+	http.Redirect(w, r, "/workspaces/"+uuidText(workspaceID), http.StatusSeeOther)
+}
+
+func renderCreateError(ctx context.Context, w http.ResponseWriter, title string, err error) {
+	status := http.StatusInternalServerError
+	message := err.Error()
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			status = http.StatusNotFound
+			message = "Referenced workspace does not exist."
+		case "23505":
+			status = http.StatusConflict
+			message = "A workspace or project with that name already exists."
+		case "23502", "23514":
+			status = http.StatusBadRequest
+		}
+	}
+
+	renderStatus(ctx, w, status, title, message)
+}
+
 type ticketListView struct {
 	Tickets     []db.Ticket
 	WorkspaceID pgtype.UUID
@@ -140,6 +550,16 @@ type ticketTimeline struct {
 	Checkpoints []db.AttemptCheckpoint
 	Events      []db.TicketEvent
 	Artifacts   []db.Artifact
+}
+
+type workspaceIndexView struct {
+	Workspaces []db.Workspace
+	Message    string
+}
+
+type workspaceDetailView struct {
+	Workspace db.Workspace
+	Projects  []db.Project
 }
 
 func loadTimeline(ctx context.Context, runtime Runtime, ticketID pgtype.UUID) (ticketTimeline, error) {
@@ -210,6 +630,14 @@ func parseUUID(value string) (pgtype.UUID, error) {
 	return id, nil
 }
 
+func parseIDFromPath(path string, prefix string) (pgtype.UUID, error) {
+	idText := strings.TrimPrefix(path, prefix)
+	if strings.Contains(idText, "/") || strings.TrimSpace(idText) == "" {
+		return pgtype.UUID{}, errors.New("invalid route id")
+	}
+	return parseUUID(idText)
+}
+
 func renderStatus(ctx context.Context, w http.ResponseWriter, status int, title string, message string) {
 	renderComponent(ctx, w, status, statusPage(title, message))
 }
@@ -225,6 +653,19 @@ func renderComponent(ctx context.Context, w http.ResponseWriter, status int, com
 func statusPage(title string, message string) templ.Component {
 	return layout(title, func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="panel"><h1>%s</h1><p>%s</p><p><a href="/tickets">Back to tickets</a></p></section>`, esc(title), esc(message))
+	})
+}
+
+func loginPage(next string, message string) templ.Component {
+	return layout("Forge Login", func(w io.Writer) {
+		fmt.Fprint(w, `<section class="auth-panel panel"><h1>Forge Login</h1>`)
+		if message != "" {
+			fmt.Fprintf(w, `<p class="auth-error">%s</p>`, esc(message))
+		}
+		fmt.Fprint(w, `<form method="post" action="/login">`)
+		fmt.Fprintf(w, `<input type="hidden" name="next" value="%s">`, esc(sanitizeNext(next)))
+		fmt.Fprint(w, `<label><span>Admin token</span><input type="password" name="admin_token" autocomplete="current-password" autofocus></label>`)
+		fmt.Fprint(w, `<button type="submit">Sign in</button></form></section>`)
 	})
 }
 
@@ -274,8 +715,137 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 		writeList(w, "Acceptance", ticket.AcceptanceCriteria, "")
 		writeList(w, "Verification", decodeStringArray(ticket.VerificationCommands), "$ ")
 		writeList(w, "Paths", ticket.RelevantPaths, "")
+		writeShareLinks(w, view)
 		fmt.Fprint(w, `</article>`)
 		writeTimeline(w, view)
+		fmt.Fprint(w, `</section>`)
+	})
+}
+
+func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Component {
+	return layout("Attempt Detail", func(w io.Writer) {
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Attempt Detail</h1><p>%s/%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
+			esc(attempt.Status),
+			esc(uuidText(attempt.ID)),
+			esc(attempt.AgentID),
+			esc(attempt.Model),
+			esc(uuidText(attempt.TicketID)),
+		)
+		fmt.Fprint(w, `<section class="detail-grid"><article class="panel"><h2>Context</h2>`)
+		writeMeta(w, "Attempt ID", uuidText(attempt.ID))
+		writeMeta(w, "Ticket", "/tickets/"+uuidText(attempt.TicketID))
+		if attempt.CurrentSummary.Valid {
+			writeMeta(w, "Summary", attempt.CurrentSummary.String)
+		}
+		if attempt.NextStep.Valid {
+			writeMeta(w, "Next", attempt.NextStep.String)
+		}
+		fmt.Fprint(w, `</article><article class="panel"><h2>Artifacts</h2>`)
+		if len(artifacts) == 0 {
+			fmt.Fprint(w, `<p class="empty-text">No artifacts recorded for this attempt.</p>`)
+		}
+		for _, artifact := range artifacts {
+			fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><p><a class="copy-link" href="/artifacts/%s">/artifacts/%s</a></p></div>`,
+				esc(artifact.Name),
+				esc(uuidText(artifact.ID)),
+				esc(uuidText(artifact.ID)),
+			)
+		}
+		fmt.Fprint(w, `</article></section>`)
+	})
+}
+
+func artifactDetailPage(artifact db.Artifact) templ.Component {
+	return layout("Artifact Detail", func(w io.Writer) {
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Artifact Detail</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
+			esc(artifact.Role),
+			esc(artifact.Type),
+			esc(artifact.Name),
+			esc(uuidText(artifact.TicketID)),
+		)
+		fmt.Fprint(w, `<section class="panel"><h2>Links</h2>`)
+		writeMeta(w, "Artifact", "/artifacts/"+uuidText(artifact.ID))
+		writeMeta(w, "Ticket", "/tickets/"+uuidText(artifact.TicketID))
+		if artifact.AttemptID.Valid {
+			writeMeta(w, "Attempt", "/attempts/"+uuidText(artifact.AttemptID))
+		}
+		if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
+			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
+		} else if artifact.Url != "" {
+			fmt.Fprint(w, `<p class="empty-text">Artifact link hidden because its URL scheme is not supported.</p>`)
+		}
+		fmt.Fprint(w, `</section>`)
+	})
+}
+
+func proposedDetailPage(ticket db.Ticket) templ.Component {
+	return layout("Proposed Follow-up", func(w io.Writer) {
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Proposed Follow-up</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket detail</a></section>`,
+			esc(ticket.Status),
+			esc(ticket.Type),
+			esc(ticket.Title),
+			esc(uuidText(ticket.ID)),
+		)
+		fmt.Fprint(w, `<section class="panel"><h2>Context</h2>`)
+		writeMeta(w, "Proposed link", "/proposed/"+uuidText(ticket.ID))
+		writeMeta(w, "Ticket link", "/tickets/"+uuidText(ticket.ID))
+		writeMeta(w, "Source", ticket.CreatedBy+"/"+textValue(ticket.CreatedByID))
+		if ticket.CreationReason.Valid {
+			writeMeta(w, "Reason", ticket.CreationReason.String)
+		}
+		writeList(w, "Acceptance", ticket.AcceptanceCriteria, "")
+		writeList(w, "Paths", ticket.RelevantPaths, "")
+		fmt.Fprint(w, `</section>`)
+	})
+}
+
+func workspaceIndexPage(view workspaceIndexView) templ.Component {
+	return layout("Forge Workspaces", func(w io.Writer) {
+		fmt.Fprint(w, `<section class="page-head"><div><h1>Workspaces</h1><p>Minimal setup and inspection for Forge scopes.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
+		fmt.Fprint(w, `<section class="filters panel"><form method="post" action="/workspaces">`)
+		input(w, "name", "")
+		fmt.Fprint(w, `<button type="submit">Create workspace</button></form></section>`)
+		if view.Message != "" {
+			fmt.Fprintf(w, `<section class="panel warning"><h2>Workspace action failed</h2><p>%s</p></section>`, esc(view.Message))
+		}
+		if len(view.Workspaces) == 0 {
+			fmt.Fprint(w, `<section class="panel empty"><h2>No workspaces yet</h2><p>Create the first workspace to scope tickets and projects.</p></section>`)
+			return
+		}
+		fmt.Fprint(w, `<section class="ticket-list" aria-label="Workspaces">`)
+		for _, workspace := range view.Workspaces {
+			fmt.Fprintf(w, `<article class="ticket-card"><a href="/workspaces/%s"><span class="title">%s</span><span class="summary">%s</span></a></article>`,
+				esc(uuidText(workspace.ID)),
+				esc(workspace.Name),
+				esc(uuidText(workspace.ID)),
+			)
+		}
+		fmt.Fprint(w, `</section>`)
+	})
+}
+
+func workspaceDetailPage(view workspaceDetailView) templ.Component {
+	workspace := view.Workspace
+	return layout(workspace.Name, func(w io.Writer) {
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">workspace %s</p><h1>%s</h1><p>Projects define the ticket scopes agents claim from.</p></div><a class="button" href="/workspaces">Workspaces</a></section>`,
+			esc(uuidText(workspace.ID)),
+			esc(workspace.Name),
+		)
+		fmt.Fprintf(w, `<section class="filters panel"><form method="post" action="/workspaces/%s/projects">`, esc(uuidText(workspace.ID)))
+		input(w, "name", "")
+		fmt.Fprint(w, `<button type="submit">Create project</button></form></section>`)
+		fmt.Fprint(w, `<section class="panel"><h2>Projects</h2>`)
+		if len(view.Projects) == 0 {
+			fmt.Fprint(w, `<p class="empty-text">No projects in this workspace yet.</p>`)
+		}
+		for _, project := range view.Projects {
+			fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><p>%s</p><p><a class="copy-link" href="/tickets?workspace_id=%s&project_id=%s">Open ticket queue</a></p></div>`,
+				esc(project.Name),
+				esc(uuidText(project.ID)),
+				esc(uuidText(workspace.ID)),
+				esc(uuidText(project.ID)),
+			)
+		}
 		fmt.Fprint(w, `</section>`)
 	})
 }
@@ -306,6 +876,26 @@ func writeTicketCard(w io.Writer, ticket db.Ticket) {
 		writeMeta(w, "Source", ticket.CreatedBy)
 	}
 	fmt.Fprint(w, `</article>`)
+}
+
+func writeShareLinks(w io.Writer, view ticketDetailView) {
+	ticket := view.Ticket
+	fmt.Fprint(w, `<div class="list"><h3>Share links</h3><ul>`)
+	fmt.Fprintf(w, `<li><a class="copy-link" href="/tickets/%s">/tickets/%s</a></li>`, esc(uuidText(ticket.ID)), esc(uuidText(ticket.ID)))
+	if isProposedTicket(ticket) {
+		fmt.Fprintf(w, `<li><a class="copy-link" href="/proposed/%s">/proposed/%s</a></li>`, esc(uuidText(ticket.ID)), esc(uuidText(ticket.ID)))
+	}
+	for _, attempt := range view.Timeline.Attempts {
+		fmt.Fprintf(w, `<li><a class="copy-link" href="/attempts/%s">/attempts/%s</a></li>`, esc(uuidText(attempt.ID)), esc(uuidText(attempt.ID)))
+	}
+	for _, artifact := range view.Timeline.Artifacts {
+		fmt.Fprintf(w, `<li><a class="copy-link" href="/artifacts/%s">/artifacts/%s</a></li>`, esc(uuidText(artifact.ID)), esc(uuidText(artifact.ID)))
+	}
+	fmt.Fprint(w, `</ul></div>`)
+}
+
+func isProposedTicket(ticket db.Ticket) bool {
+	return ticket.CreatedBy == services.ActorAgent && ticket.Status == services.TicketStatusBacklog
 }
 
 func writeTimeline(w io.Writer, view ticketDetailView) {
@@ -437,5 +1027,5 @@ func esc(value string) string {
 }
 
 func pageCSS() string {
-	return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202124;background:#f7f7f4}body{margin:0}main{max-width:1120px;margin:0 auto;padding:32px 20px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:32px;line-height:1.1;letter-spacing:0}.page-head p{margin:0;color:#5c625d;max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:700;color:#5b6b5b}.button,button{border:1px solid #202124;background:#202124;color:#fff;text-decoration:none;padding:9px 12px;border-radius:6px;font-weight:700;white-space:nowrap}.panel{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:18px}.filters form{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;align-items:end}.filters span{display:block;font-size:12px;font-weight:700;color:#5c625d;margin-bottom:5px;text-transform:capitalize}.filters input{width:100%;box-sizing:border-box;border:1px solid #c7ccc3;border-radius:6px;padding:9px;background:#fff}.ticket-list{display:grid;gap:10px;margin-top:16px}.ticket-card{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:14px}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:800}.summary,.meta span,.empty-text{color:#61665f}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:700;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:#3c463e}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid #e5e8e1;padding:12px 0}.timeline-item strong{display:block}.timeline-item span{color:#61665f;font-size:13px}.warning{border-color:#d8b45f;background:#fffaf0}@media(max-width:760px){main{padding:20px 14px}.page-head,.ticket-card a{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}}`
+	return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202124;background:#f7f7f4}body{margin:0}main{max-width:1120px;margin:0 auto;padding:32px 20px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:32px;line-height:1.1;letter-spacing:0}.page-head p{margin:0;color:#5c625d;max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:700;color:#5b6b5b}.button,button{border:1px solid #202124;background:#202124;color:#fff;text-decoration:none;padding:9px 12px;border-radius:6px;font-weight:700;white-space:nowrap}.panel{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:18px}.filters form{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;align-items:end}.filters span,.auth-panel span{display:block;font-size:12px;font-weight:700;color:#5c625d;margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input{width:100%;box-sizing:border-box;border:1px solid #c7ccc3;border-radius:6px;padding:9px;background:#fff}.auth-panel{max-width:360px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:#8c2f1a;font-weight:700}.ticket-list{display:grid;gap:10px;margin-top:16px}.ticket-card{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:14px}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:800}.summary,.meta span,.empty-text{color:#61665f}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:700;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:#3c463e}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid #e5e8e1;padding:12px 0}.timeline-item strong{display:block}.timeline-item span{color:#61665f;font-size:13px}.warning{border-color:#d8b45f;background:#fffaf0}@media(max-width:760px){main{padding:20px 14px}.page-head,.ticket-card a{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}}`
 }

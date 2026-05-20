@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,7 +226,7 @@ func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
 func TestRunServerStartsHTTPRouter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "forge.json")
-	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db","http_addr":"127.0.0.1:4100"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db","http_addr":"127.0.0.1:4100","admin_token":"secret-token"}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
@@ -251,6 +252,12 @@ func TestRunServerStartsHTTPRouter(t *testing.T) {
 	if gotHandler == nil {
 		t.Fatal("expected server to receive a router")
 	}
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id=00000000-0000-0000-0000-000000000001&project_id=00000000-0000-0000-0000-000000000002", nil)
+	rec := httptest.NewRecorder()
+	gotHandler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected server web routes to require login, got %d: %s", rec.Code, rec.Body.String())
+	}
 	if !strings.Contains(stdout.String(), "server listening on 127.0.0.1:4100") {
 		t.Fatalf("expected server listening message, got %q", stdout.String())
 	}
@@ -273,6 +280,15 @@ func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
 	}
 	if server.IdleTimeout <= 0 {
 		t.Fatal("expected IdleTimeout to be configured")
+	}
+}
+
+func TestWebAuthOptionsUseConfiguredSecureCookiePolicy(t *testing.T) {
+	if webAuthOptions(config.Config{HTTPAddr: "127.0.0.1:4100", AdminToken: "secret"}).SecureCookie {
+		t.Fatal("expected default HTTP server cookies to work without the secure flag")
+	}
+	if !webAuthOptions(config.Config{HTTPAddr: "127.0.0.1:4100", AdminToken: "secret", AuthCookieSecure: true}).SecureCookie {
+		t.Fatal("expected configured HTTPS deployments to force secure auth cookies")
 	}
 }
 
@@ -413,6 +429,7 @@ func TestRunWorkerRejectsTUIOnlyFlags(t *testing.T) {
 
 func TestRunServerReportsRuntimeOpenError(t *testing.T) {
 	t.Setenv("FORGE_DATABASE_URL", "postgres://db")
+	t.Setenv("FORGE_ADMIN_TOKEN", "secret-token")
 	var stdout, stderr bytes.Buffer
 
 	code := RunWithDependencies([]string{"server"}, &stdout, &stderr, Dependencies{
@@ -1501,6 +1518,34 @@ func (f *fakeRuntime) ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]
 
 func (f *fakeRuntime) ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error) {
 	return nil, nil
+}
+
+func (f *fakeRuntime) ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
+	return db.Artifact{}, nil
+}
+
+func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error) {
+	return db.Workspace{}, nil
+}
+
+func (f *fakeRuntime) CreateWorkspace(context.Context, string) (db.Workspace, error) {
+	return db.Workspace{}, nil
+}
+
+func (f *fakeRuntime) ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) CreateProject(context.Context, pgtype.UUID, string) (db.Project, error) {
+	return db.Project{}, nil
 }
 
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {

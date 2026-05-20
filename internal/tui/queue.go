@@ -224,6 +224,11 @@ func (m QueueModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(selected.Title)
 	b.WriteString("\n")
+	if selected.ID.Valid {
+		b.WriteString("Link: /tickets/")
+		b.WriteString(uuidText(selected.ID))
+		b.WriteString("\n")
+	}
 	if len(selected.AcceptanceCriteria) > 0 {
 		b.WriteString("Acceptance: ")
 		b.WriteString(strings.Join(selected.AcceptanceCriteria, "; "))

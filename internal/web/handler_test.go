@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
@@ -55,6 +57,106 @@ func TestTicketListRendersRowsAndStableDetailLinks(t *testing.T) {
 	}
 	if runtime.listReq.Status != services.TicketStatusTodo || runtime.listReq.Limit != 50 {
 		t.Fatalf("unexpected list filters: %#v", runtime.listReq)
+	}
+}
+
+func TestAuthenticatedHandlerRedirectsUnauthenticatedWebRequests(t *testing.T) {
+	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect to login, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/login?next=%2Ftickets%3Fworkspace_id%3D00000000-0000-0000-0000-000000000001%26project_id%3D00000000-0000-0000-0000-000000000002" {
+		t.Fatalf("unexpected login redirect: %q", got)
+	}
+}
+
+func TestAuthenticatedHandlerAcceptsBearerToken(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	runtime := &fakeRuntime{}
+	handler := NewHandlerWithAuth(runtime, AuthOptions{AdminToken: "secret-token"})
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID), nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected authorized request status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.listReq.WorkspaceID != workspaceID || runtime.listReq.ProjectID != projectID {
+		t.Fatalf("expected authorized request to reach runtime, got %#v", runtime.listReq)
+	}
+}
+
+func TestLoginCreatesSessionCookieWithoutEchoingToken(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	runtime := &fakeRuntime{}
+	handler := NewHandlerWithAuth(runtime, AuthOptions{AdminToken: "secret-token"})
+	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("admin_token=secret-token&next=%2Ftickets%3Fworkspace_id%3D"+uuidString(workspaceID)+"%26project_id%3D"+uuidString(projectID)))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRec := httptest.NewRecorder()
+
+	handler.ServeHTTP(loginRec, login)
+
+	if loginRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected successful login redirect, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	if strings.Contains(loginRec.Body.String(), "secret-token") {
+		t.Fatalf("login response should not echo the admin token:\n%s", loginRec.Body.String())
+	}
+	cookies := loginRec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected one session cookie, got %#v", cookies)
+	}
+	if cookies[0].Value == "" || cookies[0].Value == "secret-token" {
+		t.Fatalf("session cookie should be opaque, got %q", cookies[0].Value)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, loginRec.Header().Get("Location"), nil)
+	req.AddCookie(cookies[0])
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected session request status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.listReq.WorkspaceID != workspaceID || runtime.listReq.ProjectID != projectID {
+		t.Fatalf("expected session request to reach runtime, got %#v", runtime.listReq)
+	}
+}
+
+func TestAuthenticatedHandlerRejectsExpiredSessionCookie(t *testing.T) {
+	now := time.Date(2026, 5, 18, 20, 0, 0, 0, time.UTC)
+	auth := AuthOptions{
+		AdminToken: "secret-token",
+		SessionTTL: time.Hour,
+		Now: func() time.Time {
+			return now
+		},
+	}.normalized()
+	runtime := &fakeRuntime{}
+	handler := NewHandlerWithAuth(runtime, auth)
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
+	req.AddCookie(&http.Cookie{
+		Name:  auth.cookieName(),
+		Value: auth.sessionValue(now.Add(-time.Minute)),
+	})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected expired session redirect, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.listReq.WorkspaceID.Valid || runtime.listReq.ProjectID.Valid {
+		t.Fatalf("expired session should not reach runtime, got %#v", runtime.listReq)
 	}
 }
 
@@ -188,6 +290,304 @@ func TestTicketDetailRendersContextAndTimeline(t *testing.T) {
 	}
 }
 
+func TestTicketDetailRendersShareableDeepLinks(t *testing.T) {
+	ticketID := testUUID(31)
+	attemptID := testUUID(32)
+	artifactID := testUUID(33)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Proposed follow-up",
+			Type:        services.TicketTypeFollowUp,
+			Status:      services.TicketStatusBacklog,
+			CreatedBy:   services.ActorAgent,
+		},
+		attempts: []db.Attempt{{ID: attemptID, TicketID: ticketID, Status: services.AttemptStatusRunning, AgentID: "codex"}},
+		artifacts: []db.Artifact{{
+			ID:       artifactID,
+			TicketID: ticketID,
+			Name:     "proof",
+			Role:     services.ArtifactRoleEvidence,
+			Type:     services.ArtifactTypeTestOutput,
+			Url:      "https://example.test/proof.txt",
+		}},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Share links",
+		"/tickets/" + uuidString(ticketID),
+		"/proposed/" + uuidString(ticketID),
+		"/attempts/" + uuidString(attemptID),
+		"/artifacts/" + uuidString(artifactID),
+		"copy-link",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected share links to contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
+func TestAttemptArtifactAndProposedRoutesRenderStableInspectionPages(t *testing.T) {
+	ticketID := testUUID(41)
+	attemptID := testUUID(42)
+	artifactID := testUUID(43)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Follow-up from attempt",
+			Type:        services.TicketTypeFollowUp,
+			Status:      services.TicketStatusBacklog,
+			CreatedBy:   services.ActorAgent,
+		},
+		attempt: db.Attempt{
+			ID:             attemptID,
+			TicketID:       ticketID,
+			Status:         services.AttemptStatusBlocked,
+			AgentID:        "codex",
+			Model:          "gpt-5",
+			CurrentSummary: pgtype.Text{String: "Needs staging token", Valid: true},
+		},
+		attemptArtifacts: []db.Artifact{{
+			ID:        artifactID,
+			TicketID:  ticketID,
+			AttemptID: attemptID,
+			Name:      "blocked-proof",
+			Role:      services.ArtifactRoleEvidence,
+			Type:      services.ArtifactTypeTestOutput,
+		}},
+		artifact: db.Artifact{
+			ID:        artifactID,
+			TicketID:  ticketID,
+			AttemptID: attemptID,
+			Name:      "blocked-proof",
+			Role:      services.ArtifactRoleEvidence,
+			Type:      services.ArtifactTypeTestOutput,
+			Url:       "https://example.test/blocked-proof.txt",
+		},
+	}
+	handler := NewHandler(runtime)
+
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{path: "/attempts/" + uuidString(attemptID), want: []string{"Attempt Detail", "Needs staging token", "/tickets/" + uuidString(ticketID), "/artifacts/" + uuidString(artifactID)}},
+		{path: "/artifacts/" + uuidString(artifactID), want: []string{"Artifact Detail", "blocked-proof", "https://example.test/blocked-proof.txt", "/tickets/" + uuidString(ticketID), "/attempts/" + uuidString(attemptID)}},
+		{path: "/proposed/" + uuidString(ticketID), want: []string{"Proposed Follow-up", "Follow-up from attempt", "/tickets/" + uuidString(ticketID)}},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected status 200, got %d: %s", tc.path, rec.Code, rec.Body.String())
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(rec.Body.String(), want) {
+				t.Fatalf("%s: expected body to contain %q, got:\n%s", tc.path, want, rec.Body.String())
+			}
+		}
+	}
+}
+
+func TestProposedRouteRejectsNormalTickets(t *testing.T) {
+	ticketID := testUUID(44)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Normal ticket",
+			Type:        services.TicketTypeFeature,
+			Status:      services.TicketStatusTodo,
+			CreatedBy:   services.ActorHuman,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/proposed/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected normal ticket status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Proposed Follow-up") {
+		t.Fatalf("normal ticket should not render proposed detail page:\n%s", rec.Body.String())
+	}
+}
+
+func TestWorkspaceAdminRendersAndCreatesWorkspaceAndProject(t *testing.T) {
+	workspaceID := testUUID(51)
+	projectID := testUUID(52)
+	runtime := &fakeRuntime{
+		workspaces:       []db.Workspace{{ID: workspaceID, Name: "Core"}},
+		projects:         []db.Project{{ID: projectID, WorkspaceID: workspaceID, Name: "Runtime"}},
+		createdWorkspace: db.Workspace{ID: testUUID(53), Name: "Docs"},
+		createdProject:   db.Project{ID: testUUID(54), WorkspaceID: workspaceID, Name: "Web"},
+	}
+	handler := NewHandler(runtime)
+
+	req := httptest.NewRequest(http.MethodGet, "/workspaces", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected workspace index status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{"Workspaces", "Core", "/workspaces/" + uuidString(workspaceID), `name="name"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("expected workspace index to contain %q, got:\n%s", want, rec.Body.String())
+		}
+	}
+	for _, forbidden := range []string{"Kanban", "Sprint", "custom field"} {
+		if strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("workspace admin should avoid dashboard language %q, got:\n%s", forbidden, rec.Body.String())
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/workspaces/"+uuidString(workspaceID), nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected workspace detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{"Workspace", "Core", "Projects", "Runtime", "/tickets?workspace_id=" + uuidString(workspaceID) + "&project_id=" + uuidString(projectID), `action="/workspaces/` + uuidString(workspaceID) + `/projects"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("expected workspace detail to contain %q, got:\n%s", want, rec.Body.String())
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/workspaces", strings.NewReader("name=Docs"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/workspaces/"+uuidString(testUUID(53)) {
+		t.Fatalf("expected workspace create redirect, got %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	if runtime.createdWorkspaceName != "Docs" {
+		t.Fatalf("expected workspace create name, got %q", runtime.createdWorkspaceName)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/workspaces/"+uuidString(workspaceID)+"/projects", strings.NewReader("name=Web"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/workspaces/"+uuidString(workspaceID) {
+		t.Fatalf("expected project create redirect, got %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	if runtime.createdProjectWorkspaceID != workspaceID || runtime.createdProjectName != "Web" {
+		t.Fatalf("unexpected project create request: %#v %q", runtime.createdProjectWorkspaceID, runtime.createdProjectName)
+	}
+}
+
+func TestWorkspaceAdminReturnsServerErrorForCreateFailures(t *testing.T) {
+	workspaceID := testUUID(61)
+	handler := NewHandler(&fakeRuntime{
+		workspaces:         []db.Workspace{{ID: workspaceID, Name: "Core"}},
+		createWorkspaceErr: errors.New("database unavailable"),
+		createProjectErr:   errors.New("transaction failed"),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/workspaces", strings.NewReader("name=Docs"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected workspace create status 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "database unavailable") {
+		t.Fatalf("expected workspace create failure detail, got:\n%s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/workspaces/"+uuidString(workspaceID)+"/projects", strings.NewReader("name=Web"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected project create status 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "transaction failed") {
+		t.Fatalf("expected project create failure detail, got:\n%s", rec.Body.String())
+	}
+}
+
+func TestWorkspaceAdminClassifiesConstraintFailures(t *testing.T) {
+	workspaceID := testUUID(62)
+
+	for _, tc := range []struct {
+		name               string
+		createWorkspaceErr error
+		createProjectErr   error
+		path               string
+		body               string
+		wantStatus         int
+		wantBody           string
+	}{
+		{
+			name:               "duplicate workspace",
+			createWorkspaceErr: &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"},
+			path:               "/workspaces",
+			body:               "name=Core",
+			wantStatus:         http.StatusConflict,
+			wantBody:           "already exists",
+		},
+		{
+			name:             "duplicate project",
+			createProjectErr: &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"},
+			path:             "/workspaces/" + uuidString(workspaceID) + "/projects",
+			body:             "name=Runtime",
+			wantStatus:       http.StatusConflict,
+			wantBody:         "already exists",
+		},
+		{
+			name:             "missing project workspace",
+			createProjectErr: &pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"},
+			path:             "/workspaces/" + uuidString(workspaceID) + "/projects",
+			body:             "name=Runtime",
+			wantStatus:       http.StatusNotFound,
+			wantBody:         "Referenced workspace does not exist.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewHandler(&fakeRuntime{
+				workspaces:         []db.Workspace{{ID: workspaceID, Name: "Core"}},
+				createWorkspaceErr: tc.createWorkspaceErr,
+				createProjectErr:   tc.createProjectErr,
+			})
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Fatalf("expected body to contain %q, got:\n%s", tc.wantBody, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestTicketDetailDoesNotHideTimelineWhenUnusedCheckpointsFail(t *testing.T) {
 	ticketID := testUUID(11)
 	runtime := &fakeRuntime{
@@ -295,16 +695,28 @@ func TestTicketDetailHandlesBadIDAndMissingRuntime(t *testing.T) {
 }
 
 type fakeRuntime struct {
-	listReq        services.ListTicketsRequest
-	detailTicketID pgtype.UUID
-	tickets        []db.Ticket
-	listErr        error
-	ticket         db.Ticket
-	attempts       []db.Attempt
-	checkpoints    []db.AttemptCheckpoint
-	checkpointsErr error
-	events         []db.TicketEvent
-	artifacts      []db.Artifact
+	listReq                   services.ListTicketsRequest
+	detailTicketID            pgtype.UUID
+	tickets                   []db.Ticket
+	listErr                   error
+	ticket                    db.Ticket
+	attempt                   db.Attempt
+	attempts                  []db.Attempt
+	checkpoints               []db.AttemptCheckpoint
+	checkpointsErr            error
+	events                    []db.TicketEvent
+	artifacts                 []db.Artifact
+	attemptArtifacts          []db.Artifact
+	artifact                  db.Artifact
+	workspaces                []db.Workspace
+	projects                  []db.Project
+	createdWorkspace          db.Workspace
+	createdWorkspaceName      string
+	createWorkspaceErr        error
+	createdProject            db.Project
+	createdProjectWorkspaceID pgtype.UUID
+	createdProjectName        string
+	createProjectErr          error
 }
 
 func (f *fakeRuntime) ListTickets(_ context.Context, req services.ListTicketsRequest) ([]db.Ticket, error) {
@@ -341,6 +753,56 @@ func (f *fakeRuntime) ListTicketEventsByTicket(_ context.Context, id pgtype.UUID
 func (f *fakeRuntime) ListArtifactsByTicket(_ context.Context, id pgtype.UUID) ([]db.Artifact, error) {
 	f.detailTicketID = id
 	return f.artifacts, nil
+}
+
+func (f *fakeRuntime) GetAttempt(_ context.Context, id pgtype.UUID) (db.Attempt, error) {
+	f.detailTicketID = id
+	return f.attempt, nil
+}
+
+func (f *fakeRuntime) ListArtifactsByAttempt(_ context.Context, id pgtype.UUID) ([]db.Artifact, error) {
+	f.detailTicketID = id
+	return f.attemptArtifacts, nil
+}
+
+func (f *fakeRuntime) GetArtifact(_ context.Context, id pgtype.UUID) (db.Artifact, error) {
+	f.detailTicketID = id
+	return f.artifact, nil
+}
+
+func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {
+	return f.workspaces, nil
+}
+
+func (f *fakeRuntime) GetWorkspace(_ context.Context, id pgtype.UUID) (db.Workspace, error) {
+	for _, workspace := range f.workspaces {
+		if workspace.ID == id {
+			return workspace, nil
+		}
+	}
+	return db.Workspace{}, nil
+}
+
+func (f *fakeRuntime) CreateWorkspace(_ context.Context, name string) (db.Workspace, error) {
+	f.createdWorkspaceName = name
+	if f.createWorkspaceErr != nil {
+		return db.Workspace{}, f.createWorkspaceErr
+	}
+	return f.createdWorkspace, nil
+}
+
+func (f *fakeRuntime) ListProjectsByWorkspace(_ context.Context, id pgtype.UUID) ([]db.Project, error) {
+	f.detailTicketID = id
+	return f.projects, nil
+}
+
+func (f *fakeRuntime) CreateProject(_ context.Context, workspaceID pgtype.UUID, name string) (db.Project, error) {
+	f.createdProjectWorkspaceID = workspaceID
+	f.createdProjectName = name
+	if f.createProjectErr != nil {
+		return db.Project{}, f.createProjectErr
+	}
+	return f.createdProject, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {
