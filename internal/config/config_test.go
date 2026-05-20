@@ -13,6 +13,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("FORGE_LOG_LEVEL", "")
 	t.Setenv("FORGE_WORKER_CONCURRENCY", "")
 	t.Setenv("FORGE_AUTH_COOKIE_SECURE", "")
+	t.Setenv("FORGE_ARTIFACT_ROOT", "")
 
 	cfg, err := Load(Options{})
 	if err != nil {
@@ -31,6 +32,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.AuthCookieSecure {
 		t.Fatal("expected auth cookies to default to non-secure for local HTTP")
 	}
+	if cfg.ArtifactRoot != ".forge/artifacts" {
+		t.Fatalf("unexpected ArtifactRoot: %q", cfg.ArtifactRoot)
+	}
 }
 
 func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
@@ -42,7 +46,8 @@ func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
 		"log_level": "debug",
 		"worker_concurrency": 2,
 		"admin_token": "file-secret",
-		"auth_cookie_secure": false
+		"auth_cookie_secure": false,
+		"artifact_root": "/tmp/file-artifacts"
 	}`), 0o600)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -53,6 +58,7 @@ func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
 	t.Setenv("FORGE_WORKER_CONCURRENCY", "4")
 	t.Setenv("FORGE_ADMIN_TOKEN", "env-secret")
 	t.Setenv("FORGE_AUTH_COOKIE_SECURE", "true")
+	t.Setenv("FORGE_ARTIFACT_ROOT", "/tmp/env-artifacts")
 
 	cfg, err := Load(Options{ConfigPath: path})
 	if err != nil {
@@ -73,6 +79,9 @@ func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
 	}
 	if !cfg.AuthCookieSecure {
 		t.Fatal("expected env auth cookie secure override")
+	}
+	if cfg.ArtifactRoot != "/tmp/env-artifacts" {
+		t.Fatalf("expected env artifact root override, got %q", cfg.ArtifactRoot)
 	}
 }
 

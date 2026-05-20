@@ -9,6 +9,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ import (
 	forgemcp "github.com/vivek/agent-task-tracker/internal/mcp"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	"github.com/vivek/agent-task-tracker/internal/storage"
 	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
 	"github.com/vivek/agent-task-tracker/internal/web"
 )
@@ -78,6 +81,8 @@ type RuntimeHandle interface {
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
+	StoreLocalArtifact(context.Context, string, string) (storage.StoredArtifact, error)
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
 	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
@@ -1064,10 +1069,26 @@ func splitLeadingAttemptID(args []string) (string, []string) {
 	return args[0], args[1:]
 }
 
-func codexProofArtifactRequests(flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) []services.RegisterArtifactRequest {
+func codexProofArtifactRequests(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) ([]services.RegisterArtifactRequest, error) {
 	requests := make([]services.RegisterArtifactRequest, 0, len(flags.Proofs))
 	for _, proof := range flags.Proofs {
 		proof = strings.TrimSpace(proof)
+		stored, hasStoredArtifact, err := storeFilesystemProof(ctx, rt, proof)
+		if err != nil {
+			return nil, err
+		}
+		name := proofName(proof)
+		url := proof
+		sizeBytes := int64(0)
+		mimeType := flags.MimeType
+		if hasStoredArtifact {
+			name = stored.Name
+			url = stored.URL
+			sizeBytes = stored.Size
+			if mimeType == "" {
+				mimeType = stored.MimeType
+			}
+		}
 		requests = append(requests, services.RegisterArtifactRequest{
 			WorkspaceID:    workspaceID,
 			ProjectID:      projectID,
@@ -1075,13 +1096,14 @@ func codexProofArtifactRequests(flags codexProofFlags, workspaceID, projectID, t
 			AttemptID:      attemptID,
 			Type:           flags.ProofType,
 			Role:           flags.ProofRole,
-			Name:           proofName(proof),
-			URL:            proof,
+			Name:           name,
+			URL:            url,
 			StorageBackend: services.ArtifactStorageLocal,
-			MimeType:       flags.MimeType,
+			SizeBytes:      sizeBytes,
+			MimeType:       mimeType,
 		})
 	}
-	return requests
+	return requests, nil
 }
 
 func codexProofArtifactRequestsForAttempt(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, attemptID pgtype.UUID) ([]services.RegisterArtifactRequest, error) {
@@ -1095,7 +1117,28 @@ func codexProofArtifactRequestsForAttempt(ctx context.Context, rt RuntimeHandle,
 	if err := validateOptionalScopeFlags(flags.WorkspaceID, flags.ProjectID, attempt.WorkspaceID, attempt.ProjectID); err != nil {
 		return nil, cliArgumentError{err: err}
 	}
-	return codexProofArtifactRequests(flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID), nil
+	return codexProofArtifactRequests(ctx, rt, flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID)
+}
+
+func storeFilesystemProof(ctx context.Context, rt RuntimeHandle, proof string) (storage.StoredArtifact, bool, error) {
+	if proof == "" || strings.Contains(proof, "://") {
+		return storage.StoredArtifact{}, false, nil
+	}
+	info, err := os.Stat(proof)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return storage.StoredArtifact{}, false, nil
+		}
+		return storage.StoredArtifact{}, false, fmt.Errorf("inspect proof file: %w", err)
+	}
+	if info.IsDir() {
+		return storage.StoredArtifact{}, false, cliArgumentError{err: fmt.Errorf("--proof must be a file, got directory %q", proof)}
+	}
+	stored, err := rt.StoreLocalArtifact(ctx, proof, filepath.Base(proof))
+	if err != nil {
+		return storage.StoredArtifact{}, false, fmt.Errorf("store proof file: %w", err)
+	}
+	return stored, true, nil
 }
 
 func validateOptionalScopeFlags(workspaceID, projectID string, expectedWorkspaceID, expectedProjectID pgtype.UUID) error {

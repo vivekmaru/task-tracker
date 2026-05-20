@@ -13,6 +13,7 @@ const (
 	defaultHTTPAddr          = "127.0.0.1:3017"
 	defaultLogLevel          = "info"
 	defaultWorkerConcurrency = 1
+	defaultArtifactRoot      = ".forge/artifacts"
 )
 
 // Config contains process configuration shared by Forge command modes.
@@ -23,6 +24,7 @@ type Config struct {
 	WorkerConcurrency int    `json:"worker_concurrency"`
 	AdminToken        string `json:"admin_token"`
 	AuthCookieSecure  bool   `json:"auth_cookie_secure"`
+	ArtifactRoot      string `json:"artifact_root"`
 }
 
 // Options controls configuration loading.
@@ -36,6 +38,7 @@ func Load(opts Options) (Config, error) {
 		HTTPAddr:          defaultHTTPAddr,
 		LogLevel:          defaultLogLevel,
 		WorkerConcurrency: defaultWorkerConcurrency,
+		ArtifactRoot:      defaultArtifactRoot,
 	}
 
 	path := firstNonEmpty(opts.ConfigPath, os.Getenv("FORGE_CONFIG"))
@@ -70,6 +73,9 @@ func Load(opts Options) (Config, error) {
 			return Config{}, fmt.Errorf("FORGE_AUTH_COOKIE_SECURE must be a boolean: %w", err)
 		}
 		cfg.AuthCookieSecure = secure
+	}
+	if value := os.Getenv("FORGE_ARTIFACT_ROOT"); value != "" {
+		cfg.ArtifactRoot = value
 	}
 
 	return cfg, nil

@@ -45,6 +45,7 @@ export FORGE_HTTP_ADDR='127.0.0.1:3017'
 export FORGE_WORKER_CONCURRENCY=1
 export FORGE_ADMIN_TOKEN='change-me-local-admin-token'
 export FORGE_AUTH_COOKIE_SECURE=false
+export FORGE_ARTIFACT_ROOT="$PWD/.forge/artifacts"
 ```
 
 Equivalent config file:
@@ -55,11 +56,14 @@ Equivalent config file:
   "http_addr": "127.0.0.1:3017",
   "worker_concurrency": 1,
   "admin_token": "change-me-local-admin-token",
-  "auth_cookie_secure": false
+  "auth_cookie_secure": false,
+  "artifact_root": ".forge/artifacts"
 }
 ```
 
 Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Keep it `false` for direct plain HTTP access.
+
+Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be opened from the human `/artifacts/{id}` route when that file exists under the configured artifact root. `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` also copy filesystem proofs into that root before registering them.
 
 Pass it with:
 

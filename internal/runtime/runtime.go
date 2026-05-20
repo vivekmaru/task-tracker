@@ -11,6 +11,7 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/jobs"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	"github.com/vivek/agent-task-tracker/internal/storage"
 )
 
 type Runtime struct {
@@ -20,6 +21,7 @@ type Runtime struct {
 	Claims       *services.ClaimService
 	Attempts     *services.AttemptService
 	Artifacts    *services.ArtifactService
+	LocalStore   *storage.LocalStore
 	Capabilities *services.CapabilityService
 	Maintenance  *jobs.MaintenanceWorker
 }
@@ -34,18 +36,27 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	rt := New(db.New(pool))
+	rt := NewWithConfig(db.New(pool), cfg)
 	rt.Pool = pool
 	return rt, nil
 }
 
 func New(queries *db.Queries) *Runtime {
+	return NewWithConfig(queries, config.Config{})
+}
+
+func NewWithConfig(queries *db.Queries, cfg config.Config) *Runtime {
+	artifactRoot := cfg.ArtifactRoot
+	if artifactRoot == "" {
+		artifactRoot = ".forge/artifacts"
+	}
 	return &Runtime{
 		Queries:      queries,
 		Tickets:      services.NewTicketService(queries),
 		Claims:       services.NewClaimService(queries),
 		Attempts:     services.NewAttemptService(queries),
 		Artifacts:    services.NewArtifactService(queries),
+		LocalStore:   storage.NewLocalStore(artifactRoot),
 		Capabilities: services.NewCapabilityService(queries),
 		Maintenance:  jobs.NewMaintenanceWorker(queries),
 	}
@@ -265,6 +276,17 @@ func (r *Runtime) CreateProject(ctx context.Context, workspaceID pgtype.UUID, na
 
 func (r *Runtime) ListProjectsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]db.Project, error) {
 	return r.Queries.ListProjectsByWorkspace(ctx, workspaceID)
+}
+
+func (r *Runtime) OpenArtifact(ctx context.Context, artifact db.Artifact) (storage.ArtifactContent, error) {
+	if artifact.StorageBackend != services.ArtifactStorageLocal {
+		return storage.ArtifactContent{}, fmt.Errorf("artifact storage backend %q is not locally openable", artifact.StorageBackend)
+	}
+	return r.LocalStore.Open(ctx, artifact)
+}
+
+func (r *Runtime) StoreLocalArtifact(ctx context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
+	return r.LocalStore.StoreFile(ctx, sourcePath, preferredName)
 }
 
 func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
