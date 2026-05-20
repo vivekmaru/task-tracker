@@ -1062,6 +1062,43 @@ func TestRunCodexCompleteReportsAtomicProofFailure(t *testing.T) {
 	}
 }
 
+func TestRunCodexCompleteForwardsAttemptMetrics(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
+		completeResult: services.AttemptTransitionResult{
+			AttemptID:     testUUID(5),
+			TicketID:      testUUID(4),
+			AttemptStatus: services.AttemptStatusSucceeded,
+			TicketStatus:  services.TicketStatusDone,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		uuidString(t, testUUID(5)),
+		"--summary", "Implemented analytics",
+		"--tokens-in", "1200",
+		"--tokens-out", "340",
+		"--cost-usd", "0.0425",
+		"--duration", "91.25s",
+		"--retries", "2",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.completeReq.Metrics == nil {
+		t.Fatalf("expected metrics request, got %#v", fake.completeReq)
+	}
+	if fake.completeReq.Metrics.TokensIn != 1200 || fake.completeReq.Metrics.TokensOut != 340 || fake.completeReq.Metrics.RetryCount != 2 {
+		t.Fatalf("unexpected token/retry metrics: %#v", fake.completeReq.Metrics)
+	}
+	if fake.completeReq.Metrics.CostUSD != 0.0425 || fake.completeReq.Metrics.DurationSeconds != 91.25 {
+		t.Fatalf("unexpected cost/duration metrics: %#v", fake.completeReq.Metrics)
+	}
+}
+
 func TestRunCodexBlockReportsAtomicProofFailure(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -1090,6 +1127,62 @@ func TestRunCodexBlockReportsAtomicProofFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "codex block error") {
 		t.Fatalf("expected block error, got %q", stderr.String())
+	}
+}
+
+func TestRunAnalyticsSummaryPrintsMinimalHumanOutput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsSummary: services.AnalyticsSummary{
+			AttemptCount:         3,
+			SucceededAttempts:    2,
+			FailedAttempts:       1,
+			TotalTokensIn:        2200,
+			TotalTokensOut:       900,
+			TotalCostUSD:         0.34,
+			TotalDurationSeconds: 180.5,
+			TotalRetries:         1,
+			AttemptsWithMetrics:  2,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "summary",
+		"--workspace-id", uuidString(t, testUUID(2)),
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsFilter.WorkspaceID != testUUID(2) {
+		t.Fatalf("expected workspace filter, got %#v", fake.analyticsFilter)
+	}
+	out := stdout.String()
+	for _, want := range []string{"Attempts: 3", "Succeeded: 2", "Cost: $0.340000", "Tokens: 3100", "Retries: 1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected analytics output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunAnalyticsByModelWritesJSONWhenRequested(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsGroups: []services.AnalyticsGroup{
+			{Group: "gpt-5.4", AttemptCount: 2, SucceededAttempts: 1, TotalCostUSD: 0.12},
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "by-model",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"groups":[{"group":"gpt-5.4"`) {
+		t.Fatalf("expected analytics JSON groups, got %s", stdout.String())
 	}
 }
 
@@ -1352,6 +1445,9 @@ type fakeRuntime struct {
 	artifactReq             services.RegisterArtifactRequest
 	artifact                db.Artifact
 	artifactErr             error
+	analyticsFilter         services.AnalyticsFilter
+	analyticsSummary        services.AnalyticsSummary
+	analyticsGroups         []services.AnalyticsGroup
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -1515,6 +1611,21 @@ func (f *fakeRuntime) DecomposeTicket(context.Context, services.DecomposeTicketR
 
 func (f *fakeRuntime) RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
 	return db.AgentCapability{}, nil
+}
+
+func (f *fakeRuntime) AnalyticsSummary(_ context.Context, filter services.AnalyticsFilter) (services.AnalyticsSummary, error) {
+	f.analyticsFilter = filter
+	return f.analyticsSummary, nil
+}
+
+func (f *fakeRuntime) AnalyticsByModel(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByHarness(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	return f.analyticsGroups, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {

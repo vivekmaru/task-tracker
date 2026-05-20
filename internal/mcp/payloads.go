@@ -312,6 +312,7 @@ type completeInput struct {
 	AttemptID    string         `json:"attempt_id"`
 	Output       map[string]any `json:"output"`
 	OutputSchema string         `json:"output_schema"`
+	Metrics      metricsInput   `json:"metrics"`
 }
 
 type failInput struct {
@@ -319,6 +320,7 @@ type failInput struct {
 	FailureReason   string         `json:"failure_reason"`
 	FailureCategory string         `json:"failure_category"`
 	Output          map[string]any `json:"output"`
+	Metrics         metricsInput   `json:"metrics"`
 }
 
 type blockInput struct {
@@ -326,6 +328,45 @@ type blockInput struct {
 	BlockerReason   string         `json:"blocker_reason"`
 	FailureCategory string         `json:"failure_category"`
 	Blocker         map[string]any `json:"blocker"`
+	Metrics         metricsInput   `json:"metrics"`
+}
+
+type metricsInput struct {
+	TokensIn        int64   `json:"tokens_in"`
+	TokensOut       int64   `json:"tokens_out"`
+	CostUSD         float64 `json:"cost_usd"`
+	DurationSeconds float64 `json:"duration_seconds"`
+	RetryCount      int32   `json:"retry_count"`
+}
+
+func (p metricsInput) request() *services.AttemptMetricsRequest {
+	if p.TokensIn == 0 && p.TokensOut == 0 && p.CostUSD == 0 && p.DurationSeconds == 0 && p.RetryCount == 0 {
+		return nil
+	}
+	return &services.AttemptMetricsRequest{
+		TokensIn:        p.TokensIn,
+		TokensOut:       p.TokensOut,
+		CostUSD:         p.CostUSD,
+		DurationSeconds: p.DurationSeconds,
+		RetryCount:      p.RetryCount,
+	}
+}
+
+type analyticsInput struct {
+	WorkspaceID string `json:"workspace_id"`
+	ProjectID   string `json:"project_id"`
+}
+
+func (p analyticsInput) filter() (services.AnalyticsFilter, error) {
+	workspaceID, err := optionalUUIDField("workspace_id", p.WorkspaceID)
+	if err != nil {
+		return services.AnalyticsFilter{}, err
+	}
+	projectID, err := optionalUUIDField("project_id", p.ProjectID)
+	if err != nil {
+		return services.AnalyticsFilter{}, err
+	}
+	return services.AnalyticsFilter{WorkspaceID: workspaceID, ProjectID: projectID}, nil
 }
 
 type listTicketsInput struct {

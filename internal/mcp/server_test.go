@@ -597,6 +597,30 @@ func TestArtifactPayloadOmitsTicketScopedAttemptID(t *testing.T) {
 	}
 }
 
+func TestCallAnalyticsByModelUsesScopedFilter(t *testing.T) {
+	rt := &fakeRuntime{
+		analyticsGroups: []services.AnalyticsGroup{{Group: "gpt-5.4", AttemptCount: 2, TotalCostUSD: 0.12}},
+	}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	out, err := server.Call(context.Background(), contracts.OperationAnalyticsByModel, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001"
+	}`))
+	if err != nil {
+		t.Fatalf("call analytics_by_model: %v", err)
+	}
+
+	if rt.analyticsFilter.WorkspaceID != testUUID(1) {
+		t.Fatalf("expected workspace filter, got %#v", rt.analyticsFilter)
+	}
+	if !strings.Contains(string(out), `"group":"gpt-5.4"`) {
+		t.Fatalf("expected analytics group output, got %s", string(out))
+	}
+}
+
 func TestEveryContractOperationHasMCPHandler(t *testing.T) {
 	server, err := NewServer(&fakeRuntime{}, contracts.AllOperations())
 	if err != nil {
@@ -631,6 +655,9 @@ type fakeRuntime struct {
 	decomposeReq            services.DecomposeTicketRequest
 	createFromAttemptReq    services.CreateTicketFromAttemptRequest
 	registerCapabilitiesReq services.RegisterCapabilitiesRequest
+	analyticsFilter         services.AnalyticsFilter
+	analyticsSummary        services.AnalyticsSummary
+	analyticsGroups         []services.AnalyticsGroup
 }
 
 func (f *fakeRuntime) CreateTicket(_ context.Context, req services.CreateTicketRequest) (db.Ticket, error) {
@@ -768,6 +795,21 @@ func (f *fakeRuntime) DecomposeTicket(_ context.Context, req services.DecomposeT
 func (f *fakeRuntime) RegisterCapabilities(_ context.Context, req services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
 	f.registerCapabilitiesReq = req
 	return db.AgentCapability{ID: testUUID(9), AgentID: req.AgentID, Harness: req.Harness, Capabilities: req.Capabilities}, nil
+}
+
+func (f *fakeRuntime) AnalyticsSummary(_ context.Context, filter services.AnalyticsFilter) (services.AnalyticsSummary, error) {
+	f.analyticsFilter = filter
+	return f.analyticsSummary, nil
+}
+
+func (f *fakeRuntime) AnalyticsByModel(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByHarness(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	return f.analyticsGroups, nil
 }
 
 func ticketFor(req services.CreateTicketRequest) db.Ticket {

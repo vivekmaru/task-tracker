@@ -48,6 +48,8 @@ completed_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -116,6 +118,8 @@ failed_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -171,6 +175,8 @@ blocked_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -221,6 +227,8 @@ cancelled_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -280,6 +288,8 @@ expired_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status

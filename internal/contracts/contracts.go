@@ -27,26 +27,32 @@ const (
 	OperationAttachArtifact            = "attach_artifact"
 	OperationDecomposeTicket           = "decompose_ticket"
 	OperationRegisterAgentCapabilities = "register_agent_capabilities"
+	OperationAnalyticsSummary          = "analytics_summary"
+	OperationAnalyticsByModel          = "analytics_by_model"
+	OperationAnalyticsByHarness        = "analytics_by_harness"
 
-	RESTCreateTicket    = "create-ticket"
-	RESTProposeTicket   = "propose-ticket"
-	RESTClaimNextTicket = "claim-next-ticket"
-	RESTHeartbeat       = "heartbeat-attempt"
-	RESTCheckpoint      = "checkpoint-attempt"
-	RESTUpdateTicket    = "update-ticket"
-	RESTMarkTicketReady = "ready-ticket"
-	RESTReopenTicket    = "reopen-ticket"
-	RESTUnblockTicket   = "unblock-ticket"
-	RESTRequestReview   = "request-ticket-review"
-	RESTReviewTicket    = "review-ticket"
-	RESTArchiveTicket   = "archive-ticket"
-	RESTCompleteAttempt = "complete-attempt"
-	RESTFailAttempt     = "fail-attempt"
-	RESTBlockAttempt    = "block-attempt"
-	RESTListTickets     = "list-tickets"
-	RESTGetTicket       = "get-ticket"
-	RESTAttachArtifact  = "create-artifact"
-	RESTDecomposeTicket = "decompose-ticket"
+	RESTCreateTicket       = "create-ticket"
+	RESTProposeTicket      = "propose-ticket"
+	RESTClaimNextTicket    = "claim-next-ticket"
+	RESTHeartbeat          = "heartbeat-attempt"
+	RESTCheckpoint         = "checkpoint-attempt"
+	RESTUpdateTicket       = "update-ticket"
+	RESTMarkTicketReady    = "ready-ticket"
+	RESTReopenTicket       = "reopen-ticket"
+	RESTUnblockTicket      = "unblock-ticket"
+	RESTRequestReview      = "request-ticket-review"
+	RESTReviewTicket       = "review-ticket"
+	RESTArchiveTicket      = "archive-ticket"
+	RESTCompleteAttempt    = "complete-attempt"
+	RESTFailAttempt        = "fail-attempt"
+	RESTBlockAttempt       = "block-attempt"
+	RESTListTickets        = "list-tickets"
+	RESTGetTicket          = "get-ticket"
+	RESTAttachArtifact     = "create-artifact"
+	RESTDecomposeTicket    = "decompose-ticket"
+	RESTAnalyticsSummary   = "analytics-summary"
+	RESTAnalyticsByModel   = "analytics-by-model"
+	RESTAnalyticsByHarness = "analytics-by-harness"
 
 	CLICreateTicket    = "create"
 	CLIProposeTicket   = "propose"
@@ -59,6 +65,7 @@ const (
 	CLIListTickets     = "list"
 	CLIGetTicket       = "get"
 	CLIAttachArtifact  = "attach"
+	CLIAnalytics       = "analytics"
 )
 
 type SurfaceBinding struct {
@@ -337,6 +344,7 @@ var operations = []Operation{
 		InputSchema: transitionInputSchema("Complete attempt input", []string{"attempt_id", "output"}, map[string]any{
 			"output":        objectSchema("Structured completion output", nil, nil),
 			"output_schema": stringSchema("Optional schema identifier for output"),
+			"metrics":       attemptMetricsSchema(),
 		}),
 		OutputSchema: transitionOutputSchema("Complete attempt output"),
 	},
@@ -353,6 +361,7 @@ var operations = []Operation{
 			"failure_reason":   stringSchema("Human-readable reason the attempt failed"),
 			"failure_category": stringSchema("Optional normalized failure category"),
 			"output":           objectSchema("Structured failure output", nil, nil),
+			"metrics":          attemptMetricsSchema(),
 		}),
 		OutputSchema: transitionOutputSchema("Fail attempt output"),
 	},
@@ -369,6 +378,7 @@ var operations = []Operation{
 			"blocker_reason":   stringSchema("Reason the attempt is blocked"),
 			"failure_category": stringSchema("Optional normalized blocker category"),
 			"blocker":          objectSchema("Structured blocker details", nil, nil),
+			"metrics":          attemptMetricsSchema(),
 		}),
 		OutputSchema: transitionOutputSchema("Block attempt output"),
 	},
@@ -500,6 +510,42 @@ var operations = []Operation{
 			"capabilities": stringArraySchema("Registered capabilities"),
 		}),
 	},
+	{
+		Name:        OperationAnalyticsSummary,
+		Summary:     "Analytics summary",
+		Description: "Summarize attempts, provided metrics, token usage, cost, duration, and retries.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTAnalyticsSummary,
+			CLICommand:      CLIAnalytics,
+			MCPTool:         OperationAnalyticsSummary,
+		},
+		InputSchema:  analyticsFilterSchema("Analytics summary input"),
+		OutputSchema: analyticsSummarySchema("Analytics summary output"),
+	},
+	{
+		Name:        OperationAnalyticsByModel,
+		Summary:     "Analytics by model",
+		Description: "Aggregate attempt counts, success counts, tokens, cost, duration, and retries by model.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTAnalyticsByModel,
+			CLICommand:      CLIAnalytics,
+			MCPTool:         OperationAnalyticsByModel,
+		},
+		InputSchema:  analyticsFilterSchema("Analytics by model input"),
+		OutputSchema: analyticsGroupSchema("Analytics by model output"),
+	},
+	{
+		Name:        OperationAnalyticsByHarness,
+		Summary:     "Analytics by harness",
+		Description: "Aggregate attempt counts, success counts, tokens, cost, duration, and retries by harness.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTAnalyticsByHarness,
+			CLICommand:      CLIAnalytics,
+			MCPTool:         OperationAnalyticsByHarness,
+		},
+		InputSchema:  analyticsFilterSchema("Analytics by harness input"),
+		OutputSchema: analyticsGroupSchema("Analytics by harness output"),
+	},
 }
 
 func ticketInputSchema(title string, required []string) Schema {
@@ -542,6 +588,16 @@ func transitionInputSchema(title string, required []string, extra map[string]any
 		properties[key] = value
 	}
 	return objectSchema(title, required, properties)
+}
+
+func attemptMetricsSchema() Schema {
+	return objectSchema("Optional attempt metrics supplied by a harness", nil, map[string]any{
+		"tokens_in":        integerSchema("Input tokens used by the attempt", 0, 1<<62),
+		"tokens_out":       integerSchema("Output tokens produced by the attempt", 0, 1<<62),
+		"cost_usd":         numberSchema("Attempt cost in USD", 0),
+		"duration_seconds": numberSchema("Attempt duration in seconds", 0),
+		"retry_count":      integerSchema("Retries used inside the harness", 0, 1<<31-1),
+	})
 }
 
 func ticketTransitionInputSchema(title string) Schema {
@@ -608,6 +664,46 @@ func artifactReferenceSchema(description string) Schema {
 		"storage_backend": stringSchema("Storage backend"),
 		"size_bytes":      integerSchema("Artifact size in bytes", 0, 1<<62),
 		"mime_type":       stringSchema("MIME type"),
+	})
+}
+
+func analyticsFilterSchema(title string) Schema {
+	return objectSchema(title, nil, map[string]any{
+		"workspace_id": optionalUUIDSchema("Workspace scope"),
+		"project_id":   optionalUUIDSchema("Project scope"),
+	})
+}
+
+func analyticsSummarySchema(title string) Schema {
+	return objectSchema(title, []string{"summary"}, map[string]any{
+		"summary": objectSchema("Summary", []string{"attempt_count", "total_cost_usd"}, map[string]any{
+			"attempt_count":          integerSchema("Total attempts", 0, 1<<62),
+			"succeeded_attempts":     integerSchema("Succeeded attempts", 0, 1<<62),
+			"failed_attempts":        integerSchema("Failed attempts", 0, 1<<62),
+			"blocked_attempts":       integerSchema("Blocked attempts", 0, 1<<62),
+			"total_tokens_in":        integerSchema("Input tokens", 0, 1<<62),
+			"total_tokens_out":       integerSchema("Output tokens", 0, 1<<62),
+			"total_cost_usd":         numberSchema("Total cost in USD", 0),
+			"total_duration_seconds": numberSchema("Total duration in seconds", 0),
+			"total_retries":          integerSchema("Total retries", 0, 1<<62),
+			"attempts_with_metrics":  integerSchema("Attempts that submitted metrics", 0, 1<<62),
+		}),
+	})
+}
+
+func analyticsGroupSchema(title string) Schema {
+	return objectSchema(title, []string{"groups"}, map[string]any{
+		"groups": arraySchema("Grouped analytics rows", objectSchema("Group", []string{"group", "attempt_count"}, map[string]any{
+			"group":                  stringSchema("Model or harness group"),
+			"attempt_count":          integerSchema("Total attempts", 0, 1<<62),
+			"succeeded_attempts":     integerSchema("Succeeded attempts", 0, 1<<62),
+			"total_tokens_in":        integerSchema("Input tokens", 0, 1<<62),
+			"total_tokens_out":       integerSchema("Output tokens", 0, 1<<62),
+			"total_cost_usd":         numberSchema("Total cost in USD", 0),
+			"total_duration_seconds": numberSchema("Total duration in seconds", 0),
+			"total_retries":          integerSchema("Total retries", 0, 1<<62),
+			"attempts_with_metrics":  integerSchema("Attempts that submitted metrics", 0, 1<<62),
+		})),
 	})
 }
 
@@ -704,6 +800,14 @@ func integerSchema(description string, minimum, maximum int64) Schema {
 		"description": description,
 		"minimum":     minimum,
 		"maximum":     maximum,
+	}
+}
+
+func numberSchema(description string, minimum float64) Schema {
+	return Schema{
+		"type":        "number",
+		"description": description,
+		"minimum":     minimum,
 	}
 }
 
