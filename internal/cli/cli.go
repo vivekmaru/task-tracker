@@ -71,6 +71,7 @@ type RuntimeHandle interface {
 	BlockWithArtifacts(context.Context, services.BlockAttemptRequest, []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error)
 	Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error)
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
+	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)

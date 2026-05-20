@@ -23,6 +23,7 @@ const defaultTicketListLimit int32 = 50
 
 type Runtime interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
+	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
@@ -47,6 +48,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/tickets":
 		h.renderTicketList(w, r)
+	case r.URL.Path == "/search":
+		h.renderSearch(w, r)
 	case strings.HasPrefix(r.URL.Path, "/tickets/"):
 		h.renderTicketDetail(w, r)
 	default:
@@ -85,6 +88,45 @@ func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
 		ProjectID:   req.ProjectID,
 		Status:      req.Status,
 		Type:        req.Type,
+	}))
+}
+
+func (h Handler) renderSearch(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	req, err := searchTicketsRequestFromQuery(r)
+	if err != nil {
+		query := r.URL.Query()
+		renderComponent(r.Context(), w, http.StatusBadRequest, searchPage(searchView{
+			WorkspaceIDText: strings.TrimSpace(query.Get("workspace_id")),
+			ProjectIDText:   strings.TrimSpace(query.Get("project_id")),
+			Query:           strings.TrimSpace(query.Get("q")),
+			Message:         err.Error(),
+		}))
+		return
+	}
+	results, err := h.runtime.SearchTickets(r.Context(), req)
+	if err != nil {
+		var validationErr services.ValidationError
+		if errors.As(err, &validationErr) {
+			renderComponent(r.Context(), w, http.StatusBadRequest, searchPage(searchView{
+				WorkspaceIDText: uuidText(req.WorkspaceID),
+				ProjectIDText:   uuidText(req.ProjectID),
+				Query:           req.Query,
+				Message:         validationErr.Error(),
+			}))
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to search tickets", err.Error())
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, searchPage(searchView{
+		Results:         results,
+		WorkspaceIDText: uuidText(req.WorkspaceID),
+		ProjectIDText:   uuidText(req.ProjectID),
+		Query:           req.Query,
 	}))
 }
 
@@ -135,6 +177,14 @@ type ticketDetailView struct {
 	TimelineErr error
 }
 
+type searchView struct {
+	Results         []services.SearchResult
+	WorkspaceIDText string
+	ProjectIDText   string
+	Query           string
+	Message         string
+}
+
 type ticketTimeline struct {
 	Attempts    []db.Attempt
 	Checkpoints []db.AttemptCheckpoint
@@ -159,6 +209,45 @@ func loadTimeline(ctx context.Context, runtime Runtime, ticketID pgtype.UUID) (t
 		Attempts:  attempts,
 		Events:    events,
 		Artifacts: artifacts,
+	}, nil
+}
+
+func searchTicketsRequestFromQuery(r *http.Request) (services.SearchTicketsRequest, error) {
+	query := r.URL.Query()
+	workspaceID, err := parseUUID(query.Get("workspace_id"))
+	if err != nil {
+		return services.SearchTicketsRequest{}, errors.New("workspace_id and project_id are required")
+	}
+	projectID, err := parseUUID(query.Get("project_id"))
+	if err != nil {
+		return services.SearchTicketsRequest{}, errors.New("workspace_id and project_id are required")
+	}
+	searchQuery := strings.TrimSpace(query.Get("q"))
+	if searchQuery == "" {
+		return services.SearchTicketsRequest{}, errors.New("query is required")
+	}
+	limit := int32(0)
+	if value := strings.TrimSpace(query.Get("limit")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || parsed < 0 {
+			return services.SearchTicketsRequest{}, errors.New("limit must be a non-negative integer")
+		}
+		limit = int32(parsed)
+	}
+	offset := int32(0)
+	if value := strings.TrimSpace(query.Get("offset")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || parsed < 0 {
+			return services.SearchTicketsRequest{}, errors.New("offset must be a non-negative integer")
+		}
+		offset = int32(parsed)
+	}
+	return services.SearchTicketsRequest{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		Query:       searchQuery,
+		Offset:      offset,
+		Limit:       limit,
 	}, nil
 }
 
@@ -231,7 +320,7 @@ func statusPage(title string, message string) templ.Component {
 func ticketListPage(view ticketListView) templ.Component {
 	return layout("Forge Tickets", func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Tickets</h1><p>Shared inspection for claimable work, proposed follow-ups, and review handoffs.</p></div>`)
-		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Refresh</a></section>`, esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)))
+		fmt.Fprintf(w, `<div class="actions"><a class="button" href="/search?workspace_id=%s&project_id=%s">Search</a><a class="button" href="/tickets?workspace_id=%s&project_id=%s">Refresh</a></div></section>`, esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)), esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/tickets">`)
 		input(w, "workspace_id", uuidText(view.WorkspaceID))
 		input(w, "project_id", uuidText(view.ProjectID))
@@ -249,6 +338,31 @@ func ticketListPage(view ticketListView) templ.Component {
 		fmt.Fprint(w, `<section class="ticket-list" aria-label="Tickets">`)
 		for _, ticket := range view.Tickets {
 			writeTicketCard(w, ticket)
+		}
+		fmt.Fprint(w, `</section>`)
+	})
+}
+
+func searchPage(view searchView) templ.Component {
+	return layout("Forge Search", func(w io.Writer) {
+		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Search</h1><p>Find tickets through titles, descriptions, attempts, events, and proof artifacts.</p></div>`)
+		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
+		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/search">`)
+		input(w, "workspace_id", view.WorkspaceIDText)
+		input(w, "project_id", view.ProjectIDText)
+		input(w, "q", view.Query)
+		fmt.Fprint(w, `<button type="submit">Search</button></form></section>`)
+		if view.Message != "" {
+			fmt.Fprintf(w, `<section class="panel empty"><h2>Search needs a scope and query</h2><p>%s</p></section>`, esc(view.Message))
+			return
+		}
+		if len(view.Results) == 0 {
+			fmt.Fprint(w, `<section class="panel empty"><h2>No search results</h2><p>Try another execution detail, artifact name, or ticket phrase.</p></section>`)
+			return
+		}
+		fmt.Fprint(w, `<section class="ticket-list" aria-label="Search results">`)
+		for _, result := range view.Results {
+			writeSearchResult(w, result)
 		}
 		fmt.Fprint(w, `</section>`)
 	})
@@ -305,6 +419,25 @@ func writeTicketCard(w io.Writer, ticket db.Ticket) {
 	if ticket.CreatedBy != "" {
 		writeMeta(w, "Source", ticket.CreatedBy)
 	}
+	fmt.Fprint(w, `</article>`)
+}
+
+func writeSearchResult(w io.Writer, result services.SearchResult) {
+	ticket := result.Ticket
+	fmt.Fprintf(w, `<article class="ticket-card"><a href="/tickets/%s"><span class="title">%s</span><span class="summary">%s %s P%d</span></a>`,
+		esc(uuidText(ticket.ID)),
+		esc(ticket.Title),
+		esc(ticket.Status),
+		esc(ticket.Type),
+		ticket.Priority,
+	)
+	if ticket.Description != "" {
+		fmt.Fprintf(w, `<p>%s</p>`, esc(ticket.Description))
+	}
+	if result.Snippet != "" {
+		fmt.Fprintf(w, `<p class="match-snippet">%s</p>`, esc(result.Snippet))
+	}
+	writeList(w, "Matched", result.MatchSources, "")
 	fmt.Fprint(w, `</article>`)
 }
 
@@ -437,5 +570,5 @@ func esc(value string) string {
 }
 
 func pageCSS() string {
-	return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202124;background:#f7f7f4}body{margin:0}main{max-width:1120px;margin:0 auto;padding:32px 20px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:32px;line-height:1.1;letter-spacing:0}.page-head p{margin:0;color:#5c625d;max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:700;color:#5b6b5b}.button,button{border:1px solid #202124;background:#202124;color:#fff;text-decoration:none;padding:9px 12px;border-radius:6px;font-weight:700;white-space:nowrap}.panel{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:18px}.filters form{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;align-items:end}.filters span{display:block;font-size:12px;font-weight:700;color:#5c625d;margin-bottom:5px;text-transform:capitalize}.filters input{width:100%;box-sizing:border-box;border:1px solid #c7ccc3;border-radius:6px;padding:9px;background:#fff}.ticket-list{display:grid;gap:10px;margin-top:16px}.ticket-card{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:14px}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:800}.summary,.meta span,.empty-text{color:#61665f}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:700;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:#3c463e}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid #e5e8e1;padding:12px 0}.timeline-item strong{display:block}.timeline-item span{color:#61665f;font-size:13px}.warning{border-color:#d8b45f;background:#fffaf0}@media(max-width:760px){main{padding:20px 14px}.page-head,.ticket-card a{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}}`
+	return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202124;background:#f7f7f4}body{margin:0}main{max-width:1120px;margin:0 auto;padding:32px 20px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:32px;line-height:1.1;letter-spacing:0}.page-head p{margin:0;color:#5c625d;max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:700;color:#5b6b5b}.actions{display:flex;gap:8px;align-items:center}.button,button{border:1px solid #202124;background:#202124;color:#fff;text-decoration:none;padding:9px 12px;border-radius:6px;font-weight:700;white-space:nowrap}.panel{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:18px}.filters form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:end}.filters span{display:block;font-size:12px;font-weight:700;color:#5c625d;margin-bottom:5px;text-transform:capitalize}.filters input{width:100%;box-sizing:border-box;border:1px solid #c7ccc3;border-radius:6px;padding:9px;background:#fff}.ticket-list{display:grid;gap:10px;margin-top:16px}.ticket-card{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:14px}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:800}.summary,.meta span,.empty-text{color:#61665f}.match-snippet{color:#3d473f;background:#f2f4ef;border-left:3px solid #8aa074;padding:8px 10px}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:700;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:#3c463e}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid #e5e8e1;padding:12px 0}.timeline-item strong{display:block}.timeline-item span{color:#61665f;font-size:13px}.warning{border-color:#d8b45f;background:#fffaf0}@media(max-width:760px){main{padding:20px 14px}.page-head,.ticket-card a{display:block}.actions{margin-top:12px}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}}`
 }

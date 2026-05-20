@@ -1479,6 +1479,10 @@ func (f *fakeRuntime) ListTickets(context.Context, services.ListTicketsRequest) 
 	return nil, nil
 }
 
+func (f *fakeRuntime) SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error) {
+	return nil, nil
+}
+
 func (f *fakeRuntime) GetTicket(context.Context, pgtype.UUID) (db.Ticket, error) {
 	return db.Ticket{}, nil
 }

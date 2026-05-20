@@ -1,0 +1,101 @@
+-- name: SearchTickets :many
+WITH search_query AS (
+    SELECT websearch_to_tsquery('english', sqlc.arg('query')::text) AS query
+),
+matches AS (
+    SELECT
+        t.id AS ticket_id,
+        'ticket'::text AS source,
+        concat_ws(' ', t.title, t.description) AS match_text,
+        ts_rank_cd(
+            to_tsvector('english', coalesce(t.title, '') || ' ' || coalesce(t.description, '')),
+            sq.query
+        ) AS rank
+    FROM tickets t
+    CROSS JOIN search_query sq
+    WHERE t.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND t.project_id = sqlc.arg('project_id')::uuid
+      AND to_tsvector('english', coalesce(t.title, '') || ' ' || coalesce(t.description, '')) @@ sq.query
+
+    UNION ALL
+
+    SELECT
+        a.ticket_id,
+        'attempt'::text AS source,
+        concat_ws(' ', a.current_summary, a.output::text) AS match_text,
+        ts_rank_cd(
+            to_tsvector('english', coalesce(a.current_summary, '') || ' ' || a.output::text),
+            sq.query
+        ) AS rank
+    FROM attempts a
+    CROSS JOIN search_query sq
+    WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND a.project_id = sqlc.arg('project_id')::uuid
+      AND to_tsvector('english', coalesce(a.current_summary, '') || ' ' || a.output::text) @@ sq.query
+
+    UNION ALL
+
+    SELECT
+        e.ticket_id,
+        'event'::text AS source,
+        e.data::text AS match_text,
+        ts_rank_cd(to_tsvector('english', e.data::text), sq.query) AS rank
+    FROM ticket_events e
+    CROSS JOIN search_query sq
+    WHERE e.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND e.project_id = sqlc.arg('project_id')::uuid
+      AND to_tsvector('english', e.data::text) @@ sq.query
+
+    UNION ALL
+
+    SELECT
+        ar.ticket_id,
+        'artifact'::text AS source,
+        ar.name AS match_text,
+        ts_rank_cd(to_tsvector('english', coalesce(ar.name, '')), sq.query) AS rank
+    FROM artifacts ar
+    CROSS JOIN search_query sq
+    WHERE ar.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND ar.project_id = sqlc.arg('project_id')::uuid
+      AND to_tsvector('english', coalesce(ar.name, '')) @@ sq.query
+)
+SELECT
+    t.id,
+    t.workspace_id,
+    t.project_id,
+    t.parent_id,
+    t.root_id,
+    t.source_attempt_id,
+    t.source_artifact_id,
+    t.title,
+    t.description,
+    t.type,
+    t.status,
+    t.priority,
+    t.tags,
+    t.acceptance_criteria,
+    t.verification_commands,
+    t.expected_artifacts,
+    t.relevant_paths,
+    t.required_tools,
+    t.required_permissions,
+    t.environment,
+    t.input,
+    t.input_schema,
+    t.required_capabilities,
+    t.allowed_harnesses,
+    t.retry_policy,
+    t.created_by,
+    t.created_by_id,
+    t.creation_reason,
+    t.created_at,
+    t.updated_at,
+    array_agg(DISTINCT m.source ORDER BY m.source)::text[] AS match_sources,
+    left(string_agg(DISTINCT m.match_text, ' | '), 360)::text AS snippet,
+    max(m.rank)::real AS rank
+FROM matches m
+JOIN tickets t ON t.id = m.ticket_id
+GROUP BY t.id
+ORDER BY rank DESC, t.updated_at DESC
+LIMIT sqlc.arg('limit')::integer
+OFFSET sqlc.arg('offset')::integer;

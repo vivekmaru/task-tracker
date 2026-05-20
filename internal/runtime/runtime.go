@@ -20,6 +20,7 @@ type Runtime struct {
 	Claims       *services.ClaimService
 	Attempts     *services.AttemptService
 	Artifacts    *services.ArtifactService
+	Search       *services.SearchService
 	Capabilities *services.CapabilityService
 	Maintenance  *jobs.MaintenanceWorker
 }
@@ -46,6 +47,7 @@ func New(queries *db.Queries) *Runtime {
 		Claims:       services.NewClaimService(queries),
 		Attempts:     services.NewAttemptService(queries),
 		Artifacts:    services.NewArtifactService(queries),
+		Search:       services.NewSearchService(queries),
 		Capabilities: services.NewCapabilityService(queries),
 		Maintenance:  jobs.NewMaintenanceWorker(queries),
 	}
@@ -143,6 +145,10 @@ func (r *Runtime) ListTickets(ctx context.Context, req services.ListTicketsReque
 
 func (r *Runtime) ListProposedTickets(ctx context.Context, req services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error) {
 	return r.Tickets.ListProposedTickets(ctx, req)
+}
+
+func (r *Runtime) SearchTickets(ctx context.Context, req services.SearchTicketsRequest) ([]services.SearchResult, error) {
+	return r.Search.SearchTickets(ctx, req)
 }
 
 func (r *Runtime) ReadyProposedTicket(ctx context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {

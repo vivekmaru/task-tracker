@@ -23,6 +23,7 @@ func NewRouterWithRuntime(rt web.Runtime) http.Handler {
 	webHandler := web.NewHandler(rt)
 	mux.Handle("/tickets", webHandler)
 	mux.Handle("/tickets/", webHandler)
+	mux.Handle("/search", webHandler)
 	return mux
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/vivek/agent-task-tracker/internal/contracts"
@@ -78,6 +79,21 @@ func TestNewRouterWithRuntimeKeepsOpenAPIRoutes(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected openapi status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNewRouterWithRuntimeMountsSearchPage(t *testing.T) {
+	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	req := httptest.NewRequest(http.MethodGet, "/search?workspace_id=00000000-0000-0000-0000-000000000001&project_id=00000000-0000-0000-0000-000000000002", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected search page status 400 for missing query, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Forge Search") || !strings.Contains(body, "query is required") {
+		t.Fatalf("expected mounted search page guidance, got:\n%s", body)
 	}
 }
 
