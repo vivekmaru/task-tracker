@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/vivek/agent-task-tracker/internal/db"
 )
@@ -42,15 +43,17 @@ func NewLocalStore(root string) *LocalStore {
 }
 
 func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactContent, error) {
-	fullPath, err := s.resolve(artifact.Url)
+	relativeName, err := LocalRelativePath(artifact.Url)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	containedPath, err := s.containedExistingPath(fullPath)
+	root, err := s.openRoot()
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	file, err := os.Open(containedPath)
+	defer root.Close()
+	relativePath := filepath.FromSlash(relativeName)
+	file, err := root.OpenFile(relativePath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return ArtifactContent{}, fmt.Errorf("open local artifact: %w", err)
 	}
@@ -59,9 +62,13 @@ func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactCont
 		_ = file.Close()
 		return ArtifactContent{}, fmt.Errorf("stat local artifact: %w", err)
 	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return ArtifactContent{}, errors.New("local artifact must be a regular file")
+	}
 	name := strings.TrimSpace(artifact.Name)
 	if name == "" {
-		name = filepath.Base(containedPath)
+		name = filepath.Base(relativePath)
 	}
 	mimeType := strings.TrimSpace(artifact.MimeType)
 	if mimeType == "" {
@@ -83,7 +90,12 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	if sourcePath == "" {
 		return StoredArtifact{}, errors.New("source path is required")
 	}
-	info, err := os.Stat(sourcePath)
+	source, err := os.OpenFile(sourcePath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return StoredArtifact{}, fmt.Errorf("open source artifact: %w", err)
+	}
+	defer source.Close()
+	info, err := source.Stat()
 	if err != nil {
 		return StoredArtifact{}, fmt.Errorf("stat source artifact: %w", err)
 	}
@@ -102,24 +114,25 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 		return StoredArtifact{}, err
 	}
 	relativeName := uniqueArtifactPath(name, token)
-	destination, err := s.resolve(localArtifactPrefix + relativeName)
+	rootPath := strings.TrimSpace(s.root)
+	if rootPath == "" {
+		return StoredArtifact{}, errors.New("artifact root is not configured")
+	}
+	if err := os.MkdirAll(rootPath, 0o700); err != nil {
+		return StoredArtifact{}, fmt.Errorf("create artifact root: %w", err)
+	}
+	root, err := s.openRoot()
 	if err != nil {
 		return StoredArtifact{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return StoredArtifact{}, fmt.Errorf("create artifact directory: %w", err)
+	defer root.Close()
+	relativePath := filepath.FromSlash(relativeName)
+	if dir := filepath.Dir(relativePath); dir != "." {
+		if err := root.MkdirAll(dir, 0o700); err != nil {
+			return StoredArtifact{}, fmt.Errorf("create artifact directory: %w", err)
+		}
 	}
-	parent, err := s.containedExistingPath(filepath.Dir(destination))
-	if err != nil {
-		return StoredArtifact{}, err
-	}
-	destination = filepath.Join(parent, filepath.Base(destination))
-	source, err := os.Open(sourcePath)
-	if err != nil {
-		return StoredArtifact{}, fmt.Errorf("open source artifact: %w", err)
-	}
-	defer source.Close()
-	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := root.OpenFile(relativePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return StoredArtifact{}, fmt.Errorf("write local artifact: %w", err)
 	}
@@ -137,45 +150,38 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	}
 	return StoredArtifact{
 		Name:     name,
-		URL:      localArtifactPrefix + relativeName,
+		URL:      localArtifactURL(relativeName),
 		MimeType: mimeType,
 		Size:     written,
 	}, nil
 }
 
-func (s *LocalStore) resolve(rawURL string) (string, error) {
-	root := strings.TrimSpace(s.root)
-	if root == "" {
-		return "", errors.New("artifact root is not configured")
-	}
-	relative, err := LocalRelativePath(rawURL)
+func (s *LocalStore) Remove(_ context.Context, rawURL string) error {
+	relativeName, err := LocalRelativePath(rawURL)
 	if err != nil {
-		return "", err
+		return err
 	}
-	return filepath.Join(root, filepath.FromSlash(relative)), nil
+	root, err := s.openRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.Remove(filepath.FromSlash(relativeName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove local artifact: %w", err)
+	}
+	return nil
 }
 
-func (s *LocalStore) containedExistingPath(fullPath string) (string, error) {
+func (s *LocalStore) openRoot() (*os.Root, error) {
 	root := strings.TrimSpace(s.root)
 	if root == "" {
-		return "", errors.New("artifact root is not configured")
+		return nil, errors.New("artifact root is not configured")
 	}
-	realRoot, err := filepath.EvalSymlinks(root)
+	opened, err := os.OpenRoot(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve artifact root: %w", err)
+		return nil, fmt.Errorf("open artifact root: %w", err)
 	}
-	realPath, err := filepath.EvalSymlinks(fullPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve local artifact path: %w", err)
-	}
-	relative, err := filepath.Rel(realRoot, realPath)
-	if err != nil {
-		return "", fmt.Errorf("check artifact path containment: %w", err)
-	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		return "", errors.New("local artifact path escapes artifact root")
-	}
-	return realPath, nil
+	return opened, nil
 }
 
 func LocalRelativePath(rawURL string) (string, error) {
@@ -221,6 +227,15 @@ func cleanArtifactName(name string) (string, error) {
 		return "", errors.New("invalid local artifact URL: path escapes artifact root")
 	}
 	return cleaned, nil
+}
+
+func localArtifactURL(relativeName string) string {
+	artifactURL := url.URL{
+		Scheme: "local",
+		Host:   "artifacts",
+		Path:   "/" + strings.ReplaceAll(relativeName, "\\", "/"),
+	}
+	return artifactURL.String()
 }
 
 func randomPathToken() (string, error) {

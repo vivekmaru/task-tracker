@@ -1142,6 +1142,39 @@ func TestRunCodexCompleteDoesNotPersistProofsWhenTransitionFails(t *testing.T) {
 	}
 }
 
+func TestRunCodexCompleteRemovesUploadedProofWhenTransitionFails(t *testing.T) {
+	proofPath := filepath.Join(t.TempDir(), "go-test.log")
+	if err := os.WriteFile(proofPath, []byte("ok\n"), 0o600); err != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt:     db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
+		completeErr: errors.New("attempt is already closed"),
+		storedArtifact: storage.StoredArtifact{
+			Name: "go-test.log",
+			URL:  "local://artifacts/go-test.log",
+			Size: 3,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Implemented and verified",
+		"--proof", proofPath,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if fake.removedLocalArtifactURL != "local://artifacts/go-test.log" {
+		t.Fatalf("expected uploaded proof cleanup, got %q", fake.removedLocalArtifactURL)
+	}
+}
+
 func TestRunCodexCompleteUsesAttemptScopeForProofs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -1416,6 +1449,8 @@ type fakeRuntime struct {
 	storeLocalArtifactPath  string
 	storeLocalArtifactName  string
 	storeLocalArtifactErr   error
+	removedLocalArtifactURL string
+	removeLocalArtifactErr  error
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -1583,6 +1618,11 @@ func (f *fakeRuntime) StoreLocalArtifact(_ context.Context, sourcePath string, p
 	f.storeLocalArtifactPath = sourcePath
 	f.storeLocalArtifactName = preferredName
 	return f.storedArtifact, f.storeLocalArtifactErr
+}
+
+func (f *fakeRuntime) RemoveLocalArtifact(_ context.Context, rawURL string) error {
+	f.removedLocalArtifactURL = rawURL
+	return f.removeLocalArtifactErr
 }
 
 func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {

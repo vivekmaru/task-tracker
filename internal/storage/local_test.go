@@ -86,6 +86,36 @@ func TestLocalStoreCopiesFilesIntoArtifactRoot(t *testing.T) {
 	}
 }
 
+func TestLocalStoreEscapesGeneratedArtifactURLs(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(t.TempDir(), "100% proof.log")
+	if err := os.WriteFile(source, []byte("proof\n"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	store := NewLocalStore(root)
+
+	stored, err := store.StoreFile(context.Background(), source, filepath.Base(source))
+
+	if err != nil {
+		t.Fatalf("store file with reserved URL characters: %v", err)
+	}
+	if !strings.Contains(stored.URL, "100%25%20proof.log") {
+		t.Fatalf("expected escaped local artifact URL, got %q", stored.URL)
+	}
+	content, err := store.Open(context.Background(), db.Artifact{Name: stored.Name, Url: stored.URL})
+	if err != nil {
+		t.Fatalf("open escaped artifact URL: %v", err)
+	}
+	defer content.Reader.Close()
+	data, err := io.ReadAll(content.Reader)
+	if err != nil {
+		t.Fatalf("read escaped artifact content: %v", err)
+	}
+	if string(data) != "proof\n" {
+		t.Fatalf("unexpected escaped artifact content: %q", data)
+	}
+}
+
 func TestLocalStoreRejectsNonRegularSourceFiles(t *testing.T) {
 	store := NewLocalStore(t.TempDir())
 
@@ -93,6 +123,23 @@ func TestLocalStoreRejectsNonRegularSourceFiles(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("expected non-regular source rejection, got %v", err)
+	}
+}
+
+func TestLocalStoreRejectsNonRegularArtifactsOnOpen(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "proof-dir"), 0o700); err != nil {
+		t.Fatalf("create artifact directory: %v", err)
+	}
+	store := NewLocalStore(root)
+
+	_, err := store.Open(context.Background(), db.Artifact{
+		Name: "proof-dir",
+		Url:  "local://artifacts/proof-dir",
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected non-regular artifact rejection, got %v", err)
 	}
 }
 
@@ -163,7 +210,7 @@ func TestLocalStoreRejectsSymlinkEscapeOnOpen(t *testing.T) {
 		Url:  "local://artifacts/proof.log",
 	})
 
-	if err == nil || !strings.Contains(err.Error(), "escapes artifact root") {
+	if err == nil || (!strings.Contains(err.Error(), "escapes artifact root") && !strings.Contains(err.Error(), "path escapes from parent")) {
 		t.Fatalf("expected symlink escape rejection, got %v", err)
 	}
 }
@@ -182,7 +229,7 @@ func TestLocalStoreRejectsSymlinkEscapeOnWrite(t *testing.T) {
 
 	_, err := store.StoreFile(context.Background(), source, "linked/proof.log")
 
-	if err == nil || !strings.Contains(err.Error(), "escapes artifact root") {
+	if err == nil || (!strings.Contains(err.Error(), "escapes artifact root") && !strings.Contains(err.Error(), "file exists")) {
 		t.Fatalf("expected symlink write rejection, got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outsideDir, "proof.log")); err == nil {

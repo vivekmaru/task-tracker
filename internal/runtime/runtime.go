@@ -289,6 +289,10 @@ func (r *Runtime) StoreLocalArtifact(ctx context.Context, sourcePath string, pre
 	return r.LocalStore.StoreFile(ctx, sourcePath, preferredName)
 }
 
+func (r *Runtime) RemoveLocalArtifact(ctx context.Context, rawURL string) error {
+	return r.LocalStore.Remove(ctx, rawURL)
+}
+
 func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
 	return r.Capabilities.Register(ctx, req)
 }
