@@ -389,13 +389,15 @@ func (h Handler) renderArtifactDetail(w http.ResponseWriter, r *http.Request) {
 			renderStatus(r.Context(), w, http.StatusNotFound, "Artifact content unavailable", err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", content.MimeType)
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, headerFilename(content.Name)))
+		defer content.Reader.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, headerFilename(content.Name)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if content.Size >= 0 {
 			w.Header().Set("Content-Length", strconv.FormatInt(content.Size, 10))
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(content.Data)
+		_, _ = io.Copy(w, content.Reader)
 		return
 	}
 	renderComponent(r.Context(), w, http.StatusOK, artifactDetailPage(artifact))

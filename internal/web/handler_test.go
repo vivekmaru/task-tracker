@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -703,7 +704,7 @@ func TestTicketDetailLinksLocalArtifactsToWebRoute(t *testing.T) {
 	}
 }
 
-func TestArtifactRouteStreamsLocalArtifactContent(t *testing.T) {
+func TestArtifactRouteDownloadsLocalArtifactContent(t *testing.T) {
 	artifactID := testUUID(15)
 	runtime := &fakeRuntime{
 		artifact: db.Artifact{
@@ -711,13 +712,13 @@ func TestArtifactRouteStreamsLocalArtifactContent(t *testing.T) {
 			Name:           "go-test.log",
 			Url:            "local://artifacts/go-test.log",
 			StorageBackend: services.ArtifactStorageLocal,
-			MimeType:       "text/plain",
+			MimeType:       "text/html",
 		},
 		artifactContent: storage.ArtifactContent{
 			Name:     "go-test.log",
-			MimeType: "text/plain",
+			MimeType: "text/html",
 			Size:     9,
-			Data:     []byte("all good\n"),
+			Reader:   io.NopCloser(strings.NewReader("all good\n")),
 		},
 	}
 	handler := NewHandler(runtime)
@@ -729,8 +730,14 @@ func TestArtifactRouteStreamsLocalArtifactContent(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected artifact status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/plain") {
-		t.Fatalf("expected text content type, got %q", got)
+	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("expected forced binary content type, got %q", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="go-test.log"` {
+		t.Fatalf("expected attachment disposition, got %q", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected nosniff header, got %q", got)
 	}
 	if rec.Body.String() != "all good\n" {
 		t.Fatalf("unexpected artifact body: %q", rec.Body.String())

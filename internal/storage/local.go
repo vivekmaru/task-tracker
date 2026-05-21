@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/url"
 	"os"
@@ -26,7 +27,7 @@ type ArtifactContent struct {
 	Name     string
 	MimeType string
 	Size     int64
-	Data     []byte
+	Reader   io.ReadCloser
 }
 
 type StoredArtifact struct {
@@ -49,9 +50,14 @@ func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactCont
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	data, err := os.ReadFile(containedPath)
+	file, err := os.Open(containedPath)
 	if err != nil {
-		return ArtifactContent{}, fmt.Errorf("read local artifact: %w", err)
+		return ArtifactContent{}, fmt.Errorf("open local artifact: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return ArtifactContent{}, fmt.Errorf("stat local artifact: %w", err)
 	}
 	name := strings.TrimSpace(artifact.Name)
 	if name == "" {
@@ -67,8 +73,8 @@ func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactCont
 	return ArtifactContent{
 		Name:     name,
 		MimeType: mimeType,
-		Size:     int64(len(data)),
-		Data:     data,
+		Size:     info.Size(),
+		Reader:   file,
 	}, nil
 }
 
@@ -105,15 +111,17 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 		return StoredArtifact{}, err
 	}
 	destination = filepath.Join(parent, filepath.Base(destination))
-	data, err := os.ReadFile(sourcePath)
+	source, err := os.Open(sourcePath)
 	if err != nil {
-		return StoredArtifact{}, fmt.Errorf("read source artifact: %w", err)
+		return StoredArtifact{}, fmt.Errorf("open source artifact: %w", err)
 	}
+	defer source.Close()
 	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return StoredArtifact{}, fmt.Errorf("write local artifact: %w", err)
 	}
-	if _, err := file.Write(data); err != nil {
+	written, err := io.Copy(file, source)
+	if err != nil {
 		_ = file.Close()
 		return StoredArtifact{}, fmt.Errorf("write local artifact: %w", err)
 	}
@@ -128,7 +136,7 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 		Name:     name,
 		URL:      localArtifactPrefix + relativeName,
 		MimeType: mimeType,
-		Size:     int64(len(data)),
+		Size:     written,
 	}, nil
 }
 

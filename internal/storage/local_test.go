@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,15 @@ func TestLocalStoreOpensArtifactUnderRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open artifact: %v", err)
 	}
-	if string(content.Data) != "ok\n" {
-		t.Fatalf("unexpected content: %q", string(content.Data))
+	data, err := io.ReadAll(content.Reader)
+	if err != nil {
+		t.Fatalf("read artifact stream: %v", err)
+	}
+	if err := content.Reader.Close(); err != nil {
+		t.Fatalf("close artifact stream: %v", err)
+	}
+	if string(data) != "ok\n" {
+		t.Fatalf("unexpected content: %q", string(data))
 	}
 	if content.Name != "go-test.log" || content.MimeType != "text/plain" || content.Size != 3 {
 		t.Fatalf("unexpected content metadata: %#v", content)
@@ -110,8 +118,22 @@ func TestLocalStoreUsesUniquePathsForSameFilename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open second artifact: %v", err)
 	}
-	if string(firstContent.Data) != "first\n" || string(secondContent.Data) != "second\n" {
-		t.Fatalf("stored content was overwritten: first=%q second=%q", firstContent.Data, secondContent.Data)
+	firstData, err := io.ReadAll(firstContent.Reader)
+	if err != nil {
+		t.Fatalf("read first artifact: %v", err)
+	}
+	if err := firstContent.Reader.Close(); err != nil {
+		t.Fatalf("close first artifact: %v", err)
+	}
+	secondData, err := io.ReadAll(secondContent.Reader)
+	if err != nil {
+		t.Fatalf("read second artifact: %v", err)
+	}
+	if err := secondContent.Reader.Close(); err != nil {
+		t.Fatalf("close second artifact: %v", err)
+	}
+	if string(firstData) != "first\n" || string(secondData) != "second\n" {
+		t.Fatalf("stored content was overwritten: first=%q second=%q", firstData, secondData)
 	}
 }
 
