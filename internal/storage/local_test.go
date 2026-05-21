@@ -86,6 +86,16 @@ func TestLocalStoreCopiesFilesIntoArtifactRoot(t *testing.T) {
 	}
 }
 
+func TestLocalStoreRejectsNonRegularSourceFiles(t *testing.T) {
+	store := NewLocalStore(t.TempDir())
+
+	_, err := store.StoreFile(context.Background(), os.DevNull, "proof.log")
+
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected non-regular source rejection, got %v", err)
+	}
+}
+
 func TestLocalStoreUsesUniquePathsForSameFilename(t *testing.T) {
 	root := t.TempDir()
 	first := filepath.Join(t.TempDir(), "proof.log")

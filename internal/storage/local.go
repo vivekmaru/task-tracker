@@ -90,6 +90,9 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	if info.IsDir() {
 		return StoredArtifact{}, errors.New("source artifact must be a file")
 	}
+	if !info.Mode().IsRegular() {
+		return StoredArtifact{}, errors.New("source artifact must be a regular file")
+	}
 	name, err := cleanArtifactName(firstNonEmpty(preferredName, filepath.Base(sourcePath)))
 	if err != nil {
 		return StoredArtifact{}, err
