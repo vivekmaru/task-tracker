@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"mime"
@@ -43,13 +45,17 @@ func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactCont
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	data, err := os.ReadFile(fullPath)
+	containedPath, err := s.containedExistingPath(fullPath)
+	if err != nil {
+		return ArtifactContent{}, err
+	}
+	data, err := os.ReadFile(containedPath)
 	if err != nil {
 		return ArtifactContent{}, fmt.Errorf("read local artifact: %w", err)
 	}
 	name := strings.TrimSpace(artifact.Name)
 	if name == "" {
-		name = filepath.Base(fullPath)
+		name = filepath.Base(containedPath)
 	}
 	mimeType := strings.TrimSpace(artifact.MimeType)
 	if mimeType == "" {
@@ -82,18 +88,36 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	if err != nil {
 		return StoredArtifact{}, err
 	}
-	destination, err := s.resolve(localArtifactPrefix + path.Clean(strings.ReplaceAll(name, string(filepath.Separator), "/")))
+	token, err := randomPathToken()
+	if err != nil {
+		return StoredArtifact{}, err
+	}
+	relativeName := uniqueArtifactPath(name, token)
+	destination, err := s.resolve(localArtifactPrefix + relativeName)
 	if err != nil {
 		return StoredArtifact{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return StoredArtifact{}, fmt.Errorf("create artifact directory: %w", err)
 	}
+	parent, err := s.containedExistingPath(filepath.Dir(destination))
+	if err != nil {
+		return StoredArtifact{}, err
+	}
+	destination = filepath.Join(parent, filepath.Base(destination))
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return StoredArtifact{}, fmt.Errorf("read source artifact: %w", err)
 	}
-	if err := os.WriteFile(destination, data, 0o600); err != nil {
+	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return StoredArtifact{}, fmt.Errorf("write local artifact: %w", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return StoredArtifact{}, fmt.Errorf("write local artifact: %w", err)
+	}
+	if err := file.Close(); err != nil {
 		return StoredArtifact{}, fmt.Errorf("write local artifact: %w", err)
 	}
 	mimeType := mime.TypeByExtension(filepath.Ext(name))
@@ -102,7 +126,7 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	}
 	return StoredArtifact{
 		Name:     name,
-		URL:      localArtifactPrefix + strings.ReplaceAll(name, string(filepath.Separator), "/"),
+		URL:      localArtifactPrefix + relativeName,
 		MimeType: mimeType,
 		Size:     int64(len(data)),
 	}, nil
@@ -118,6 +142,29 @@ func (s *LocalStore) resolve(rawURL string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(root, filepath.FromSlash(relative)), nil
+}
+
+func (s *LocalStore) containedExistingPath(fullPath string) (string, error) {
+	root := strings.TrimSpace(s.root)
+	if root == "" {
+		return "", errors.New("artifact root is not configured")
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact root: %w", err)
+	}
+	realPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve local artifact path: %w", err)
+	}
+	relative, err := filepath.Rel(realRoot, realPath)
+	if err != nil {
+		return "", fmt.Errorf("check artifact path containment: %w", err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", errors.New("local artifact path escapes artifact root")
+	}
+	return realPath, nil
 }
 
 func LocalRelativePath(rawURL string) (string, error) {
@@ -163,6 +210,25 @@ func cleanArtifactName(name string) (string, error) {
 		return "", errors.New("invalid local artifact URL: path escapes artifact root")
 	}
 	return cleaned, nil
+}
+
+func randomPathToken() (string, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", fmt.Errorf("generate artifact path token: %w", err)
+	}
+	return hex.EncodeToString(bytes[:]), nil
+}
+
+func uniqueArtifactPath(name string, token string) string {
+	name = path.Clean(strings.ReplaceAll(name, string(filepath.Separator), "/"))
+	dir := path.Dir(name)
+	base := path.Base(name)
+	uniqueBase := token + "-" + base
+	if dir == "." || dir == "/" {
+		return uniqueBase
+	}
+	return path.Join(dir, uniqueBase)
 }
 
 func firstNonEmpty(values ...string) string {
