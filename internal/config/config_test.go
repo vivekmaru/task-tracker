@@ -108,6 +108,48 @@ func TestLoadResolvesRelativeConfigArtifactRootFromConfigDir(t *testing.T) {
 	}
 }
 
+func TestLoadResolvesExplicitDefaultArtifactRootFromConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"artifact_root":".forge/artifacts"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FORGE_ARTIFACT_ROOT", "")
+
+	cfg, err := Load(Options{ConfigPath: path})
+	if err != nil {
+		t.Fatalf("expected config to load, got %v", err)
+	}
+
+	expectedArtifactRoot := filepath.Join(dir, ".forge", "artifacts")
+	if cfg.ArtifactRoot != expectedArtifactRoot {
+		t.Fatalf("expected explicit config artifact root %q, got %q", expectedArtifactRoot, cfg.ArtifactRoot)
+	}
+}
+
+func TestLoadFallsBackToWorkingDirectoryWhenHomeIsUnset(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("FORGE_ARTIFACT_ROOT", "")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+
+	cfg, err := Load(Options{})
+	if err != nil {
+		t.Fatalf("expected config to load without home directory, got %v", err)
+	}
+
+	expectedArtifactRoot := filepath.Join(wd, ".forge", "artifacts")
+	if cfg.ArtifactRoot != expectedArtifactRoot {
+		t.Fatalf("expected cwd artifact root fallback %q, got %q", expectedArtifactRoot, cfg.ArtifactRoot)
+	}
+}
+
 func TestLoadRejectsInvalidAuthCookieSecureEnv(t *testing.T) {
 	t.Setenv("FORGE_AUTH_COOKIE_SECURE", "sometimes")
 

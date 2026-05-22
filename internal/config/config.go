@@ -42,11 +42,15 @@ func Load(opts Options) (Config, error) {
 		ArtifactRoot:      defaultArtifactRoot,
 	}
 
+	artifactRootExplicit := false
+	artifactRootFromEnv := false
 	configPath := firstNonEmpty(opts.ConfigPath, os.Getenv("FORGE_CONFIG"))
 	if configPath != "" {
-		if err := loadFile(configPath, &cfg); err != nil {
+		metadata, err := loadFile(configPath, &cfg)
+		if err != nil {
 			return Config{}, err
 		}
+		artifactRootExplicit = metadata.ArtifactRootSet
 	}
 
 	if value := os.Getenv("FORGE_DATABASE_URL"); value != "" {
@@ -77,8 +81,10 @@ func Load(opts Options) (Config, error) {
 	}
 	if value := os.Getenv("FORGE_ARTIFACT_ROOT"); value != "" {
 		cfg.ArtifactRoot = value
+		artifactRootExplicit = true
+		artifactRootFromEnv = true
 	}
-	artifactRoot, err := normalizeArtifactRoot(cfg.ArtifactRoot, configPath)
+	artifactRoot, err := normalizeArtifactRoot(cfg.ArtifactRoot, configPath, artifactRootExplicit, artifactRootFromEnv)
 	if err != nil {
 		return Config{}, err
 	}
@@ -119,41 +125,51 @@ func (c Config) ValidateRuntime() error {
 	return nil
 }
 
-func loadFile(path string, cfg *Config) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open config file: %w", err)
-	}
-	defer f.Close()
-
-	if err := json.NewDecoder(f).Decode(cfg); err != nil {
-		return fmt.Errorf("decode config file: %w", err)
-	}
-	return nil
+type fileConfigMetadata struct {
+	ArtifactRootSet bool
 }
 
-func normalizeArtifactRoot(root string, configPath string) (string, error) {
+func loadFile(path string, cfg *Config) (fileConfigMetadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fileConfigMetadata{}, fmt.Errorf("open config file: %w", err)
+	}
+
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return fileConfigMetadata{}, fmt.Errorf("decode config file: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fileConfigMetadata{}, fmt.Errorf("decode config file metadata: %w", err)
+	}
+	_, artifactRootSet := raw["artifact_root"]
+	return fileConfigMetadata{ArtifactRootSet: artifactRootSet}, nil
+}
+
+func normalizeArtifactRoot(root string, configPath string, explicit bool, fromEnv bool) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		root = defaultArtifactRoot
+		explicit = false
 	}
 	if filepath.IsAbs(root) {
 		return filepath.Clean(root), nil
 	}
 	base := ""
 	switch {
-	case root == defaultArtifactRoot:
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve artifact root home: %w", err)
-		}
-		base = home
-	case strings.TrimSpace(configPath) != "":
+	case explicit && !fromEnv && strings.TrimSpace(configPath) != "":
 		absoluteConfigPath, err := filepath.Abs(configPath)
 		if err != nil {
 			return "", fmt.Errorf("resolve config path: %w", err)
 		}
 		base = filepath.Dir(absoluteConfigPath)
+	case !explicit && root == defaultArtifactRoot:
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			base = home
+			break
+		}
+		fallthrough
 	default:
 		wd, err := os.Getwd()
 		if err != nil {
