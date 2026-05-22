@@ -111,7 +111,7 @@ JOIN tickets t ON t.id = m.ticket_id
 WHERE t.workspace_id = $1::uuid
   AND t.project_id = $2::uuid
 GROUP BY t.id
-ORDER BY rank DESC, t.updated_at DESC
+ORDER BY rank DESC, t.updated_at DESC, t.id ASC
 LIMIT $4::integer
 OFFSET $3::integer
 `

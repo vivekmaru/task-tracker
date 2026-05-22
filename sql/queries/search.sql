@@ -98,6 +98,6 @@ JOIN tickets t ON t.id = m.ticket_id
 WHERE t.workspace_id = sqlc.arg('workspace_id')::uuid
   AND t.project_id = sqlc.arg('project_id')::uuid
 GROUP BY t.id
-ORDER BY rank DESC, t.updated_at DESC
+ORDER BY rank DESC, t.updated_at DESC, t.id ASC
 LIMIT sqlc.arg('limit')::integer
 OFFSET sqlc.arg('offset')::integer;

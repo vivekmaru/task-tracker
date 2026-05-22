@@ -139,6 +139,7 @@ func TestPhaseFourSearchQueryCoversExecutionHistory(t *testing.T) {
 		"join tickets t on t.id = m.ticket_id",
 		"where t.workspace_id = sqlc.arg('workspace_id')::uuid",
 		"and t.project_id = sqlc.arg('project_id')::uuid",
+		"order by rank desc, t.updated_at desc, t.id asc",
 	} {
 		if !strings.Contains(searchSQL, want) {
 			t.Fatalf("search query must contain %q", want)
