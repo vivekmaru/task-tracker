@@ -119,6 +119,29 @@ func TestForwardMigrationAddsFullTextSearchIndexes(t *testing.T) {
 	}
 }
 
+func TestForwardMigrationAddsWebhookDeliveryQueue(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0004_webhook_deliveries.sql"))
+	if err != nil {
+		t.Fatalf("read webhook migration: %v", err)
+	}
+	sql := strings.ToLower(string(data))
+
+	for _, want := range []string{
+		"create table webhook_subscriptions",
+		"create table webhook_deliveries",
+		"unique (subscription_id, event_id)",
+		"create trigger trg_enqueue_webhook_deliveries_for_ticket_event",
+		"after insert on ticket_events",
+		"insert into webhook_deliveries",
+		"jsonb_build_object",
+		"new.type = any(s.event_types)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected webhook migration to contain %q", want)
+		}
+	}
+}
+
 func readInitialMigration(t *testing.T) string {
 	t.Helper()
 
