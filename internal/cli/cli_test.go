@@ -749,6 +749,10 @@ func TestRunCodexCompleteRegistersProofArtifacts(t *testing.T) {
 }
 
 func TestRunCodexCompleteParsesFlagsAfterPositionalAttemptID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "forge.json")
+	if err := os.WriteFile(configPath, []byte(`{"database_url":"postgres://db"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
@@ -763,6 +767,7 @@ func TestRunCodexCompleteParsesFlagsAfterPositionalAttemptID(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"codex", "complete",
+		"--config", configPath,
 		uuidString(t, testUUID(5)),
 		"--summary", "Implemented and verified",
 		"--proof", "local://cli-test.log",

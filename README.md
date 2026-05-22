@@ -2,35 +2,39 @@
 
 Forge is a pull-based work ledger for autonomous AI agents.
 
-Phase 1 establishes the execution core: Postgres schema, sqlc queries, ticket and attempt services, transactional claim semantics, idempotency replay, lightweight artifact metadata, JSON-first CLI commands, Huma route registration, and correctness tests.
+Forge currently includes the execution core, JSON-first CLI commands, Codex-oriented convenience commands, a Bubble Tea TUI, server-rendered web views, local proof artifact storage, search, and basic attempt analytics.
 
-## Current Phase 1 Status
+## Current Status
 
 Implemented:
 
-- Core Go binary skeleton.
 - Config loading from JSON file and environment.
 - Postgres migration for workspaces, projects, tickets, dependencies, attempts, checkpoints, events, artifacts, idempotency keys, API keys, capabilities, and metrics.
 - sqlc-generated query layer.
-- Ticket create/propose/list service.
+- Ticket create/propose/list/update services.
 - Transactional `claim-next` query and claim context bundle hydration.
 - Heartbeat, checkpoint, terminal attempt transitions, lease expiry transition, and idempotency cleanup worker.
 - Claim idempotency replay for stable retry keys.
-- Lightweight artifact metadata registration.
+- Local proof artifact upload, metadata registration, and human web access.
 - JSON-first CLI commands over the shared runtime.
+- Codex harness commands for claim, checkpoint, complete, follow-up, and block flows.
 - Huma OpenAPI route registration under `/api/v1`.
-- Server-rendered web ticket list and detail inspection pages under `/tickets`.
-- Phase 1 correctness regression tests.
+- Server-rendered web pages for login, workspaces, projects, ticket queues, ticket detail, attempt detail, artifact access, proposed work, and search.
+- Bubble Tea TUI for scoped queue inspection and ticket detail handoff links.
+- Basic attempt analytics by summary, model, and harness.
+- Correctness regression tests across services, CLI, web, storage, runtime, and contracts.
 
-Known current limitation:
+Known current limitations:
 
 - `forge server` starts the HTTP router with the OpenAPI surface and the first web inspection pages. `forge worker` opens the live runtime and validates configuration, but it does not yet run a long-lived River loop.
+- The TUI and web UI are usable, but still early. They are not yet at the full "beautiful, low-friction" product bar.
 
 ## Requirements
 
 - Go 1.26+
 - PostgreSQL with `pgcrypto`
 - `psql`
+- Optional but useful for the smoke test snippets: `jq`
 - Optional: `sqlc` via `go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest`
 
 ## Configuration
@@ -80,10 +84,12 @@ Create a database:
 createdb forge
 ```
 
-Apply the current migration `Up` section:
+Apply all migration `Up` sections:
 
 ```bash
-sed '/-- +goose Down/,$d' sql/migrations/0001_initial_schema.sql | psql "$FORGE_DATABASE_URL"
+for migration in sql/migrations/*.sql; do
+  sed '/-- +goose Down/,$d' "$migration" | psql -X -q "$FORGE_DATABASE_URL"
+done
 ```
 
 Regenerate sqlc code after query changes:
@@ -106,6 +112,123 @@ Build the CLI:
 go build -o forge ./cmd/forge
 ```
 
+## Local Smoke Test
+
+This path exercises the CLI, Codex convenience commands, local proof artifact storage, search, analytics, TUI, and web UI.
+
+Create and migrate a disposable local database:
+
+```bash
+createdb forge_smoke
+export FORGE_DATABASE_URL='postgres://localhost:5432/forge_smoke?sslmode=disable'
+export FORGE_ADMIN_TOKEN='change-me-local-admin-token'
+export FORGE_ARTIFACT_ROOT="$PWD/.forge/artifacts"
+mkdir -p "$FORGE_ARTIFACT_ROOT"
+
+for migration in sql/migrations/*.sql; do
+  sed '/-- +goose Down/,$d' "$migration" | psql -X -q "$FORGE_DATABASE_URL"
+done
+```
+
+Create a config file:
+
+```bash
+cat > forge.local.json <<JSON
+{
+  "database_url": "$FORGE_DATABASE_URL",
+  "http_addr": "127.0.0.1:3017",
+  "worker_concurrency": 1,
+  "admin_token": "$FORGE_ADMIN_TOKEN",
+  "auth_cookie_secure": false,
+  "artifact_root": "$FORGE_ARTIFACT_ROOT"
+}
+JSON
+```
+
+Create a workspace and project:
+
+```bash
+WORKSPACE_ID=$(psql -X -At "$FORGE_DATABASE_URL" -c "insert into workspaces (name) values ('Smoke Workspace') returning id")
+PROJECT_ID=$(psql -X -At "$FORGE_DATABASE_URL" -c "insert into projects (workspace_id, name) values ('$WORKSPACE_ID', 'Smoke Project') returning id")
+```
+
+Start the web server in one terminal:
+
+```bash
+go run ./cmd/forge server --config forge.local.json
+```
+
+In another terminal, create, claim, checkpoint, and complete a ticket with a local proof file:
+
+```bash
+TICKET_JSON=$(go run ./cmd/forge create --config forge.local.json --json \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID" \
+  --title "Smoke ticket" \
+  --type bug \
+  --description "Verify the local Forge smoke path" \
+  --acceptance "Smoke ticket can be claimed and completed" \
+  --verify "go test ./...")
+TICKET_ID=$(printf '%s' "$TICKET_JSON" | jq -r '.id')
+
+CLAIM_JSON=$(go run ./cmd/forge codex claim --config forge.local.json \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID" \
+  --agent-id codex \
+  --capability codegen \
+  --capability testing \
+  --lease 30m)
+ATTEMPT_ID=$(printf '%s' "$CLAIM_JSON" | jq -r '.attempt_id')
+
+go run ./cmd/forge codex checkpoint --config forge.local.json "$ATTEMPT_ID" \
+  --summary "Smoke path reached checkpoint" \
+  --progress 50 \
+  --file README.md \
+  --command "go test ./..."
+
+printf 'smoke proof ok\n' > smoke-proof.txt
+COMPLETE_JSON=$(go run ./cmd/forge codex complete --config forge.local.json "$ATTEMPT_ID" \
+  --summary "Smoke path completed" \
+  --proof smoke-proof.txt \
+  --tokens-in 12 \
+  --tokens-out 7 \
+  --cost-usd 0.001 \
+  --duration 2s)
+ARTIFACT_ID=$(printf '%s' "$COMPLETE_JSON" | jq -r '.artifacts[0].id')
+```
+
+Check the CLI and web surfaces:
+
+```bash
+go run ./cmd/forge list --config forge.local.json --json \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID"
+
+go run ./cmd/forge analytics summary --config forge.local.json --json \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID"
+
+go run ./cmd/forge tui --config forge.local.json \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID"
+```
+
+Open these URLs:
+
+- `http://127.0.0.1:3017/login` and sign in with `change-me-local-admin-token`.
+- `http://127.0.0.1:3017/workspaces`
+- `http://127.0.0.1:3017/tickets?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID`
+- `http://127.0.0.1:3017/search?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID&q=smoke`
+- `http://127.0.0.1:3017/artifacts/$ARTIFACT_ID`
+
+Expected results:
+
+- Login redirects to `/workspaces` without console errors.
+- The scoped ticket queue shows the completed smoke ticket.
+- Search finds the smoke ticket.
+- The artifact route serves `smoke proof ok`.
+- Analytics summary reports one attempt with the token metrics above.
+
 ## Runtime Commands
 
 The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/login`, `/workspaces`, `/tickets`, and `/tickets/{id}`. Human web views require `admin_token`; sign in at `/login`, or pass `Authorization: Bearer $FORGE_ADMIN_TOKEN` for scripted checks:
@@ -123,7 +246,8 @@ Human web routes are stable inspection links:
 - `/tickets?workspace_id={workspace_id}&project_id={project_id}` opens a scoped ticket queue.
 - `/tickets/{ticket_id}` opens ticket detail.
 - `/attempts/{attempt_id}` opens attempt detail.
-- `/artifacts/{artifact_id}` opens artifact metadata.
+- `/artifacts/{artifact_id}` streams locally stored artifact content when the artifact uses the local backend, and otherwise opens artifact metadata.
+- `/search?workspace_id={workspace_id}&project_id={project_id}&q={query}` searches ticket execution context.
 - `/proposed/{ticket_id}` opens a proposed follow-up inspection view.
 
 The TUI detail view prints the same route paths in its copy section so links can be pasted into chat, PRs, and handoffs.
@@ -237,7 +361,7 @@ The first end-to-end dogfood path should prove this sequence:
 
 ## Correctness Checks
 
-Phase 1 tests cover:
+Regression tests cover:
 
 - Claim locking with `FOR UPDATE SKIP LOCKED`.
 - One running attempt per ticket.
