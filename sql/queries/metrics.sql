@@ -49,6 +49,8 @@ SELECT
     COALESCE(NULLIF(a.model, ''), '(unknown)')::text AS model,
     COUNT(a.id)::bigint AS attempt_count,
     COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
     COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
     COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
     COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
@@ -67,6 +69,8 @@ SELECT
     COALESCE(NULLIF(a.harness, ''), '(unknown)')::text AS harness,
     COUNT(a.id)::bigint AS attempt_count,
     COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
     COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
     COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
     COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
@@ -79,3 +83,43 @@ WHERE (sqlc.narg(workspace_id)::uuid IS NULL OR a.workspace_id = sqlc.narg(works
   AND (sqlc.narg(project_id)::uuid IS NULL OR a.project_id = sqlc.narg(project_id))
 GROUP BY COALESCE(NULLIF(a.harness, ''), '(unknown)')
 ORDER BY attempt_count DESC, harness ASC;
+
+-- name: GetAnalyticsByStatus :many
+SELECT
+    a.status::text AS status,
+    COUNT(a.id)::bigint AS attempt_count,
+    COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
+    COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
+    COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
+    COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
+    COALESCE(SUM(m.duration_seconds), 0)::numeric(12, 3) AS total_duration_secs,
+    COALESCE(SUM(m.retry_count), 0)::bigint AS total_retries,
+    COUNT(m.id)::bigint AS attempts_with_metrics
+FROM attempts a
+LEFT JOIN attempt_metrics m ON m.attempt_id = a.id
+WHERE (sqlc.narg(workspace_id)::uuid IS NULL OR a.workspace_id = sqlc.narg(workspace_id))
+  AND (sqlc.narg(project_id)::uuid IS NULL OR a.project_id = sqlc.narg(project_id))
+GROUP BY a.status
+ORDER BY attempt_count DESC, status ASC;
+
+-- name: GetAnalyticsByAgent :many
+SELECT
+    COALESCE(NULLIF(a.agent_id, ''), '(unknown)')::text AS agent_id,
+    COUNT(a.id)::bigint AS attempt_count,
+    COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
+    COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
+    COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
+    COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
+    COALESCE(SUM(m.duration_seconds), 0)::numeric(12, 3) AS total_duration_secs,
+    COALESCE(SUM(m.retry_count), 0)::bigint AS total_retries,
+    COUNT(m.id)::bigint AS attempts_with_metrics
+FROM attempts a
+LEFT JOIN attempt_metrics m ON m.attempt_id = a.id
+WHERE (sqlc.narg(workspace_id)::uuid IS NULL OR a.workspace_id = sqlc.narg(workspace_id))
+  AND (sqlc.narg(project_id)::uuid IS NULL OR a.project_id = sqlc.narg(project_id))
+GROUP BY COALESCE(NULLIF(a.agent_id, ''), '(unknown)')
+ORDER BY attempt_count DESC, agent_id ASC;

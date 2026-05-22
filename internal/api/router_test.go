@@ -62,6 +62,8 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		{"get", "/analytics/summary"},
 		{"get", "/analytics/by-model"},
 		{"get", "/analytics/by-harness"},
+		{"get", "/analytics/by-status"},
+		{"get", "/analytics/by-agent"},
 	} {
 		methods, ok := spec.Paths[route.path]
 		if !ok {
@@ -151,6 +153,8 @@ func TestOpenAPIUsesContractOperationIDsForRESTBoundOperations(t *testing.T) {
 		contracts.OperationAnalyticsSummary:   {"get", "/analytics/summary"},
 		contracts.OperationAnalyticsByModel:   {"get", "/analytics/by-model"},
 		contracts.OperationAnalyticsByHarness: {"get", "/analytics/by-harness"},
+		contracts.OperationAnalyticsByStatus:  {"get", "/analytics/by-status"},
+		contracts.OperationAnalyticsByAgent:   {"get", "/analytics/by-agent"},
 	}
 
 	for operationName, route := range routes {
