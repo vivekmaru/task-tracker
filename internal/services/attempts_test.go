@@ -91,6 +91,56 @@ func TestCheckpointAttemptRecordsProgress(t *testing.T) {
 	}
 }
 
+func TestCompleteAttemptRecordsMetricsWhenProvided(t *testing.T) {
+	attemptID := testUUID(25)
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	store := &fakeAttemptStore{
+		complete: db.CompleteAttemptRow{
+			AttemptID:     attemptID,
+			WorkspaceID:   workspaceID,
+			ProjectID:     projectID,
+			TicketID:      testUUID(3),
+			AttemptStatus: AttemptStatusSucceeded,
+			TicketStatus:  TicketStatusDone,
+		},
+		metrics: db.AttemptMetric{AttemptID: attemptID},
+	}
+	service := NewAttemptService(store)
+
+	_, err := service.Complete(context.Background(), CompleteAttemptRequest{
+		AttemptID: attemptID,
+		Output:    map[string]any{"summary": "Implemented analytics"},
+		Metrics: &AttemptMetricsRequest{
+			TokensIn:        1200,
+			TokensOut:       340,
+			CostUSD:         0.0425,
+			DurationSeconds: 91.25,
+			RetryCount:      2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete attempt: %v", err)
+	}
+
+	if len(store.metricsParams) != 1 {
+		t.Fatalf("expected metrics to be recorded once, got %d", len(store.metricsParams))
+	}
+	params := store.metricsParams[0]
+	if params.AttemptID != attemptID || params.WorkspaceID != workspaceID || params.ProjectID != projectID {
+		t.Fatalf("expected metrics scoped from transition row, got %#v", params)
+	}
+	if params.TokensIn != 1200 || params.TokensOut != 340 || params.RetryCount != 2 {
+		t.Fatalf("unexpected token or retry metrics: %#v", params)
+	}
+	if got := numericToFloatForTest(t, params.CostUsd); got != 0.0425 {
+		t.Fatalf("expected cost 0.0425, got %v", got)
+	}
+	if got := numericToFloatForTest(t, params.DurationSeconds); got != 91.25 {
+		t.Fatalf("expected duration 91.25, got %v", got)
+	}
+}
+
 func TestAttemptMutationValidationAndNoRunningAttempt(t *testing.T) {
 	service := NewAttemptService(&fakeAttemptStore{heartbeatErr: pgx.ErrNoRows})
 
@@ -134,6 +184,9 @@ type fakeAttemptStore struct {
 	expireParams     []db.ExpireAttemptParams
 	expire           db.ExpireAttemptRow
 	expireErr        error
+	metricsParams    []db.CreateAttemptMetricsParams
+	metrics          db.AttemptMetric
+	metricsErr       error
 }
 
 func (s *fakeAttemptStore) HeartbeatAttempt(_ context.Context, params db.HeartbeatAttemptParams) (db.HeartbeatAttemptRow, error) {
@@ -169,4 +222,19 @@ func (s *fakeAttemptStore) CancelAttempt(_ context.Context, params db.CancelAtte
 func (s *fakeAttemptStore) ExpireAttempt(_ context.Context, params db.ExpireAttemptParams) (db.ExpireAttemptRow, error) {
 	s.expireParams = append(s.expireParams, params)
 	return s.expire, s.expireErr
+}
+
+func (s *fakeAttemptStore) CreateAttemptMetrics(_ context.Context, params db.CreateAttemptMetricsParams) (db.AttemptMetric, error) {
+	s.metricsParams = append(s.metricsParams, params)
+	return s.metrics, s.metricsErr
+}
+
+func numericToFloatForTest(t *testing.T, value pgtype.Numeric) float64 {
+	t.Helper()
+
+	float, err := value.Float64Value()
+	if err != nil {
+		t.Fatalf("numeric value: %v", err)
+	}
+	return float.Float64
 }

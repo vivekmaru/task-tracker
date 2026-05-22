@@ -98,6 +98,27 @@ func TestForwardMigrationAddsHumanTransitionEventTypes(t *testing.T) {
 	}
 }
 
+func TestForwardMigrationAddsFullTextSearchIndexes(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0003_full_text_search.sql"))
+	if err != nil {
+		t.Fatalf("read search migration: %v", err)
+	}
+	sql := strings.ToLower(string(data))
+
+	for _, want := range []string{
+		"using gin",
+		"idx_tickets_search_vector",
+		"idx_attempts_search_vector",
+		"idx_ticket_events_search_vector",
+		"idx_artifacts_search_vector",
+		"to_tsvector('english'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected search migration to contain %q", want)
+		}
+	}
+}
+
 func readInitialMigration(t *testing.T) string {
 	t.Helper()
 

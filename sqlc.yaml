@@ -3,6 +3,8 @@ sql:
   - engine: postgresql
     schema:
       - sql/migrations/0001_initial_schema.sql
+      - sql/migrations/0002_ticket_transition_event_types.sql
+      - sql/migrations/0003_full_text_search.sql
     queries:
       - sql/queries
     gen:

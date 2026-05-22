@@ -29,4 +29,7 @@ func TestNewComposesQueriesServicesAndWorkers(t *testing.T) {
 	if rt.Artifacts == nil {
 		t.Fatal("expected artifact service")
 	}
+	if rt.Analytics == nil {
+		t.Fatal("expected analytics service")
+	}
 }

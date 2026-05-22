@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/vivek/agent-task-tracker/internal/contracts"
@@ -58,6 +59,9 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		{"post", "/artifacts"},
 		{"get", "/artifacts/{id}"},
 		{"delete", "/artifacts/{id}"},
+		{"get", "/analytics/summary"},
+		{"get", "/analytics/by-model"},
+		{"get", "/analytics/by-harness"},
 	} {
 		methods, ok := spec.Paths[route.path]
 		if !ok {
@@ -78,6 +82,21 @@ func TestNewRouterWithRuntimeKeepsOpenAPIRoutes(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected openapi status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNewRouterWithRuntimeMountsSearchPage(t *testing.T) {
+	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	req := httptest.NewRequest(http.MethodGet, "/search?workspace_id=00000000-0000-0000-0000-000000000001&project_id=00000000-0000-0000-0000-000000000002", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected search page status 400 for missing query, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Forge Search") || !strings.Contains(body, "query is required") {
+		t.Fatalf("expected mounted search page guidance, got:\n%s", body)
 	}
 }
 
@@ -120,15 +139,18 @@ func TestOpenAPIUsesContractOperationIDsForRESTBoundOperations(t *testing.T) {
 			method: "post",
 			path:   "/tickets/{id}/request-review",
 		},
-		contracts.OperationReviewTicket:    {"post", "/tickets/{id}/review"},
-		contracts.OperationArchiveTicket:   {"post", "/tickets/{id}/archive"},
-		contracts.OperationCompleteAttempt: {"post", "/attempts/{id}/complete"},
-		contracts.OperationFailAttempt:     {"post", "/attempts/{id}/fail"},
-		contracts.OperationBlockAttempt:    {"post", "/attempts/{id}/block"},
-		contracts.OperationListTickets:     {"get", "/tickets"},
-		contracts.OperationGetTicket:       {"get", "/tickets/{id}"},
-		contracts.OperationAttachArtifact:  {"post", "/artifacts"},
-		contracts.OperationDecomposeTicket: {"post", "/tickets/{id}/decompose"},
+		contracts.OperationReviewTicket:       {"post", "/tickets/{id}/review"},
+		contracts.OperationArchiveTicket:      {"post", "/tickets/{id}/archive"},
+		contracts.OperationCompleteAttempt:    {"post", "/attempts/{id}/complete"},
+		contracts.OperationFailAttempt:        {"post", "/attempts/{id}/fail"},
+		contracts.OperationBlockAttempt:       {"post", "/attempts/{id}/block"},
+		contracts.OperationListTickets:        {"get", "/tickets"},
+		contracts.OperationGetTicket:          {"get", "/tickets/{id}"},
+		contracts.OperationAttachArtifact:     {"post", "/artifacts"},
+		contracts.OperationDecomposeTicket:    {"post", "/tickets/{id}/decompose"},
+		contracts.OperationAnalyticsSummary:   {"get", "/analytics/summary"},
+		contracts.OperationAnalyticsByModel:   {"get", "/analytics/by-model"},
+		contracts.OperationAnalyticsByHarness: {"get", "/analytics/by-harness"},
 	}
 
 	for operationName, route := range routes {

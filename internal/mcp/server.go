@@ -46,6 +46,9 @@ type Runtime interface {
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
 	DecomposeTicket(context.Context, services.DecomposeTicketRequest) (services.DecomposeTicketResult, error)
 	RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error)
+	AnalyticsSummary(context.Context, services.AnalyticsFilter) (services.AnalyticsSummary, error)
+	AnalyticsByModel(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByHarness(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 }
 
 type Tool struct {
@@ -185,6 +188,9 @@ func (s *Server) registerHandlers() {
 	s.handlers[contracts.OperationAttachArtifact] = s.callAttachArtifact
 	s.handlers[contracts.OperationDecomposeTicket] = s.callDecomposeTicket
 	s.handlers[contracts.OperationRegisterAgentCapabilities] = s.callRegisterCapabilities
+	s.handlers[contracts.OperationAnalyticsSummary] = s.callAnalyticsSummary
+	s.handlers[contracts.OperationAnalyticsByModel] = s.callAnalyticsByModel
+	s.handlers[contracts.OperationAnalyticsByHarness] = s.callAnalyticsByHarness
 }
 
 func (s *Server) callCreateTicket(ctx context.Context, input json.RawMessage) (any, error) {
@@ -392,6 +398,7 @@ func (s *Server) callCompleteAttempt(ctx context.Context, input json.RawMessage)
 		AttemptID:    attemptID,
 		Output:       payload.Output,
 		OutputSchema: payload.OutputSchema,
+		Metrics:      payload.Metrics.request(),
 	})
 	if err != nil {
 		return nil, err
@@ -413,6 +420,7 @@ func (s *Server) callFailAttempt(ctx context.Context, input json.RawMessage) (an
 		FailureReason:   payload.FailureReason,
 		FailureCategory: payload.FailureCategory,
 		Output:          payload.Output,
+		Metrics:         payload.Metrics.request(),
 	})
 	if err != nil {
 		return nil, err
@@ -434,6 +442,7 @@ func (s *Server) callBlockAttempt(ctx context.Context, input json.RawMessage) (a
 		BlockerReason:   payload.BlockerReason,
 		FailureCategory: payload.FailureCategory,
 		Blocker:         payload.Blocker,
+		Metrics:         payload.Metrics.request(),
 	})
 	if err != nil {
 		return nil, err
@@ -546,6 +555,54 @@ func (s *Server) callRegisterCapabilities(ctx context.Context, input json.RawMes
 		"harness":      record.Harness,
 		"capabilities": record.Capabilities,
 	}, nil
+}
+
+func (s *Server) callAnalyticsSummary(ctx context.Context, input json.RawMessage) (any, error) {
+	var payload analyticsInput
+	if err := decodeInput(input, &payload); err != nil {
+		return nil, err
+	}
+	filter, err := payload.filter()
+	if err != nil {
+		return nil, err
+	}
+	summary, err := s.runtime.AnalyticsSummary(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"summary": summary}, nil
+}
+
+func (s *Server) callAnalyticsByModel(ctx context.Context, input json.RawMessage) (any, error) {
+	var payload analyticsInput
+	if err := decodeInput(input, &payload); err != nil {
+		return nil, err
+	}
+	filter, err := payload.filter()
+	if err != nil {
+		return nil, err
+	}
+	groups, err := s.runtime.AnalyticsByModel(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"groups": groups}, nil
+}
+
+func (s *Server) callAnalyticsByHarness(ctx context.Context, input json.RawMessage) (any, error) {
+	var payload analyticsInput
+	if err := decodeInput(input, &payload); err != nil {
+		return nil, err
+	}
+	filter, err := payload.filter()
+	if err != nil {
+		return nil, err
+	}
+	groups, err := s.runtime.AnalyticsByHarness(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"groups": groups}, nil
 }
 
 func decodeInput(input json.RawMessage, out any) error {
