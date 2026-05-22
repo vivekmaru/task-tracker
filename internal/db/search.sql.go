@@ -13,7 +13,7 @@ import (
 
 const searchTickets = `-- name: SearchTickets :many
 WITH search_query AS (
-    SELECT websearch_to_tsquery('english', $3::text) AS query
+    SELECT websearch_to_tsquery('english', $5::text) AS query
 ),
 matches AS (
     SELECT
@@ -26,8 +26,8 @@ matches AS (
         ) AS rank
     FROM tickets t
     CROSS JOIN search_query sq
-    WHERE t.workspace_id = $4::uuid
-      AND t.project_id = $5::uuid
+    WHERE t.workspace_id = $1::uuid
+      AND t.project_id = $2::uuid
       AND to_tsvector('english', coalesce(t.title, '') || ' ' || coalesce(t.description, '')) @@ sq.query
 
     UNION ALL
@@ -42,8 +42,8 @@ matches AS (
         ) AS rank
     FROM attempts a
     CROSS JOIN search_query sq
-    WHERE a.workspace_id = $4::uuid
-      AND a.project_id = $5::uuid
+    WHERE a.workspace_id = $1::uuid
+      AND a.project_id = $2::uuid
       AND to_tsvector('english', coalesce(a.current_summary, '') || ' ' || a.output::text) @@ sq.query
 
     UNION ALL
@@ -55,8 +55,8 @@ matches AS (
         ts_rank_cd(to_tsvector('english', e.data::text), sq.query) AS rank
     FROM ticket_events e
     CROSS JOIN search_query sq
-    WHERE e.workspace_id = $4::uuid
-      AND e.project_id = $5::uuid
+    WHERE e.workspace_id = $1::uuid
+      AND e.project_id = $2::uuid
       AND to_tsvector('english', e.data::text) @@ sq.query
 
     UNION ALL
@@ -68,8 +68,8 @@ matches AS (
         ts_rank_cd(to_tsvector('english', coalesce(ar.name, '')), sq.query) AS rank
     FROM artifacts ar
     CROSS JOIN search_query sq
-    WHERE ar.workspace_id = $4::uuid
-      AND ar.project_id = $5::uuid
+    WHERE ar.workspace_id = $1::uuid
+      AND ar.project_id = $2::uuid
       AND to_tsvector('english', coalesce(ar.name, '')) @@ sq.query
 )
 SELECT
@@ -104,22 +104,24 @@ SELECT
     t.created_at,
     t.updated_at,
     array_agg(DISTINCT m.source ORDER BY m.source)::text[] AS match_sources,
-    left(string_agg(DISTINCT m.match_text, ' | '), 360)::text AS snippet,
+    string_agg(DISTINCT left(m.match_text, 360), ' | ')::text AS snippet,
     max(m.rank)::real AS rank
 FROM matches m
 JOIN tickets t ON t.id = m.ticket_id
+WHERE t.workspace_id = $1::uuid
+  AND t.project_id = $2::uuid
 GROUP BY t.id
 ORDER BY rank DESC, t.updated_at DESC
-LIMIT $2::integer
-OFFSET $1::integer
+LIMIT $4::integer
+OFFSET $3::integer
 `
 
 type SearchTicketsParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
 	Offset      int32       `db:"offset" json:"offset"`
 	Limit       int32       `db:"limit" json:"limit"`
 	Query       string      `db:"query" json:"query"`
-	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
-	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
 }
 
 type SearchTicketsRow struct {
@@ -160,11 +162,11 @@ type SearchTicketsRow struct {
 
 func (q *Queries) SearchTickets(ctx context.Context, arg SearchTicketsParams) ([]SearchTicketsRow, error) {
 	rows, err := q.db.Query(ctx, searchTickets,
+		arg.WorkspaceID,
+		arg.ProjectID,
 		arg.Offset,
 		arg.Limit,
 		arg.Query,
-		arg.WorkspaceID,
-		arg.ProjectID,
 	)
 	if err != nil {
 		return nil, err

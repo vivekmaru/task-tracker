@@ -135,6 +135,10 @@ func TestPhaseFourSearchQueryCoversExecutionHistory(t *testing.T) {
 		"'event'::text as source",
 		"'artifact'::text as source",
 		"array_agg(distinct m.source",
+		"string_agg(distinct left(m.match_text, 360)",
+		"join tickets t on t.id = m.ticket_id",
+		"where t.workspace_id = sqlc.arg('workspace_id')::uuid",
+		"and t.project_id = sqlc.arg('project_id')::uuid",
 	} {
 		if !strings.Contains(searchSQL, want) {
 			t.Fatalf("search query must contain %q", want)

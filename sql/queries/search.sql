@@ -91,10 +91,12 @@ SELECT
     t.created_at,
     t.updated_at,
     array_agg(DISTINCT m.source ORDER BY m.source)::text[] AS match_sources,
-    left(string_agg(DISTINCT m.match_text, ' | '), 360)::text AS snippet,
+    string_agg(DISTINCT left(m.match_text, 360), ' | ')::text AS snippet,
     max(m.rank)::real AS rank
 FROM matches m
 JOIN tickets t ON t.id = m.ticket_id
+WHERE t.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND t.project_id = sqlc.arg('project_id')::uuid
 GROUP BY t.id
 ORDER BY rank DESC, t.updated_at DESC
 LIMIT sqlc.arg('limit')::integer
