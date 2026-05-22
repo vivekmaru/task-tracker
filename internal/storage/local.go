@@ -56,12 +56,21 @@ func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactCont
 	if err != nil {
 		return ArtifactContent{}, fmt.Errorf("stat local artifact: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return ArtifactContent{}, errors.New("local artifact must be a regular file")
+	if err := requireRegularFile(info, "local artifact"); err != nil {
+		return ArtifactContent{}, err
 	}
 	file, err := root.OpenFile(relativePath, os.O_RDONLY, 0)
 	if err != nil {
 		return ArtifactContent{}, fmt.Errorf("open local artifact: %w", err)
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return ArtifactContent{}, fmt.Errorf("stat opened local artifact: %w", err)
+	}
+	if err := requireRegularFile(openedInfo, "local artifact"); err != nil {
+		_ = file.Close()
+		return ArtifactContent{}, err
 	}
 	name := strings.TrimSpace(artifact.Name)
 	if name == "" {
@@ -77,7 +86,7 @@ func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactCont
 	return ArtifactContent{
 		Name:     name,
 		MimeType: mimeType,
-		Size:     info.Size(),
+		Size:     openedInfo.Size(),
 		Reader:   file,
 	}, nil
 }
@@ -94,14 +103,21 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	if info.IsDir() {
 		return StoredArtifact{}, errors.New("source artifact must be a file")
 	}
-	if !info.Mode().IsRegular() {
-		return StoredArtifact{}, errors.New("source artifact must be a regular file")
+	if err := requireRegularFile(info, "source artifact"); err != nil {
+		return StoredArtifact{}, err
 	}
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return StoredArtifact{}, fmt.Errorf("open source artifact: %w", err)
 	}
 	defer source.Close()
+	openedInfo, err := source.Stat()
+	if err != nil {
+		return StoredArtifact{}, fmt.Errorf("stat opened source artifact: %w", err)
+	}
+	if err := requireRegularFile(openedInfo, "source artifact"); err != nil {
+		return StoredArtifact{}, err
+	}
 	name, err := cleanArtifactName(firstNonEmpty(preferredName, filepath.Base(sourcePath)))
 	if err != nil {
 		return StoredArtifact{}, err
@@ -165,6 +181,13 @@ func (s *LocalStore) Remove(_ context.Context, rawURL string) error {
 	defer root.Close()
 	if err := root.Remove(filepath.FromSlash(relativeName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove local artifact: %w", err)
+	}
+	return nil
+}
+
+func requireRegularFile(info os.FileInfo, subject string) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file", subject)
 	}
 	return nil
 }

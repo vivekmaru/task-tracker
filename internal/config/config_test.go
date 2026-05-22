@@ -8,6 +8,9 @@ import (
 )
 
 func TestLoadUsesDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("FORGE_DATABASE_URL", "")
 	t.Setenv("FORGE_HTTP_ADDR", "")
 	t.Setenv("FORGE_LOG_LEVEL", "")
@@ -32,7 +35,8 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.AuthCookieSecure {
 		t.Fatal("expected auth cookies to default to non-secure for local HTTP")
 	}
-	if cfg.ArtifactRoot != ".forge/artifacts" {
+	expectedArtifactRoot := filepath.Join(home, ".forge", "artifacts")
+	if cfg.ArtifactRoot != expectedArtifactRoot {
 		t.Fatalf("unexpected ArtifactRoot: %q", cfg.ArtifactRoot)
 	}
 }
@@ -82,6 +86,25 @@ func TestLoadMergesConfigFileAndEnvOverrides(t *testing.T) {
 	}
 	if cfg.ArtifactRoot != "/tmp/env-artifacts" {
 		t.Fatalf("expected env artifact root override, got %q", cfg.ArtifactRoot)
+	}
+}
+
+func TestLoadResolvesRelativeConfigArtifactRootFromConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.json")
+	if err := os.WriteFile(path, []byte(`{"artifact_root":"artifacts"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FORGE_ARTIFACT_ROOT", "")
+
+	cfg, err := Load(Options{ConfigPath: path})
+	if err != nil {
+		t.Fatalf("expected config to load, got %v", err)
+	}
+
+	expectedArtifactRoot := filepath.Join(dir, "artifacts")
+	if cfg.ArtifactRoot != expectedArtifactRoot {
+		t.Fatalf("expected config-relative artifact root %q, got %q", expectedArtifactRoot, cfg.ArtifactRoot)
 	}
 }
 

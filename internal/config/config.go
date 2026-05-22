@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -41,9 +42,9 @@ func Load(opts Options) (Config, error) {
 		ArtifactRoot:      defaultArtifactRoot,
 	}
 
-	path := firstNonEmpty(opts.ConfigPath, os.Getenv("FORGE_CONFIG"))
-	if path != "" {
-		if err := loadFile(path, &cfg); err != nil {
+	configPath := firstNonEmpty(opts.ConfigPath, os.Getenv("FORGE_CONFIG"))
+	if configPath != "" {
+		if err := loadFile(configPath, &cfg); err != nil {
 			return Config{}, err
 		}
 	}
@@ -77,6 +78,11 @@ func Load(opts Options) (Config, error) {
 	if value := os.Getenv("FORGE_ARTIFACT_ROOT"); value != "" {
 		cfg.ArtifactRoot = value
 	}
+	artifactRoot, err := normalizeArtifactRoot(cfg.ArtifactRoot, configPath)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ArtifactRoot = artifactRoot
 
 	return cfg, nil
 }
@@ -124,6 +130,38 @@ func loadFile(path string, cfg *Config) error {
 		return fmt.Errorf("decode config file: %w", err)
 	}
 	return nil
+}
+
+func normalizeArtifactRoot(root string, configPath string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		root = defaultArtifactRoot
+	}
+	if filepath.IsAbs(root) {
+		return filepath.Clean(root), nil
+	}
+	base := ""
+	switch {
+	case root == defaultArtifactRoot:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve artifact root home: %w", err)
+		}
+		base = home
+	case strings.TrimSpace(configPath) != "":
+		absoluteConfigPath, err := filepath.Abs(configPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve config path: %w", err)
+		}
+		base = filepath.Dir(absoluteConfigPath)
+	default:
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve working directory: %w", err)
+		}
+		base = wd
+	}
+	return filepath.Clean(filepath.Join(base, root)), nil
 }
 
 func firstNonEmpty(values ...string) string {

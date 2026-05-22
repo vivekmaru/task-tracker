@@ -63,7 +63,7 @@ Equivalent config file:
 
 Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Keep it `false` for direct plain HTTP access.
 
-Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be opened from the human `/artifacts/{id}` route when that file exists under the configured artifact root. `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` also copy filesystem proofs into that root before registering them.
+Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be opened from the human `/artifacts/{id}` route when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user's home directory. `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` also copy filesystem proofs into that root before registering them.
 
 Pass it with:
 
