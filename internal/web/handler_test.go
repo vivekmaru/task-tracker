@@ -196,6 +196,79 @@ func TestTicketListRendersFilterFormWhenScopeIsMissing(t *testing.T) {
 	}
 }
 
+func TestSearchPageRendersResultsAndKeepsScope(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	ticketID := testUUID(3)
+	runtime := &fakeRuntime{
+		searchResults: []services.SearchResult{
+			{
+				Ticket: db.Ticket{
+					ID:          ticketID,
+					WorkspaceID: workspaceID,
+					ProjectID:   projectID,
+					Title:       "Capture deployment proof",
+					Description: "Store the final deployment log.",
+					Type:        services.TicketTypeFeature,
+					Status:      services.TicketStatusTodo,
+					Priority:    2,
+					CreatedBy:   services.ActorAgent,
+				},
+				MatchSources: []string{"attempt", "artifact"},
+				Snippet:      "deployment log from the latest attempt",
+			},
+		},
+	}
+	handler := NewHandler(runtime)
+
+	req := httptest.NewRequest(http.MethodGet, "/search?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID)+"&q=deployment+log", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected search status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Forge Search",
+		"deployment log",
+		"Capture deployment proof",
+		"Store the final deployment log.",
+		"attempt",
+		"artifact",
+		"deployment log from the latest attempt",
+		"/tickets/" + uuidString(ticketID),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected search page to contain %q, got:\n%s", want, body)
+		}
+	}
+	if runtime.searchReq.WorkspaceID != workspaceID || runtime.searchReq.ProjectID != projectID {
+		t.Fatalf("unexpected search scope: %#v", runtime.searchReq)
+	}
+	if runtime.searchReq.Query != "deployment log" {
+		t.Fatalf("unexpected search query: %#v", runtime.searchReq)
+	}
+}
+
+func TestSearchPageRequiresScopeAndQuery(t *testing.T) {
+	handler := NewHandler(&fakeRuntime{})
+	req := httptest.NewRequest(http.MethodGet, "/search?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing query status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`<form method="get" action="/search">`, `name="q"`, "query is required"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected search guidance to contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
 func TestTicketListReturnsBadRequestForInvalidFilterValidation(t *testing.T) {
 	runtime := &fakeRuntime{
 		listErr: services.ValidationError{Problems: []string{"status filter is not valid"}},
@@ -696,9 +769,12 @@ func TestTicketDetailHandlesBadIDAndMissingRuntime(t *testing.T) {
 
 type fakeRuntime struct {
 	listReq                   services.ListTicketsRequest
+	searchReq                 services.SearchTicketsRequest
 	detailTicketID            pgtype.UUID
 	tickets                   []db.Ticket
+	searchResults             []services.SearchResult
 	listErr                   error
+	searchErr                 error
 	ticket                    db.Ticket
 	attempt                   db.Attempt
 	attempts                  []db.Attempt
@@ -725,6 +801,14 @@ func (f *fakeRuntime) ListTickets(_ context.Context, req services.ListTicketsReq
 		return nil, f.listErr
 	}
 	return f.tickets, nil
+}
+
+func (f *fakeRuntime) SearchTickets(_ context.Context, req services.SearchTicketsRequest) ([]services.SearchResult, error) {
+	f.searchReq = req
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	return f.searchResults, nil
 }
 
 func (f *fakeRuntime) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
