@@ -50,6 +50,42 @@ func TestCreateTicketCreatesHumanTodoTicketAndEvent(t *testing.T) {
 	assertJSONStrings(t, store.createdTickets[0].VerificationCommands, []string{"go test ./..."})
 }
 
+func TestCreateTicketNormalizesOptionalCollectionsToEmptyValues(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+
+	_, err := service.CreateTicket(context.Background(), CreateTicketRequest{
+		WorkspaceID:          testUUID(1),
+		ProjectID:            testUUID(2),
+		Title:                "Smoke default collection fields",
+		Type:                 TicketTypeBug,
+		AcceptanceCriteria:   []string{"Ticket can be created without optional collection flags"},
+		VerificationCommands: []string{"go test ./..."},
+		CreatedBy:            ActorHuman,
+	})
+	if err != nil {
+		t.Fatalf("create ticket: %v", err)
+	}
+
+	params := store.createdTickets[0]
+	for name, values := range map[string][]string{
+		"tags":                  params.Tags,
+		"expected_artifacts":    params.ExpectedArtifacts,
+		"relevant_paths":        params.RelevantPaths,
+		"required_tools":        params.RequiredTools,
+		"required_permissions":  params.RequiredPermissions,
+		"required_capabilities": params.RequiredCapabilities,
+		"allowed_harnesses":     params.AllowedHarnesses,
+	} {
+		if values == nil {
+			t.Fatalf("expected %s to be an empty slice, got nil", name)
+		}
+		if len(values) != 0 {
+			t.Fatalf("expected %s to be empty, got %#v", name, values)
+		}
+	}
+}
+
 func TestCreateTicketDefaultsAgentCreatedWorkToBacklogWithoutEnqueue(t *testing.T) {
 	store := &fakeTicketStore{}
 	service := NewTicketService(store)
