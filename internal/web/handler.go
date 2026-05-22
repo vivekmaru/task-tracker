@@ -269,7 +269,7 @@ func constantTimeTokenEqual(got string, want string) bool {
 
 func sanitizeNext(value string) string {
 	if strings.TrimSpace(value) == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
-		return "/tickets"
+		return "/workspaces"
 	}
 	return value
 }
@@ -770,7 +770,7 @@ func loginPage(next string, message string) templ.Component {
 		if message != "" {
 			fmt.Fprintf(w, `<p class="auth-error" role="alert">%s</p>`, esc(message))
 		}
-		fmt.Fprint(w, `<form method="post" action="/login">`)
+		fmt.Fprint(w, `<form method="post" action="/login" hx-boost="false">`)
 		fmt.Fprintf(w, `<input type="hidden" name="next" value="%s">`, esc(sanitizeNext(next)))
 		fmt.Fprint(w, `<label><span>Admin token</span><input type="password" name="admin_token" autocomplete="current-password" autofocus required aria-required="true"></label>`)
 		fmt.Fprint(w, `<button type="submit">Sign in</button></form></section>`)

@@ -134,6 +134,37 @@ func TestLoginCreatesSessionCookieWithoutEchoingToken(t *testing.T) {
 	}
 }
 
+func TestLoginDefaultsToWorkspaceIndexAndAvoidsBoostedFormSubmission(t *testing.T) {
+	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected login status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `name="next" value="/workspaces"`) {
+		t.Fatalf("expected default login destination to be /workspaces, got:\n%s", body)
+	}
+	if !strings.Contains(body, `hx-boost="false"`) {
+		t.Fatalf("expected login form to opt out of htmx boost, got:\n%s", body)
+	}
+
+	post := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("admin_token=secret-token"))
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, post)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected login redirect, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/workspaces" {
+		t.Fatalf("expected default login redirect to /workspaces, got %q", got)
+	}
+}
+
 func TestAuthenticatedHandlerRejectsExpiredSessionCookie(t *testing.T) {
 	now := time.Date(2026, 5, 18, 20, 0, 0, 0, time.UTC)
 	auth := AuthOptions{

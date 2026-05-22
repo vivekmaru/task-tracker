@@ -892,7 +892,6 @@ func runCodexClaimCommand(ctx context.Context, args []string, stdout, stderr io.
 }
 
 func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
-	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
 	flags := newFlagSet("codex checkpoint", stderr)
 	var opts commandOptions
 	opts.bind(flags)
@@ -906,6 +905,7 @@ func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stder
 	flags.Var(&commands, "command", "command run")
 	flags.StringVar(&nextStep, "next", "", "next step")
 	flags.StringVar(&risk, "risk", "", "risk")
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
 	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
@@ -943,7 +943,6 @@ func runCodexCheckpointCommand(ctx context.Context, args []string, stdout, stder
 }
 
 func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
-	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
 	flags := newFlagSet("codex complete", stderr)
 	var opts commandOptions
 	opts.bind(flags)
@@ -954,6 +953,7 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 	var attemptID, summary string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&summary, "summary", "", "output summary")
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
 	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
@@ -1080,7 +1080,6 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 }
 
 func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
-	positionalAttemptID, parseArgs := splitLeadingAttemptID(args)
 	flags := newFlagSet("codex block", stderr)
 	var opts commandOptions
 	opts.bind(flags)
@@ -1092,6 +1091,7 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "blocker reason")
 	flags.StringVar(&category, "category", "", "failure category")
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
 	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
@@ -1185,11 +1185,38 @@ func (f codexProofFlags) validate(commandName string, stderr io.Writer) bool {
 	return true
 }
 
-func splitLeadingAttemptID(args []string) (string, []string) {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return "", args
+func splitAttemptIDArg(args []string, flags *flag.FlagSet) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			if i+1 >= len(args) {
+				return "", args
+			}
+			return args[i+1], append(append([]string{}, args[:i]...), args[i+2:]...)
+		}
+		if strings.HasPrefix(arg, "-") {
+			name := strings.TrimLeft(arg, "-")
+			if before, _, ok := strings.Cut(name, "="); ok {
+				name = before
+			}
+			if f := flags.Lookup(name); f != nil && flagTakesValue(f) && !strings.Contains(arg, "=") && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		return arg, append(append([]string{}, args[:i]...), args[i+1:]...)
 	}
-	return args[0], args[1:]
+	return "", args
+}
+
+func flagTakesValue(f *flag.Flag) bool {
+	type boolFlag interface {
+		IsBoolFlag() bool
+	}
+	if value, ok := f.Value.(boolFlag); ok && value.IsBoolFlag() {
+		return false
+	}
+	return true
 }
 
 func codexProofArtifactRequests(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) (codexProofArtifactBundle, error) {
