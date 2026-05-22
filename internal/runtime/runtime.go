@@ -22,6 +22,7 @@ type Runtime struct {
 	Attempts     *services.AttemptService
 	Artifacts    *services.ArtifactService
 	LocalStore   *storage.LocalStore
+	Search       *services.SearchService
 	Capabilities *services.CapabilityService
 	Analytics    *services.AnalyticsService
 	Maintenance  *jobs.MaintenanceWorker
@@ -58,6 +59,7 @@ func NewWithConfig(queries *db.Queries, cfg config.Config) *Runtime {
 		Attempts:     services.NewAttemptService(queries),
 		Artifacts:    services.NewArtifactService(queries),
 		LocalStore:   storage.NewLocalStore(artifactRoot),
+		Search:       services.NewSearchService(queries),
 		Capabilities: services.NewCapabilityService(queries),
 		Analytics:    services.NewAnalyticsService(queries),
 		Maintenance:  jobs.NewMaintenanceWorker(queries),
@@ -156,6 +158,10 @@ func (r *Runtime) ListTickets(ctx context.Context, req services.ListTicketsReque
 
 func (r *Runtime) ListProposedTickets(ctx context.Context, req services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error) {
 	return r.Tickets.ListProposedTickets(ctx, req)
+}
+
+func (r *Runtime) SearchTickets(ctx context.Context, req services.SearchTicketsRequest) ([]services.SearchResult, error) {
+	return r.Search.SearchTickets(ctx, req)
 }
 
 func (r *Runtime) ReadyProposedTicket(ctx context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {

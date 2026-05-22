@@ -40,4 +40,5 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.ListArtifactsByTicket
 	_ = q.ListArtifactsByAttempt
 	_ = q.GetArtifact
+	_ = q.SearchTickets
 }

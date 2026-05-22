@@ -121,6 +121,32 @@ func TestPhaseOneCorrectnessClaimIdempotencyReplay(t *testing.T) {
 	}
 }
 
+func TestPhaseFourSearchQueryCoversExecutionHistory(t *testing.T) {
+	searchSQL := readSQLFile(t, "../../sql/queries/search.sql")
+
+	for _, want := range []string{
+		"websearch_to_tsquery",
+		"from tickets t",
+		"from attempts a",
+		"from ticket_events e",
+		"from artifacts ar",
+		"'ticket'::text as source",
+		"'attempt'::text as source",
+		"'event'::text as source",
+		"'artifact'::text as source",
+		"array_agg(distinct m.source",
+		"string_agg(distinct left(m.match_text, 360)",
+		"join tickets t on t.id = m.ticket_id",
+		"where t.workspace_id = sqlc.arg('workspace_id')::uuid",
+		"and t.project_id = sqlc.arg('project_id')::uuid",
+		"order by rank desc, t.updated_at desc, t.id asc",
+	} {
+		if !strings.Contains(searchSQL, want) {
+			t.Fatalf("search query must contain %q", want)
+		}
+	}
+}
+
 func readSQLFile(t *testing.T, path string) string {
 	t.Helper()
 
