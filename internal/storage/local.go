@@ -13,7 +13,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/vivek/agent-task-tracker/internal/db"
 )
@@ -53,18 +52,16 @@ func (s *LocalStore) Open(_ context.Context, artifact db.Artifact) (ArtifactCont
 	}
 	defer root.Close()
 	relativePath := filepath.FromSlash(relativeName)
-	file, err := root.OpenFile(relativePath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	info, err := root.Stat(relativePath)
 	if err != nil {
-		return ArtifactContent{}, fmt.Errorf("open local artifact: %w", err)
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
 		return ArtifactContent{}, fmt.Errorf("stat local artifact: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		_ = file.Close()
 		return ArtifactContent{}, errors.New("local artifact must be a regular file")
+	}
+	file, err := root.OpenFile(relativePath, os.O_RDONLY, 0)
+	if err != nil {
+		return ArtifactContent{}, fmt.Errorf("open local artifact: %w", err)
 	}
 	name := strings.TrimSpace(artifact.Name)
 	if name == "" {
@@ -90,12 +87,7 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	if sourcePath == "" {
 		return StoredArtifact{}, errors.New("source path is required")
 	}
-	source, err := os.OpenFile(sourcePath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return StoredArtifact{}, fmt.Errorf("open source artifact: %w", err)
-	}
-	defer source.Close()
-	info, err := source.Stat()
+	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return StoredArtifact{}, fmt.Errorf("stat source artifact: %w", err)
 	}
@@ -105,6 +97,11 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 	if !info.Mode().IsRegular() {
 		return StoredArtifact{}, errors.New("source artifact must be a regular file")
 	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return StoredArtifact{}, fmt.Errorf("open source artifact: %w", err)
+	}
+	defer source.Close()
 	name, err := cleanArtifactName(firstNonEmpty(preferredName, filepath.Base(sourcePath)))
 	if err != nil {
 		return StoredArtifact{}, err
