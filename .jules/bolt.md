@@ -1,0 +1,3 @@
+## 2025-05-18 - Missing Index on Rapidly Growing Table
+**Learning:** Found a missing index on `attempt_checkpoints(ticket_id)` in the initial schema. The query `ListAttemptCheckpointsByTicket` was filtering by `ticket_id` and ordering by `created_at` without a supporting index. Since `attempt_checkpoints` is an append-only table that grows rapidly as agents report progress, this would cause severe performance degradation (full table scans) when humans view ticket details in the TUI.
+**Action:** Always verify that frequently accessed append-only tables, especially those queried for timelines or queues, have composite indexes covering both the foreign key filter and the sort column (e.g., `ticket_id`, `created_at`).

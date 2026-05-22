@@ -28,6 +28,9 @@ func TestAllOperationsContainsPhaseTwoSurface(t *testing.T) {
 		OperationAttachArtifact,
 		OperationDecomposeTicket,
 		OperationRegisterAgentCapabilities,
+		OperationAnalyticsSummary,
+		OperationAnalyticsByModel,
+		OperationAnalyticsByHarness,
 	}
 
 	seen := map[string]bool{}
@@ -100,6 +103,9 @@ func TestPhaseTwoOperationsExposeSurfaceParityMatrix(t *testing.T) {
 		{OperationAttachArtifact, RESTAttachArtifact, CLIAttachArtifact, OperationAttachArtifact},
 		{OperationDecomposeTicket, RESTDecomposeTicket, "", OperationDecomposeTicket},
 		{OperationRegisterAgentCapabilities, "", "", OperationRegisterAgentCapabilities},
+		{OperationAnalyticsSummary, RESTAnalyticsSummary, CLIAnalytics, OperationAnalyticsSummary},
+		{OperationAnalyticsByModel, RESTAnalyticsByModel, CLIAnalytics, OperationAnalyticsByModel},
+		{OperationAnalyticsByHarness, RESTAnalyticsByHarness, CLIAnalytics, OperationAnalyticsByHarness},
 	}
 
 	if len(cases) != len(AllOperations()) {

@@ -23,6 +23,7 @@ type Runtime struct {
 	Artifacts    *services.ArtifactService
 	LocalStore   *storage.LocalStore
 	Capabilities *services.CapabilityService
+	Analytics    *services.AnalyticsService
 	Maintenance  *jobs.MaintenanceWorker
 }
 
@@ -58,6 +59,7 @@ func NewWithConfig(queries *db.Queries, cfg config.Config) *Runtime {
 		Artifacts:    services.NewArtifactService(queries),
 		LocalStore:   storage.NewLocalStore(artifactRoot),
 		Capabilities: services.NewCapabilityService(queries),
+		Analytics:    services.NewAnalyticsService(queries),
 		Maintenance:  jobs.NewMaintenanceWorker(queries),
 	}
 }
@@ -303,6 +305,18 @@ func (r *Runtime) DecomposeTicket(ctx context.Context, req services.DecomposeTic
 
 func (r *Runtime) GetCapabilities(ctx context.Context, req services.GetCapabilitiesRequest) (db.AgentCapability, error) {
 	return r.Capabilities.Get(ctx, req)
+}
+
+func (r *Runtime) AnalyticsSummary(ctx context.Context, filter services.AnalyticsFilter) (services.AnalyticsSummary, error) {
+	return r.Analytics.Summary(ctx, filter)
+}
+
+func (r *Runtime) AnalyticsByModel(ctx context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	return r.Analytics.ByModel(ctx, filter)
+}
+
+func (r *Runtime) AnalyticsByHarness(ctx context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	return r.Analytics.ByHarness(ctx, filter)
 }
 
 func (r *Runtime) ListCapabilities(ctx context.Context, req services.ListCapabilitiesRequest) ([]db.AgentCapability, error) {
