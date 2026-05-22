@@ -60,6 +60,8 @@ blocked_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -77,6 +79,8 @@ type BlockAttemptParams struct {
 
 type BlockAttemptRow struct {
 	AttemptID     pgtype.UUID `db:"attempt_id" json:"attempt_id"`
+	WorkspaceID   pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID     pgtype.UUID `db:"project_id" json:"project_id"`
 	TicketID      pgtype.UUID `db:"ticket_id" json:"ticket_id"`
 	AttemptStatus string      `db:"attempt_status" json:"attempt_status"`
 	TicketStatus  string      `db:"ticket_status" json:"ticket_status"`
@@ -93,6 +97,8 @@ func (q *Queries) BlockAttempt(ctx context.Context, arg BlockAttemptParams) (Blo
 	var i BlockAttemptRow
 	err := row.Scan(
 		&i.AttemptID,
+		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.TicketID,
 		&i.AttemptStatus,
 		&i.TicketStatus,
@@ -144,6 +150,8 @@ cancelled_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -159,6 +167,8 @@ type CancelAttemptParams struct {
 
 type CancelAttemptRow struct {
 	AttemptID     pgtype.UUID `db:"attempt_id" json:"attempt_id"`
+	WorkspaceID   pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID     pgtype.UUID `db:"project_id" json:"project_id"`
 	TicketID      pgtype.UUID `db:"ticket_id" json:"ticket_id"`
 	AttemptStatus string      `db:"attempt_status" json:"attempt_status"`
 	TicketStatus  string      `db:"ticket_status" json:"ticket_status"`
@@ -169,6 +179,8 @@ func (q *Queries) CancelAttempt(ctx context.Context, arg CancelAttemptParams) (C
 	var i CancelAttemptRow
 	err := row.Scan(
 		&i.AttemptID,
+		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.TicketID,
 		&i.AttemptStatus,
 		&i.TicketStatus,
@@ -226,6 +238,8 @@ completed_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -242,6 +256,8 @@ type CompleteAttemptParams struct {
 
 type CompleteAttemptRow struct {
 	AttemptID     pgtype.UUID `db:"attempt_id" json:"attempt_id"`
+	WorkspaceID   pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID     pgtype.UUID `db:"project_id" json:"project_id"`
 	TicketID      pgtype.UUID `db:"ticket_id" json:"ticket_id"`
 	AttemptStatus string      `db:"attempt_status" json:"attempt_status"`
 	TicketStatus  string      `db:"ticket_status" json:"ticket_status"`
@@ -257,6 +273,8 @@ func (q *Queries) CompleteAttempt(ctx context.Context, arg CompleteAttemptParams
 	var i CompleteAttemptRow
 	err := row.Scan(
 		&i.AttemptID,
+		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.TicketID,
 		&i.AttemptStatus,
 		&i.TicketStatus,
@@ -317,6 +335,8 @@ expired_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -331,6 +351,8 @@ type ExpireAttemptParams struct {
 
 type ExpireAttemptRow struct {
 	AttemptID     pgtype.UUID `db:"attempt_id" json:"attempt_id"`
+	WorkspaceID   pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID     pgtype.UUID `db:"project_id" json:"project_id"`
 	TicketID      pgtype.UUID `db:"ticket_id" json:"ticket_id"`
 	AttemptStatus string      `db:"attempt_status" json:"attempt_status"`
 	TicketStatus  string      `db:"ticket_status" json:"ticket_status"`
@@ -341,6 +363,8 @@ func (q *Queries) ExpireAttempt(ctx context.Context, arg ExpireAttemptParams) (E
 	var i ExpireAttemptRow
 	err := row.Scan(
 		&i.AttemptID,
+		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.TicketID,
 		&i.AttemptStatus,
 		&i.TicketStatus,
@@ -410,6 +434,8 @@ failed_event AS (
 )
 SELECT
     a.id AS attempt_id,
+    a.workspace_id,
+    a.project_id,
     a.ticket_id,
     a.status AS attempt_status,
     t.status AS ticket_status
@@ -427,6 +453,8 @@ type FailAttemptParams struct {
 
 type FailAttemptRow struct {
 	AttemptID     pgtype.UUID `db:"attempt_id" json:"attempt_id"`
+	WorkspaceID   pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID     pgtype.UUID `db:"project_id" json:"project_id"`
 	TicketID      pgtype.UUID `db:"ticket_id" json:"ticket_id"`
 	AttemptStatus string      `db:"attempt_status" json:"attempt_status"`
 	TicketStatus  string      `db:"ticket_status" json:"ticket_status"`
@@ -443,6 +471,8 @@ func (q *Queries) FailAttempt(ctx context.Context, arg FailAttemptParams) (FailA
 	var i FailAttemptRow
 	err := row.Scan(
 		&i.AttemptID,
+		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.TicketID,
 		&i.AttemptStatus,
 		&i.TicketStatus,

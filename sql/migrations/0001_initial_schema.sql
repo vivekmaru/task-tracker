@@ -214,6 +214,7 @@ CREATE TABLE attempt_metrics (
     agent_success_score numeric(5, 4),
     human_rating integer,
     created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (attempt_id),
     CHECK (tokens_in >= 0),
     CHECK (tokens_out >= 0),
     CHECK (cost_usd >= 0),
