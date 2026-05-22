@@ -67,7 +67,7 @@ Equivalent config file:
 
 Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Keep it `false` for direct plain HTTP access.
 
-Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be opened from the human `/artifacts/{id}` route when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user's home directory. `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` also copy filesystem proofs into that root before registering them.
+Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be inspected from the human `/artifacts/{id}` route and opened from `/artifacts/{id}/content` when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user's home directory. `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` also copy filesystem proofs into that root before registering them.
 
 Pass it with:
 
@@ -219,14 +219,16 @@ Open these URLs:
 - `http://127.0.0.1:3017/workspaces`
 - `http://127.0.0.1:3017/tickets?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID`
 - `http://127.0.0.1:3017/search?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID&q=smoke`
+- `http://127.0.0.1:3017/artifacts?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID`
 - `http://127.0.0.1:3017/artifacts/$ARTIFACT_ID`
+- `http://127.0.0.1:3017/artifacts/$ARTIFACT_ID/content`
 
 Expected results:
 
 - Login redirects to `/workspaces` without console errors.
 - The scoped ticket queue shows the completed smoke ticket.
 - Search finds the smoke ticket.
-- The artifact route serves `smoke proof ok`.
+- The artifact detail route shows metadata, and the content route serves `smoke proof ok`.
 - Analytics summary reports one attempt with the token metrics above.
 
 ## Runtime Commands
@@ -246,7 +248,8 @@ Human web routes are stable inspection links:
 - `/tickets?workspace_id={workspace_id}&project_id={project_id}` opens a scoped ticket queue.
 - `/tickets/{ticket_id}` opens ticket detail.
 - `/attempts/{attempt_id}` opens attempt detail.
-- `/artifacts/{artifact_id}` streams locally stored artifact content when the artifact uses the local backend, and otherwise opens artifact metadata.
+- `/artifacts?workspace_id={workspace_id}&project_id={project_id}` lists artifacts for a workspace/project scope, with optional `ticket_id` filtering.
+- `/artifacts/{artifact_id}` shows artifact metadata and open/delete actions. `/artifacts/{artifact_id}/content` streams locally stored artifact content. Local artifact deletion removes the stored object before removing metadata; remote artifact deletion is intentionally constrained until Forge owns safe remote object cleanup.
 - `/search?workspace_id={workspace_id}&project_id={project_id}&q={query}` searches ticket execution context.
 - `/proposed/{ticket_id}` opens a proposed follow-up inspection view.
 

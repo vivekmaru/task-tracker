@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -73,9 +74,127 @@ func TestRegisterArtifactValidation(t *testing.T) {
 	}
 }
 
+func TestListArtifactsRequiresWorkspaceProjectScope(t *testing.T) {
+	service := NewArtifactService(&fakeArtifactStore{})
+
+	_, err := service.ListArtifacts(context.Background(), ListArtifactsRequest{})
+
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !containsProblem(validationErr.Problems, "workspace_id is required") || !containsProblem(validationErr.Problems, "project_id is required") {
+		t.Fatalf("expected workspace/project validation, got %#v", validationErr.Problems)
+	}
+}
+
+func TestListArtifactsPassesScopeAndDefaultsLimit(t *testing.T) {
+	store := &fakeArtifactStore{}
+	service := NewArtifactService(store)
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	ticketID := testUUID(3)
+
+	_, err := service.ListArtifacts(context.Background(), ListArtifactsRequest{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		TicketID:    ticketID,
+	})
+
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if store.listScopeParams.WorkspaceID != workspaceID || store.listScopeParams.ProjectID != projectID || store.listScopeParams.TicketID != ticketID {
+		t.Fatalf("unexpected list scope params: %#v", store.listScopeParams)
+	}
+	if store.listScopeParams.LimitCount != 100 || store.listScopeParams.OffsetCount != 0 {
+		t.Fatalf("expected default pagination, got %#v", store.listScopeParams)
+	}
+}
+
+func TestDeleteArtifactRejectsNonLocalStorage(t *testing.T) {
+	store := &fakeArtifactStore{
+		artifact: db.Artifact{
+			ID:             testUUID(7),
+			StorageBackend: ArtifactStorageS3,
+			Url:            "https://example.test/proof.log",
+		},
+	}
+	service := NewArtifactService(store)
+
+	_, err := service.DeleteLocalArtifact(context.Background(), testUUID(7), func(string) error {
+		t.Fatal("cleanup should not run for non-local artifacts")
+		return nil
+	})
+
+	if !errors.Is(err, ErrArtifactDeleteUnsupported) {
+		t.Fatalf("expected unsupported delete error, got %v", err)
+	}
+	if store.deletedID.Valid {
+		t.Fatalf("non-local delete should not remove metadata, got %#v", store.deletedID)
+	}
+}
+
+func TestDeleteArtifactCleansLocalObjectBeforeMetadata(t *testing.T) {
+	artifactID := testUUID(7)
+	store := &fakeArtifactStore{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			StorageBackend: ArtifactStorageLocal,
+			Url:            "local://artifacts/proof.log",
+		},
+	}
+	service := NewArtifactService(store)
+	var cleanedURL string
+
+	artifact, err := service.DeleteLocalArtifact(context.Background(), artifactID, func(rawURL string) error {
+		cleanedURL = rawURL
+		if store.deletedID.Valid {
+			t.Fatal("metadata should not be deleted before local object cleanup")
+		}
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("delete local artifact: %v", err)
+	}
+	if artifact.ID != artifactID || cleanedURL != "local://artifacts/proof.log" {
+		t.Fatalf("unexpected delete result artifact=%#v cleaned=%q", artifact, cleanedURL)
+	}
+	if store.deletedID != artifactID {
+		t.Fatalf("expected metadata deletion after cleanup, got %#v", store.deletedID)
+	}
+}
+
+func TestDeleteArtifactKeepsMetadataWhenCleanupFails(t *testing.T) {
+	artifactID := testUUID(7)
+	store := &fakeArtifactStore{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			StorageBackend: ArtifactStorageLocal,
+			Url:            "local://artifacts/proof.log",
+		},
+	}
+	service := NewArtifactService(store)
+
+	_, err := service.DeleteLocalArtifact(context.Background(), artifactID, func(string) error {
+		return errors.New("permission denied")
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "remove local artifact") {
+		t.Fatalf("expected cleanup error, got %v", err)
+	}
+	if store.deletedID.Valid {
+		t.Fatalf("metadata should remain when cleanup fails, got %#v", store.deletedID)
+	}
+}
+
 type fakeArtifactStore struct {
-	createParams []db.CreateArtifactParams
-	created      db.Artifact
+	createParams    []db.CreateArtifactParams
+	created         db.Artifact
+	artifact        db.Artifact
+	listScopeParams db.ListArtifactsByScopeParams
+	deletedID       pgtype.UUID
 }
 
 func (s *fakeArtifactStore) CreateArtifact(_ context.Context, params db.CreateArtifactParams) (db.Artifact, error) {
@@ -108,5 +227,15 @@ func (s *fakeArtifactStore) ListArtifactsByAttempt(context.Context, pgtype.UUID)
 }
 
 func (s *fakeArtifactStore) GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
-	return db.Artifact{}, nil
+	return s.artifact, nil
+}
+
+func (s *fakeArtifactStore) ListArtifactsByScope(_ context.Context, params db.ListArtifactsByScopeParams) ([]db.Artifact, error) {
+	s.listScopeParams = params
+	return nil, nil
+}
+
+func (s *fakeArtifactStore) DeleteArtifact(_ context.Context, id pgtype.UUID) error {
+	s.deletedID = id
+	return nil
 }
