@@ -1145,7 +1145,7 @@ func storeFilesystemProof(ctx context.Context, rt RuntimeHandle, proof string) (
 	info, err := os.Stat(proof)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return storage.StoredArtifact{}, false, nil
+			return storage.StoredArtifact{}, false, cliArgumentError{err: fmt.Errorf("--proof file does not exist: %q", proof)}
 		}
 		return storage.StoredArtifact{}, false, fmt.Errorf("inspect proof file: %w", err)
 	}

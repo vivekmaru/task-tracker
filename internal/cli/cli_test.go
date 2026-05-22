@@ -1252,6 +1252,31 @@ func TestRunCodexCompleteUploadsFilesystemProofs(t *testing.T) {
 	}
 }
 
+func TestRunCodexCompleteRejectsMissingFilesystemProof(t *testing.T) {
+	missingProof := filepath.Join(t.TempDir(), "go-test-output.txt")
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Done",
+		"--proof", missingProof,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.completeCalls != 0 || fake.storeLocalArtifactPath != "" {
+		t.Fatalf("missing proof should stop before transition/upload, completeCalls=%d storePath=%q", fake.completeCalls, fake.storeLocalArtifactPath)
+	}
+	if !strings.Contains(stderr.String(), "--proof file does not exist") {
+		t.Fatalf("expected missing proof error, got %q", stderr.String())
+	}
+}
+
 func TestRunCodexCompleteRejectsProofScopeMismatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
