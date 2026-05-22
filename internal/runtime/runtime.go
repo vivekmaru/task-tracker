@@ -22,6 +22,7 @@ type Runtime struct {
 	Artifacts    *services.ArtifactService
 	Search       *services.SearchService
 	Capabilities *services.CapabilityService
+	Analytics    *services.AnalyticsService
 	Maintenance  *jobs.MaintenanceWorker
 }
 
@@ -49,6 +50,7 @@ func New(queries *db.Queries) *Runtime {
 		Artifacts:    services.NewArtifactService(queries),
 		Search:       services.NewSearchService(queries),
 		Capabilities: services.NewCapabilityService(queries),
+		Analytics:    services.NewAnalyticsService(queries),
 		Maintenance:  jobs.NewMaintenanceWorker(queries),
 	}
 }
@@ -253,6 +255,26 @@ func (r *Runtime) GetArtifact(ctx context.Context, id pgtype.UUID) (db.Artifact,
 	return r.Artifacts.GetArtifact(ctx, id)
 }
 
+func (r *Runtime) CreateWorkspace(ctx context.Context, name string) (db.Workspace, error) {
+	return r.Queries.CreateWorkspace(ctx, name)
+}
+
+func (r *Runtime) GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error) {
+	return r.Queries.GetWorkspace(ctx, id)
+}
+
+func (r *Runtime) ListWorkspaces(ctx context.Context) ([]db.Workspace, error) {
+	return r.Queries.ListWorkspaces(ctx)
+}
+
+func (r *Runtime) CreateProject(ctx context.Context, workspaceID pgtype.UUID, name string) (db.Project, error) {
+	return r.Queries.CreateProject(ctx, db.CreateProjectParams{WorkspaceID: workspaceID, Name: name})
+}
+
+func (r *Runtime) ListProjectsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]db.Project, error) {
+	return r.Queries.ListProjectsByWorkspace(ctx, workspaceID)
+}
+
 func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
 	return r.Capabilities.Register(ctx, req)
 }
@@ -263,6 +285,18 @@ func (r *Runtime) DecomposeTicket(ctx context.Context, req services.DecomposeTic
 
 func (r *Runtime) GetCapabilities(ctx context.Context, req services.GetCapabilitiesRequest) (db.AgentCapability, error) {
 	return r.Capabilities.Get(ctx, req)
+}
+
+func (r *Runtime) AnalyticsSummary(ctx context.Context, filter services.AnalyticsFilter) (services.AnalyticsSummary, error) {
+	return r.Analytics.Summary(ctx, filter)
+}
+
+func (r *Runtime) AnalyticsByModel(ctx context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	return r.Analytics.ByModel(ctx, filter)
+}
+
+func (r *Runtime) AnalyticsByHarness(ctx context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	return r.Analytics.ByHarness(ctx, filter)
 }
 
 func (r *Runtime) ListCapabilities(ctx context.Context, req services.ListCapabilitiesRequest) ([]db.AgentCapability, error) {

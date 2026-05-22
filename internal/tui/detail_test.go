@@ -75,6 +75,7 @@ func TestTicketDetailModelRendersDenseInspectionSurface(t *testing.T) {
 		"Copy",
 		"Ticket ID: 00000000-0000-0000-0000-000000000011",
 		"forge get --id 00000000-0000-0000-0000-000000000011",
+		"Web ticket: /tickets/00000000-0000-0000-0000-000000000011",
 		"b back",
 	} {
 		if !strings.Contains(view, want) {
@@ -85,6 +86,19 @@ func TestTicketDetailModelRendersDenseInspectionSurface(t *testing.T) {
 		if strings.Contains(view, forbidden) {
 			t.Fatalf("detail view should avoid board-management language %q, got:\n%s", forbidden, view)
 		}
+	}
+}
+
+func TestTicketDetailModelRendersProposedFollowUpLink(t *testing.T) {
+	ticket := detailTicketFixture()
+	ticket.Status = services.TicketStatusBacklog
+	ticket.Type = services.TicketTypeFollowUp
+	ticket.CreatedBy = services.ActorAgent
+
+	view := NewTicketDetailModelWithTimeline(ticket, TicketTimeline{}).View()
+
+	if !strings.Contains(view, "Web proposed: /proposed/00000000-0000-0000-0000-000000000011") {
+		t.Fatalf("expected proposed follow-up link, got:\n%s", view)
 	}
 }
 
@@ -178,7 +192,9 @@ func TestTicketDetailModelRendersTimelineSectionsInOrderAndStates(t *testing.T) 
 		"Proof artifacts",
 		"proof log test-output.txt",
 		"file:///tmp/test-output.txt",
+		"Artifact link: /artifacts/00000000-0000-0000-0000-000000000079",
 		"debug trace trace.json",
+		"Attempt link: /attempts/00000000-0000-0000-0000-00000000005b",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected timeline view to contain %q, got:\n%s", want, view)

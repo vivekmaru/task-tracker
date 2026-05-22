@@ -22,6 +22,7 @@ type AttemptStore interface {
 	BlockAttempt(context.Context, db.BlockAttemptParams) (db.BlockAttemptRow, error)
 	CancelAttempt(context.Context, db.CancelAttemptParams) (db.CancelAttemptRow, error)
 	ExpireAttempt(context.Context, db.ExpireAttemptParams) (db.ExpireAttemptRow, error)
+	CreateAttemptMetrics(context.Context, db.CreateAttemptMetricsParams) (db.AttemptMetric, error)
 }
 
 var _ AttemptStore = (*db.Queries)(nil)
@@ -74,6 +75,7 @@ type CompleteAttemptRequest struct {
 	AttemptID    pgtype.UUID
 	Output       map[string]any
 	OutputSchema string
+	Metrics      *AttemptMetricsRequest
 }
 
 type FailAttemptRequest struct {
@@ -81,6 +83,7 @@ type FailAttemptRequest struct {
 	FailureReason   string
 	FailureCategory string
 	Output          map[string]any
+	Metrics         *AttemptMetricsRequest
 }
 
 type BlockAttemptRequest struct {
@@ -88,6 +91,7 @@ type BlockAttemptRequest struct {
 	BlockerReason   string
 	FailureCategory string
 	Blocker         map[string]any
+	Metrics         *AttemptMetricsRequest
 }
 
 type CancelAttemptRequest struct {
@@ -104,6 +108,14 @@ type AttemptTransitionResult struct {
 	TicketID      pgtype.UUID
 	AttemptStatus string
 	TicketStatus  string
+}
+
+type AttemptMetricsRequest struct {
+	TokensIn        int64
+	TokensOut       int64
+	CostUSD         float64
+	DurationSeconds float64
+	RetryCount      int32
 }
 
 func (s *AttemptService) Heartbeat(ctx context.Context, req HeartbeatRequest) (db.Attempt, error) {
@@ -159,6 +171,9 @@ func (s *AttemptService) Complete(ctx context.Context, req CompleteAttemptReques
 	if problems := validateAttemptID(req.AttemptID); len(problems) > 0 {
 		return AttemptTransitionResult{}, ValidationError{Problems: problems}
 	}
+	if problems := validateAttemptMetrics(req.Metrics); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
 	output, err := encodeJSONObject(req.Output)
 	if err != nil {
 		return AttemptTransitionResult{}, fmt.Errorf("marshal completion output: %w", err)
@@ -173,6 +188,9 @@ func (s *AttemptService) Complete(ctx context.Context, req CompleteAttemptReques
 	if err != nil {
 		return AttemptTransitionResult{}, transitionError("complete attempt", err)
 	}
+	if err := s.recordAttemptMetrics(ctx, row.AttemptID, row.WorkspaceID, row.ProjectID, req.Metrics); err != nil {
+		return AttemptTransitionResult{}, err
+	}
 	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
 }
 
@@ -180,6 +198,9 @@ func (s *AttemptService) Fail(ctx context.Context, req FailAttemptRequest) (Atte
 	req.FailureReason = strings.TrimSpace(req.FailureReason)
 	req.FailureCategory = strings.TrimSpace(req.FailureCategory)
 	if problems := validateFailAttemptRequest(req); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
+	if problems := validateAttemptMetrics(req.Metrics); len(problems) > 0 {
 		return AttemptTransitionResult{}, ValidationError{Problems: problems}
 	}
 	output, err := encodeJSONObject(req.Output)
@@ -197,6 +218,9 @@ func (s *AttemptService) Fail(ctx context.Context, req FailAttemptRequest) (Atte
 	if err != nil {
 		return AttemptTransitionResult{}, transitionError("fail attempt", err)
 	}
+	if err := s.recordAttemptMetrics(ctx, row.AttemptID, row.WorkspaceID, row.ProjectID, req.Metrics); err != nil {
+		return AttemptTransitionResult{}, err
+	}
 	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
 }
 
@@ -204,6 +228,9 @@ func (s *AttemptService) Block(ctx context.Context, req BlockAttemptRequest) (At
 	req.BlockerReason = strings.TrimSpace(req.BlockerReason)
 	req.FailureCategory = strings.TrimSpace(req.FailureCategory)
 	if problems := validateBlockAttemptRequest(req); len(problems) > 0 {
+		return AttemptTransitionResult{}, ValidationError{Problems: problems}
+	}
+	if problems := validateAttemptMetrics(req.Metrics); len(problems) > 0 {
 		return AttemptTransitionResult{}, ValidationError{Problems: problems}
 	}
 	blocker, err := encodeJSONObject(req.Blocker)
@@ -221,7 +248,30 @@ func (s *AttemptService) Block(ctx context.Context, req BlockAttemptRequest) (At
 	if err != nil {
 		return AttemptTransitionResult{}, transitionError("block attempt", err)
 	}
+	if err := s.recordAttemptMetrics(ctx, row.AttemptID, row.WorkspaceID, row.ProjectID, req.Metrics); err != nil {
+		return AttemptTransitionResult{}, err
+	}
 	return transitionResult(row.AttemptID, row.TicketID, row.AttemptStatus, row.TicketStatus), nil
+}
+
+func (s *AttemptService) recordAttemptMetrics(ctx context.Context, attemptID, workspaceID, projectID pgtype.UUID, metrics *AttemptMetricsRequest) error {
+	if metrics == nil {
+		return nil
+	}
+	_, err := s.store.CreateAttemptMetrics(ctx, db.CreateAttemptMetricsParams{
+		AttemptID:       attemptID,
+		WorkspaceID:     workspaceID,
+		ProjectID:       projectID,
+		TokensIn:        metrics.TokensIn,
+		TokensOut:       metrics.TokensOut,
+		CostUsd:         numeric(metrics.CostUSD),
+		DurationSeconds: numeric(metrics.DurationSeconds),
+		RetryCount:      metrics.RetryCount,
+	})
+	if err != nil {
+		return fmt.Errorf("record attempt metrics: %w", err)
+	}
+	return nil
 }
 
 func (s *AttemptService) Cancel(ctx context.Context, req CancelAttemptRequest) (AttemptTransitionResult, error) {

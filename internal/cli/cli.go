@@ -22,6 +22,7 @@ import (
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 	"github.com/vivek/agent-task-tracker/internal/services"
 	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
+	"github.com/vivek/agent-task-tracker/internal/web"
 )
 
 type command struct {
@@ -46,6 +47,7 @@ var commands = []command{
 	{"attach", "Attach or register proof artifacts."},
 	{"list", "List tickets."},
 	{"get", "Show a ticket or attempt."},
+	{"analytics", "Show basic attempt metrics and analytics."},
 	{"codex", "Codex harness convenience commands."},
 }
 
@@ -79,8 +81,18 @@ type RuntimeHandle interface {
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
+	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
+	ListWorkspaces(context.Context) ([]db.Workspace, error)
+	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
+	CreateWorkspace(context.Context, string) (db.Workspace, error)
+	ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error)
+	CreateProject(context.Context, pgtype.UUID, string) (db.Project, error)
 	DecomposeTicket(context.Context, services.DecomposeTicketRequest) (services.DecomposeTicketResult, error)
 	RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error)
+	AnalyticsSummary(context.Context, services.AnalyticsFilter) (services.AnalyticsSummary, error)
+	AnalyticsByModel(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByHarness(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 }
 
 type Dependencies struct {
@@ -159,6 +171,8 @@ func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, dep
 		return runCancelCommand(ctx, args, stdout, stderr, deps)
 	case "attach":
 		return runAttachCommand(ctx, args, stdout, stderr, deps)
+	case "analytics":
+		return runAnalyticsCommand(ctx, args, stdout, stderr, deps)
 	}
 	fmt.Fprintf(stderr, "command %q is not implemented yet\n", name)
 	return 1
@@ -181,7 +195,7 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 
 	switch name {
 	case "tui":
-		if err := cfg.ValidateServer(); err != nil {
+		if err := cfg.ValidateRuntime(); err != nil {
 			fmt.Fprintf(stderr, "tui configuration error: %v\n", err)
 			return 2
 		}
@@ -232,12 +246,12 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			deps.ServeHTTP = serveHTTP
 		}
 		fmt.Fprintf(stdout, "server listening on %s\n", cfg.HTTPAddr)
-		if err := deps.ServeHTTP(context.Background(), cfg.HTTPAddr, api.NewRouterWithRuntime(rt)); err != nil {
+		if err := deps.ServeHTTP(context.Background(), cfg.HTTPAddr, api.NewRouterWithRuntimeAndAuth(rt, webAuthOptions(cfg))); err != nil {
 			fmt.Fprintf(stderr, "server HTTP error: %v\n", err)
 			return 1
 		}
 	case "mcp":
-		if err := cfg.ValidateServer(); err != nil {
+		if err := cfg.ValidateRuntime(); err != nil {
 			fmt.Fprintf(stderr, "mcp configuration error: %v\n", err)
 			return 2
 		}
@@ -267,6 +281,13 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		fmt.Fprintln(stdout, "worker runtime configuration ok; River worker loop not implemented yet")
 	}
 	return 0
+}
+
+func webAuthOptions(cfg config.Config) web.AuthOptions {
+	return web.AuthOptions{
+		AdminToken:   cfg.AdminToken,
+		SecureCookie: cfg.AuthCookieSecure,
+	}
 }
 
 func openRuntime(ctx context.Context, cfg config.Config) (RuntimeHandle, error) {
@@ -537,6 +558,8 @@ func runCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	flags := newFlagSet("complete", stderr)
 	var opts commandOptions
 	opts.bind(flags)
+	var metrics attemptMetricsFlags
+	metrics.bind(flags)
 	var attemptID, summary string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&summary, "summary", "", "output summary")
@@ -551,7 +574,12 @@ func runCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer rt.Close()
-	result, err := rt.Complete(ctx, services.CompleteAttemptRequest{AttemptID: mustUUID(attemptID), Output: map[string]any{"summary": summary}})
+	metricsReq, err := metrics.request(flags)
+	if err != nil {
+		fmt.Fprintf(stderr, "complete argument error: %v\n", err)
+		return 2
+	}
+	result, err := rt.Complete(ctx, services.CompleteAttemptRequest{AttemptID: mustUUID(attemptID), Output: map[string]any{"summary": summary}, Metrics: metricsReq})
 	if err != nil {
 		fmt.Fprintf(stderr, "complete error: %v\n", err)
 		return 1
@@ -563,6 +591,8 @@ func runFailCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags := newFlagSet("fail", stderr)
 	var opts commandOptions
 	opts.bind(flags)
+	var metrics attemptMetricsFlags
+	metrics.bind(flags)
 	var attemptID, reason, category string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "failure reason")
@@ -573,12 +603,17 @@ func runFailCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	if attemptID == "" && flags.NArg() > 0 {
 		attemptID = flags.Arg(0)
 	}
+	metricsReq, err := metrics.request(flags)
+	if err != nil {
+		fmt.Fprintf(stderr, "fail argument error: %v\n", err)
+		return 2
+	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
 		return 1
 	}
 	defer rt.Close()
-	result, err := rt.Fail(ctx, services.FailAttemptRequest{AttemptID: mustUUID(attemptID), FailureReason: reason, FailureCategory: category})
+	result, err := rt.Fail(ctx, services.FailAttemptRequest{AttemptID: mustUUID(attemptID), FailureReason: reason, FailureCategory: category, Metrics: metricsReq})
 	if err != nil {
 		fmt.Fprintf(stderr, "fail error: %v\n", err)
 		return 1
@@ -590,6 +625,8 @@ func runBlockCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	flags := newFlagSet("block", stderr)
 	var opts commandOptions
 	opts.bind(flags)
+	var metrics attemptMetricsFlags
+	metrics.bind(flags)
 	var attemptID, reason, category string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "blocker reason")
@@ -599,6 +636,11 @@ func runBlockCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	if attemptID == "" && flags.NArg() > 0 {
 		attemptID = flags.Arg(0)
+	}
+	metricsReq, err := metrics.request(flags)
+	if err != nil {
+		fmt.Fprintf(stderr, "block argument error: %v\n", err)
+		return 2
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
@@ -610,6 +652,7 @@ func runBlockCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		BlockerReason:   reason,
 		FailureCategory: category,
 		Blocker:         map[string]any{"reason": reason},
+		Metrics:         metricsReq,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "block error: %v\n", err)
@@ -687,6 +730,72 @@ func runAttachCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	return writeJSON(stdout, stderr, artifactPayload(artifact))
+}
+
+func runAnalyticsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printAnalyticsHelp(stdout)
+		return 0
+	}
+	subcommand := args[0]
+	flags := newFlagSet("analytics "+subcommand, stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID string
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	if !parseFlags(flags, args[1:]) {
+		return 2
+	}
+	filter, err := analyticsFilterFromFlags(workspaceID, projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "analytics %s argument error: %v\n", subcommand, err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	switch subcommand {
+	case "summary":
+		summary, err := rt.AnalyticsSummary(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(stderr, "analytics summary error: %v\n", err)
+			return 1
+		}
+		if opts.JSON {
+			return writeJSON(stdout, stderr, map[string]any{"summary": summary})
+		}
+		writeAnalyticsSummary(stdout, summary)
+		return 0
+	case "by-model":
+		groups, err := rt.AnalyticsByModel(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(stderr, "analytics by-model error: %v\n", err)
+			return 1
+		}
+		if opts.JSON {
+			return writeJSON(stdout, stderr, map[string]any{"groups": groups})
+		}
+		writeAnalyticsGroups(stdout, "Model", groups)
+		return 0
+	case "by-harness":
+		groups, err := rt.AnalyticsByHarness(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(stderr, "analytics by-harness error: %v\n", err)
+			return 1
+		}
+		if opts.JSON {
+			return writeJSON(stdout, stderr, map[string]any{"groups": groups})
+		}
+		writeAnalyticsGroups(stdout, "Harness", groups)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown analytics command %q\n\n", subcommand)
+		printAnalyticsHelp(stderr)
+		return 2
+	}
 }
 
 func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -834,6 +943,8 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 	opts.bind(flags)
 	var proof codexProofFlags
 	proof.bind(flags)
+	var metrics attemptMetricsFlags
+	metrics.bind(flags)
 	var attemptID, summary string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&summary, "summary", "", "output summary")
@@ -851,6 +962,11 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 		return 2
 	}
 	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex complete argument error: %v\n", err)
+		return 2
+	}
+	metricsReq, err := metrics.request(flags)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex complete argument error: %v\n", err)
 		return 2
@@ -875,6 +991,7 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 			"summary": summary,
 			"proofs":  []string(proof.Proofs),
 		},
+		Metrics: metricsReq,
 	}, artifactReqs)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex complete error: %v\n", err)
@@ -960,6 +1077,8 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 	opts.bind(flags)
 	var proof codexProofFlags
 	proof.bind(flags)
+	var metrics attemptMetricsFlags
+	metrics.bind(flags)
 	var attemptID, reason, category string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "blocker reason")
@@ -978,6 +1097,11 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 		return 2
 	}
 	attemptUUID, err := requiredUUIDFlag("--attempt-id", attemptID)
+	if err != nil {
+		fmt.Fprintf(stderr, "codex block argument error: %v\n", err)
+		return 2
+	}
+	metricsReq, err := metrics.request(flags)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex block argument error: %v\n", err)
 		return 2
@@ -1004,6 +1128,7 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 			"reason": reason,
 			"proofs": []string(proof.Proofs),
 		},
+		Metrics: metricsReq,
 	}, artifactReqs)
 	if err != nil {
 		fmt.Fprintf(stderr, "codex block error: %v\n", err)
@@ -1261,6 +1386,67 @@ func (o *commandOptions) bind(flags *flag.FlagSet) {
 	flags.BoolVar(&o.JSON, "json", false, "write JSON output")
 }
 
+type attemptMetricsFlags struct {
+	TokensIn  int64
+	TokensOut int64
+	CostUSD   float64
+	Duration  string
+	Retries   int
+}
+
+func (f *attemptMetricsFlags) bind(flags *flag.FlagSet) {
+	flags.Int64Var(&f.TokensIn, "tokens-in", 0, "input tokens used by the attempt")
+	flags.Int64Var(&f.TokensOut, "tokens-out", 0, "output tokens produced by the attempt")
+	flags.Float64Var(&f.CostUSD, "cost-usd", 0, "attempt cost in USD")
+	flags.StringVar(&f.Duration, "duration", "", "attempt duration, for example 95s or 1m35s")
+	flags.IntVar(&f.Retries, "retries", 0, "retry count used by the harness")
+}
+
+func (f attemptMetricsFlags) request(flags *flag.FlagSet) (*services.AttemptMetricsRequest, error) {
+	seen := visitedFlags(flags)
+	if !seen["tokens-in"] && !seen["tokens-out"] && !seen["cost-usd"] && !seen["duration"] && !seen["retries"] {
+		return nil, nil
+	}
+	if f.TokensIn < 0 {
+		return nil, fmt.Errorf("--tokens-in must be non-negative")
+	}
+	if f.TokensOut < 0 {
+		return nil, fmt.Errorf("--tokens-out must be non-negative")
+	}
+	if f.CostUSD < 0 || math.IsNaN(f.CostUSD) || math.IsInf(f.CostUSD, 0) {
+		return nil, fmt.Errorf("--cost-usd must be a finite non-negative number")
+	}
+	if f.Retries < 0 || f.Retries > math.MaxInt32 {
+		return nil, fmt.Errorf("--retries must be between 0 and %d", math.MaxInt32)
+	}
+	durationSeconds := 0.0
+	if strings.TrimSpace(f.Duration) != "" {
+		duration, err := time.ParseDuration(f.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("--duration must be a duration like 95s or 1m35s: %w", err)
+		}
+		if duration < 0 {
+			return nil, fmt.Errorf("--duration must be non-negative")
+		}
+		durationSeconds = duration.Seconds()
+	}
+	return &services.AttemptMetricsRequest{
+		TokensIn:        f.TokensIn,
+		TokensOut:       f.TokensOut,
+		CostUSD:         f.CostUSD,
+		DurationSeconds: durationSeconds,
+		RetryCount:      int32(f.Retries),
+	}, nil
+}
+
+func visitedFlags(flags *flag.FlagSet) map[string]bool {
+	seen := make(map[string]bool)
+	flags.Visit(func(flag *flag.Flag) {
+		seen[flag.Name] = true
+	})
+	return seen
+}
+
 type createTicketFlags struct {
 	WorkspaceID string
 	ProjectID   string
@@ -1367,6 +1553,18 @@ func optionalUUID(value string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 	return id, nil
+}
+
+func analyticsFilterFromFlags(workspaceID, projectID string) (services.AnalyticsFilter, error) {
+	workspaceUUID, err := optionalUUID(workspaceID)
+	if err != nil {
+		return services.AnalyticsFilter{}, fmt.Errorf("--workspace-id must be a UUID: %w", err)
+	}
+	projectUUID, err := optionalUUID(projectID)
+	if err != nil {
+		return services.AnalyticsFilter{}, fmt.Errorf("--project-id must be a UUID: %w", err)
+	}
+	return services.AnalyticsFilter{WorkspaceID: workspaceUUID, ProjectID: projectUUID}, nil
 }
 
 func requiredUUIDFlag(name, value string) (pgtype.UUID, error) {
@@ -1482,6 +1680,34 @@ func artifactPayloads(artifacts []db.Artifact) []map[string]any {
 	return payloads
 }
 
+func writeAnalyticsSummary(stdout io.Writer, summary services.AnalyticsSummary) {
+	fmt.Fprintf(stdout, "Attempts: %d\n", summary.AttemptCount)
+	fmt.Fprintf(stdout, "Succeeded: %d\n", summary.SucceededAttempts)
+	fmt.Fprintf(stdout, "Failed: %d\n", summary.FailedAttempts)
+	fmt.Fprintf(stdout, "Blocked: %d\n", summary.BlockedAttempts)
+	fmt.Fprintf(stdout, "Tokens: %d\n", summary.TotalTokensIn+summary.TotalTokensOut)
+	fmt.Fprintf(stdout, "Cost: $%.6f\n", summary.TotalCostUSD)
+	fmt.Fprintf(stdout, "Duration: %.3fs\n", summary.TotalDurationSeconds)
+	fmt.Fprintf(stdout, "Retries: %d\n", summary.TotalRetries)
+	fmt.Fprintf(stdout, "Attempts with metrics: %d\n", summary.AttemptsWithMetrics)
+}
+
+func writeAnalyticsGroups(stdout io.Writer, label string, groups []services.AnalyticsGroup) {
+	fmt.Fprintf(stdout, "%s\tAttempts\tSucceeded\tCost\tTokens\tRetries\n", label)
+	for _, group := range groups {
+		fmt.Fprintf(
+			stdout,
+			"%s\t%d\t%d\t$%.6f\t%d\t%d\n",
+			group.Group,
+			group.AttemptCount,
+			group.SucceededAttempts,
+			group.TotalCostUSD,
+			group.TotalTokensIn+group.TotalTokensOut,
+			group.TotalRetries,
+		)
+	}
+}
+
 func proofName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1524,7 +1750,7 @@ func isKnownCommand(name string) bool {
 
 func isRuntimeCommand(name string) bool {
 	switch name {
-	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get":
+	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "analytics":
 		return true
 	default:
 		return false
@@ -1568,6 +1794,11 @@ func printCodexHelp(w io.Writer) {
 	fmt.Fprintln(w, "  complete    Complete an attempt and attach proof artifacts")
 	fmt.Fprintln(w, "  follow-up   Create structured follow-up from an attempt")
 	fmt.Fprintln(w, "  block       Mark an attempt blocked with captured context")
+}
+
+func printAnalyticsHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge analytics <summary|by-model|by-harness> [flags]")
 }
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
+	"github.com/vivek/agent-task-tracker/internal/services"
 )
 
 type TicketDetailModel struct {
@@ -99,6 +100,14 @@ func (m TicketDetailModel) View() string {
 	b.WriteString("forge get --id ")
 	b.WriteString(ticketID)
 	b.WriteString("\n")
+	b.WriteString("Web ticket: /tickets/")
+	b.WriteString(ticketID)
+	b.WriteString("\n")
+	if m.ticket.CreatedBy == services.ActorAgent && m.ticket.Status == services.TicketStatusBacklog {
+		b.WriteString("Web proposed: /proposed/")
+		b.WriteString(ticketID)
+		b.WriteString("\n")
+	}
 	b.WriteString(mutedStyle.Render("b back  q quit"))
 	b.WriteString("\n")
 	return b.String()
@@ -148,6 +157,11 @@ func writeAttemptLine(b *strings.Builder, attempt db.Attempt) {
 		b.WriteString(fmt.Sprintf(" %d%%", attempt.ProgressPercent))
 	}
 	b.WriteString("\n")
+	if attempt.ID.Valid {
+		b.WriteString("Attempt link: /attempts/")
+		b.WriteString(uuidText(attempt.ID))
+		b.WriteString("\n")
+	}
 }
 
 func writeAttemptNotes(b *strings.Builder, attempt db.Attempt) {
@@ -244,6 +258,11 @@ func writeArtifactTimeline(b *strings.Builder, artifacts []db.Artifact) {
 		b.WriteString("\n")
 		if artifact.Url != "" {
 			b.WriteString(artifact.Url)
+			b.WriteString("\n")
+		}
+		if artifact.ID.Valid {
+			b.WriteString("Artifact link: /artifacts/")
+			b.WriteString(uuidText(artifact.ID))
 			b.WriteString("\n")
 		}
 	}

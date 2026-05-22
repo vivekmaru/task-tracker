@@ -59,6 +59,9 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		{"post", "/artifacts"},
 		{"get", "/artifacts/{id}"},
 		{"delete", "/artifacts/{id}"},
+		{"get", "/analytics/summary"},
+		{"get", "/analytics/by-model"},
+		{"get", "/analytics/by-harness"},
 	} {
 		methods, ok := spec.Paths[route.path]
 		if !ok {
@@ -136,15 +139,18 @@ func TestOpenAPIUsesContractOperationIDsForRESTBoundOperations(t *testing.T) {
 			method: "post",
 			path:   "/tickets/{id}/request-review",
 		},
-		contracts.OperationReviewTicket:    {"post", "/tickets/{id}/review"},
-		contracts.OperationArchiveTicket:   {"post", "/tickets/{id}/archive"},
-		contracts.OperationCompleteAttempt: {"post", "/attempts/{id}/complete"},
-		contracts.OperationFailAttempt:     {"post", "/attempts/{id}/fail"},
-		contracts.OperationBlockAttempt:    {"post", "/attempts/{id}/block"},
-		contracts.OperationListTickets:     {"get", "/tickets"},
-		contracts.OperationGetTicket:       {"get", "/tickets/{id}"},
-		contracts.OperationAttachArtifact:  {"post", "/artifacts"},
-		contracts.OperationDecomposeTicket: {"post", "/tickets/{id}/decompose"},
+		contracts.OperationReviewTicket:       {"post", "/tickets/{id}/review"},
+		contracts.OperationArchiveTicket:      {"post", "/tickets/{id}/archive"},
+		contracts.OperationCompleteAttempt:    {"post", "/attempts/{id}/complete"},
+		contracts.OperationFailAttempt:        {"post", "/attempts/{id}/fail"},
+		contracts.OperationBlockAttempt:       {"post", "/attempts/{id}/block"},
+		contracts.OperationListTickets:        {"get", "/tickets"},
+		contracts.OperationGetTicket:          {"get", "/tickets/{id}"},
+		contracts.OperationAttachArtifact:     {"post", "/artifacts"},
+		contracts.OperationDecomposeTicket:    {"post", "/tickets/{id}/decompose"},
+		contracts.OperationAnalyticsSummary:   {"get", "/analytics/summary"},
+		contracts.OperationAnalyticsByModel:   {"get", "/analytics/by-model"},
+		contracts.OperationAnalyticsByHarness: {"get", "/analytics/by-harness"},
 	}
 
 	for operationName, route := range routes {

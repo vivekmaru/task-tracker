@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,7 +226,7 @@ func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
 func TestRunServerStartsHTTPRouter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "forge.json")
-	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db","http_addr":"127.0.0.1:4100"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"database_url":"postgres://db","http_addr":"127.0.0.1:4100","admin_token":"secret-token"}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
@@ -251,6 +252,12 @@ func TestRunServerStartsHTTPRouter(t *testing.T) {
 	if gotHandler == nil {
 		t.Fatal("expected server to receive a router")
 	}
+	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id=00000000-0000-0000-0000-000000000001&project_id=00000000-0000-0000-0000-000000000002", nil)
+	rec := httptest.NewRecorder()
+	gotHandler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected server web routes to require login, got %d: %s", rec.Code, rec.Body.String())
+	}
 	if !strings.Contains(stdout.String(), "server listening on 127.0.0.1:4100") {
 		t.Fatalf("expected server listening message, got %q", stdout.String())
 	}
@@ -273,6 +280,15 @@ func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
 	}
 	if server.IdleTimeout <= 0 {
 		t.Fatal("expected IdleTimeout to be configured")
+	}
+}
+
+func TestWebAuthOptionsUseConfiguredSecureCookiePolicy(t *testing.T) {
+	if webAuthOptions(config.Config{HTTPAddr: "127.0.0.1:4100", AdminToken: "secret"}).SecureCookie {
+		t.Fatal("expected default HTTP server cookies to work without the secure flag")
+	}
+	if !webAuthOptions(config.Config{HTTPAddr: "127.0.0.1:4100", AdminToken: "secret", AuthCookieSecure: true}).SecureCookie {
+		t.Fatal("expected configured HTTPS deployments to force secure auth cookies")
 	}
 }
 
@@ -413,6 +429,7 @@ func TestRunWorkerRejectsTUIOnlyFlags(t *testing.T) {
 
 func TestRunServerReportsRuntimeOpenError(t *testing.T) {
 	t.Setenv("FORGE_DATABASE_URL", "postgres://db")
+	t.Setenv("FORGE_ADMIN_TOKEN", "secret-token")
 	var stdout, stderr bytes.Buffer
 
 	code := RunWithDependencies([]string{"server"}, &stdout, &stderr, Dependencies{
@@ -1062,6 +1079,43 @@ func TestRunCodexCompleteReportsAtomicProofFailure(t *testing.T) {
 	}
 }
 
+func TestRunCodexCompleteForwardsAttemptMetrics(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
+		completeResult: services.AttemptTransitionResult{
+			AttemptID:     testUUID(5),
+			TicketID:      testUUID(4),
+			AttemptStatus: services.AttemptStatusSucceeded,
+			TicketStatus:  services.TicketStatusDone,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		uuidString(t, testUUID(5)),
+		"--summary", "Implemented analytics",
+		"--tokens-in", "1200",
+		"--tokens-out", "340",
+		"--cost-usd", "0.0425",
+		"--duration", "91.25s",
+		"--retries", "2",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.completeReq.Metrics == nil {
+		t.Fatalf("expected metrics request, got %#v", fake.completeReq)
+	}
+	if fake.completeReq.Metrics.TokensIn != 1200 || fake.completeReq.Metrics.TokensOut != 340 || fake.completeReq.Metrics.RetryCount != 2 {
+		t.Fatalf("unexpected token/retry metrics: %#v", fake.completeReq.Metrics)
+	}
+	if fake.completeReq.Metrics.CostUSD != 0.0425 || fake.completeReq.Metrics.DurationSeconds != 91.25 {
+		t.Fatalf("unexpected cost/duration metrics: %#v", fake.completeReq.Metrics)
+	}
+}
+
 func TestRunCodexBlockReportsAtomicProofFailure(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -1090,6 +1144,62 @@ func TestRunCodexBlockReportsAtomicProofFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "codex block error") {
 		t.Fatalf("expected block error, got %q", stderr.String())
+	}
+}
+
+func TestRunAnalyticsSummaryPrintsMinimalHumanOutput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsSummary: services.AnalyticsSummary{
+			AttemptCount:         3,
+			SucceededAttempts:    2,
+			FailedAttempts:       1,
+			TotalTokensIn:        2200,
+			TotalTokensOut:       900,
+			TotalCostUSD:         0.34,
+			TotalDurationSeconds: 180.5,
+			TotalRetries:         1,
+			AttemptsWithMetrics:  2,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "summary",
+		"--workspace-id", uuidString(t, testUUID(2)),
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsFilter.WorkspaceID != testUUID(2) {
+		t.Fatalf("expected workspace filter, got %#v", fake.analyticsFilter)
+	}
+	out := stdout.String()
+	for _, want := range []string{"Attempts: 3", "Succeeded: 2", "Cost: $0.340000", "Tokens: 3100", "Retries: 1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected analytics output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunAnalyticsByModelWritesJSONWhenRequested(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsGroups: []services.AnalyticsGroup{
+			{Group: "gpt-5.4", AttemptCount: 2, SucceededAttempts: 1, TotalCostUSD: 0.12},
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "by-model",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"groups":[{"group":"gpt-5.4"`) {
+		t.Fatalf("expected analytics JSON groups, got %s", stdout.String())
 	}
 }
 
@@ -1352,6 +1462,9 @@ type fakeRuntime struct {
 	artifactReq             services.RegisterArtifactRequest
 	artifact                db.Artifact
 	artifactErr             error
+	analyticsFilter         services.AnalyticsFilter
+	analyticsSummary        services.AnalyticsSummary
+	analyticsGroups         []services.AnalyticsGroup
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -1507,6 +1620,34 @@ func (f *fakeRuntime) ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.
 	return nil, nil
 }
 
+func (f *fakeRuntime) ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
+	return db.Artifact{}, nil
+}
+
+func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error) {
+	return db.Workspace{}, nil
+}
+
+func (f *fakeRuntime) CreateWorkspace(context.Context, string) (db.Workspace, error) {
+	return db.Workspace{}, nil
+}
+
+func (f *fakeRuntime) ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntime) CreateProject(context.Context, pgtype.UUID, string) (db.Project, error) {
+	return db.Project{}, nil
+}
+
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
 	f.artifactReq = req
 	f.artifactReqs = append(f.artifactReqs, req)
@@ -1519,6 +1660,21 @@ func (f *fakeRuntime) DecomposeTicket(context.Context, services.DecomposeTicketR
 
 func (f *fakeRuntime) RegisterCapabilities(context.Context, services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {
 	return db.AgentCapability{}, nil
+}
+
+func (f *fakeRuntime) AnalyticsSummary(_ context.Context, filter services.AnalyticsFilter) (services.AnalyticsSummary, error) {
+	f.analyticsFilter = filter
+	return f.analyticsSummary, nil
+}
+
+func (f *fakeRuntime) AnalyticsByModel(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByHarness(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	return f.analyticsGroups, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {
