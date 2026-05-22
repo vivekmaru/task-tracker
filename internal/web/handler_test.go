@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	"github.com/vivek/agent-task-tracker/internal/storage"
 )
 
 func TestTicketListRendersRowsAndStableDetailLinks(t *testing.T) {
@@ -741,6 +743,80 @@ func TestTicketDetailSuppressesUnsafeArtifactLinks(t *testing.T) {
 	}
 }
 
+func TestTicketDetailLinksLocalArtifactsToWebRoute(t *testing.T) {
+	ticketID := testUUID(13)
+	artifactID := testUUID(14)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Local proof",
+			Status:      services.TicketStatusTodo,
+			Type:        services.TicketTypeBug,
+		},
+		artifacts: []db.Artifact{
+			{ID: artifactID, TicketID: ticketID, Name: "go-test.log", Url: "local://artifacts/go-test.log", StorageBackend: services.ArtifactStorageLocal},
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/artifacts/`+uuidString(artifactID)+`"`) {
+		t.Fatalf("expected local artifact web link, got:\n%s", body)
+	}
+	if strings.Contains(body, "Artifact link hidden") {
+		t.Fatalf("local artifact should not be hidden:\n%s", body)
+	}
+}
+
+func TestArtifactRouteDownloadsLocalArtifactContent(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			Name:           "go-test.log",
+			Url:            "local://artifacts/go-test.log",
+			StorageBackend: services.ArtifactStorageLocal,
+			MimeType:       "text/html",
+		},
+		artifactContent: storage.ArtifactContent{
+			Name:     "go-test.log",
+			MimeType: "text/html",
+			Size:     9,
+			Reader:   io.NopCloser(strings.NewReader("all good\n")),
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("expected forced binary content type, got %q", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="go-test.log"` {
+		t.Fatalf("expected attachment disposition, got %q", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected nosniff header, got %q", got)
+	}
+	if rec.Body.String() != "all good\n" {
+		t.Fatalf("unexpected artifact body: %q", rec.Body.String())
+	}
+}
+
 func TestTicketDetailHandlesBadIDAndMissingRuntime(t *testing.T) {
 	handler := NewHandler(&fakeRuntime{})
 	req := httptest.NewRequest(http.MethodGet, "/tickets/not-a-uuid", nil)
@@ -784,6 +860,7 @@ type fakeRuntime struct {
 	artifacts                 []db.Artifact
 	attemptArtifacts          []db.Artifact
 	artifact                  db.Artifact
+	artifactContent           storage.ArtifactContent
 	workspaces                []db.Workspace
 	projects                  []db.Project
 	createdWorkspace          db.Workspace
@@ -852,6 +929,11 @@ func (f *fakeRuntime) ListArtifactsByAttempt(_ context.Context, id pgtype.UUID) 
 func (f *fakeRuntime) GetArtifact(_ context.Context, id pgtype.UUID) (db.Artifact, error) {
 	f.detailTicketID = id
 	return f.artifact, nil
+}
+
+func (f *fakeRuntime) OpenArtifact(_ context.Context, artifact db.Artifact) (storage.ArtifactContent, error) {
+	f.artifact = artifact
+	return f.artifactContent, nil
 }
 
 func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {

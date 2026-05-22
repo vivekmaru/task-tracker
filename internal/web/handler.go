@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	"github.com/vivek/agent-task-tracker/internal/storage"
 )
 
 const defaultTicketListLimit int32 = 50
@@ -39,6 +40,7 @@ type Runtime interface {
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
+	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
 	ListWorkspaces(context.Context) ([]db.Workspace, error)
 	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
 	CreateWorkspace(context.Context, string) (db.Workspace, error)
@@ -421,6 +423,23 @@ func (h Handler) renderArtifactDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifact", err.Error())
+		return
+	}
+	if storage.IsLocalArtifactURL(artifact.Url) {
+		content, err := h.runtime.OpenArtifact(r.Context(), artifact)
+		if err != nil {
+			renderStatus(r.Context(), w, http.StatusNotFound, "Artifact content unavailable", err.Error())
+			return
+		}
+		defer content.Reader.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, headerFilename(content.Name)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if content.Size >= 0 {
+			w.Header().Set("Content-Length", strconv.FormatInt(content.Size, 10))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, content.Reader)
 		return
 	}
 	renderComponent(r.Context(), w, http.StatusOK, artifactDetailPage(artifact))
@@ -883,7 +902,9 @@ func artifactDetailPage(artifact db.Artifact) templ.Component {
 		if artifact.AttemptID.Valid {
 			writeMeta(w, "Attempt", "/attempts/"+uuidText(artifact.AttemptID))
 		}
-		if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
+		if storage.IsLocalArtifactURL(artifact.Url) {
+			fmt.Fprintf(w, `<p><a href="/artifacts/%s">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
+		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
 		} else if artifact.Url != "" {
 			fmt.Fprint(w, `<p class="empty-text">Artifact link hidden because its URL scheme is not supported.</p>`)
@@ -1064,7 +1085,9 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 	}
 	for _, artifact := range view.Timeline.Artifacts {
 		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s %s</span>`, esc(artifact.Name), esc(artifact.Role), esc(artifact.Type))
-		if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
+		if storage.IsLocalArtifactURL(artifact.Url) {
+			fmt.Fprintf(w, `<p><a href="/artifacts/%s">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
+		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
 		} else if artifact.Url != "" {
 			fmt.Fprint(w, `<p class="empty-text">Artifact link hidden because its URL scheme is not supported.</p>`)
@@ -1134,6 +1157,16 @@ func safeArtifactURL(value string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func headerFilename(value string) string {
+	value = strings.ReplaceAll(value, `"`, "")
+	value = strings.ReplaceAll(value, "\r", "")
+	value = strings.ReplaceAll(value, "\n", "")
+	if strings.TrimSpace(value) == "" {
+		return "artifact"
+	}
+	return value
 }
 
 func textValue(value pgtype.Text) string {

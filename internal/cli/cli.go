@@ -9,6 +9,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ import (
 	forgemcp "github.com/vivek/agent-task-tracker/internal/mcp"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	"github.com/vivek/agent-task-tracker/internal/storage"
 	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
 	"github.com/vivek/agent-task-tracker/internal/web"
 )
@@ -80,6 +83,9 @@ type RuntimeHandle interface {
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
+	StoreLocalArtifact(context.Context, string, string) (storage.StoredArtifact, error)
+	RemoveLocalArtifact(context.Context, string) error
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
 	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
@@ -976,7 +982,7 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 		return 1
 	}
 	defer rt.Close()
-	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
+	proofArtifacts, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
 	if err != nil {
 		if isCLIArgumentError(err) {
 			fmt.Fprintf(stderr, "codex complete argument error: %v\n", err)
@@ -992,8 +998,11 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 			"proofs":  []string(proof.Proofs),
 		},
 		Metrics: metricsReq,
-	}, artifactReqs)
+	}, proofArtifacts.Requests)
 	if err != nil {
+		if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, proofArtifacts.UploadedLocalURLs); cleanupErr != nil {
+			fmt.Fprintf(stderr, "codex complete artifact cleanup warning: %v\n", cleanupErr)
+		}
 		fmt.Fprintf(stderr, "codex complete error: %v\n", err)
 		return 1
 	}
@@ -1111,7 +1120,7 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 		return 1
 	}
 	defer rt.Close()
-	artifactReqs, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
+	proofArtifacts, err := codexProofArtifactRequestsForAttempt(ctx, rt, proof, attemptUUID)
 	if err != nil {
 		if isCLIArgumentError(err) {
 			fmt.Fprintf(stderr, "codex block argument error: %v\n", err)
@@ -1129,8 +1138,11 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 			"proofs": []string(proof.Proofs),
 		},
 		Metrics: metricsReq,
-	}, artifactReqs)
+	}, proofArtifacts.Requests)
 	if err != nil {
+		if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, proofArtifacts.UploadedLocalURLs); cleanupErr != nil {
+			fmt.Fprintf(stderr, "codex block artifact cleanup warning: %v\n", cleanupErr)
+		}
 		fmt.Fprintf(stderr, "codex block error: %v\n", err)
 		return 1
 	}
@@ -1147,6 +1159,11 @@ type codexProofFlags struct {
 	ProofType   string
 	ProofRole   string
 	MimeType    string
+}
+
+type codexProofArtifactBundle struct {
+	Requests          []services.RegisterArtifactRequest
+	UploadedLocalURLs []string
 }
 
 func (f *codexProofFlags) bind(flags *flag.FlagSet) {
@@ -1175,38 +1192,92 @@ func splitLeadingAttemptID(args []string) (string, []string) {
 	return args[0], args[1:]
 }
 
-func codexProofArtifactRequests(flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) []services.RegisterArtifactRequest {
-	requests := make([]services.RegisterArtifactRequest, 0, len(flags.Proofs))
+func codexProofArtifactRequests(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, workspaceID, projectID, ticketID, attemptID pgtype.UUID) (codexProofArtifactBundle, error) {
+	bundle := codexProofArtifactBundle{
+		Requests: make([]services.RegisterArtifactRequest, 0, len(flags.Proofs)),
+	}
 	for _, proof := range flags.Proofs {
 		proof = strings.TrimSpace(proof)
-		requests = append(requests, services.RegisterArtifactRequest{
+		stored, hasStoredArtifact, err := storeFilesystemProof(ctx, rt, proof)
+		if err != nil {
+			if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, bundle.UploadedLocalURLs); cleanupErr != nil {
+				return codexProofArtifactBundle{}, errors.Join(err, cleanupErr)
+			}
+			return codexProofArtifactBundle{}, err
+		}
+		name := proofName(proof)
+		url := proof
+		sizeBytes := int64(0)
+		mimeType := flags.MimeType
+		if hasStoredArtifact {
+			name = stored.Name
+			url = stored.URL
+			sizeBytes = stored.Size
+			bundle.UploadedLocalURLs = append(bundle.UploadedLocalURLs, stored.URL)
+			if mimeType == "" {
+				mimeType = stored.MimeType
+			}
+		}
+		bundle.Requests = append(bundle.Requests, services.RegisterArtifactRequest{
 			WorkspaceID:    workspaceID,
 			ProjectID:      projectID,
 			TicketID:       ticketID,
 			AttemptID:      attemptID,
 			Type:           flags.ProofType,
 			Role:           flags.ProofRole,
-			Name:           proofName(proof),
-			URL:            proof,
+			Name:           name,
+			URL:            url,
 			StorageBackend: services.ArtifactStorageLocal,
-			MimeType:       flags.MimeType,
+			SizeBytes:      sizeBytes,
+			MimeType:       mimeType,
 		})
 	}
-	return requests
+	return bundle, nil
 }
 
-func codexProofArtifactRequestsForAttempt(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, attemptID pgtype.UUID) ([]services.RegisterArtifactRequest, error) {
+func codexProofArtifactRequestsForAttempt(ctx context.Context, rt RuntimeHandle, flags codexProofFlags, attemptID pgtype.UUID) (codexProofArtifactBundle, error) {
 	if len(flags.Proofs) == 0 {
-		return []services.RegisterArtifactRequest{}, nil
+		return codexProofArtifactBundle{Requests: []services.RegisterArtifactRequest{}}, nil
 	}
 	attempt, err := rt.GetAttempt(ctx, attemptID)
 	if err != nil {
-		return nil, err
+		return codexProofArtifactBundle{}, err
 	}
 	if err := validateOptionalScopeFlags(flags.WorkspaceID, flags.ProjectID, attempt.WorkspaceID, attempt.ProjectID); err != nil {
-		return nil, cliArgumentError{err: err}
+		return codexProofArtifactBundle{}, cliArgumentError{err: err}
 	}
-	return codexProofArtifactRequests(flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID), nil
+	return codexProofArtifactRequests(ctx, rt, flags, attempt.WorkspaceID, attempt.ProjectID, attempt.TicketID, attempt.ID)
+}
+
+func storeFilesystemProof(ctx context.Context, rt RuntimeHandle, proof string) (storage.StoredArtifact, bool, error) {
+	if proof == "" || strings.Contains(proof, "://") {
+		return storage.StoredArtifact{}, false, nil
+	}
+	info, err := os.Stat(proof)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return storage.StoredArtifact{}, false, cliArgumentError{err: fmt.Errorf("--proof file does not exist: %q", proof)}
+		}
+		return storage.StoredArtifact{}, false, fmt.Errorf("inspect proof file: %w", err)
+	}
+	if info.IsDir() {
+		return storage.StoredArtifact{}, false, cliArgumentError{err: fmt.Errorf("--proof must be a file, got directory %q", proof)}
+	}
+	stored, err := rt.StoreLocalArtifact(ctx, proof, filepath.Base(proof))
+	if err != nil {
+		return storage.StoredArtifact{}, false, fmt.Errorf("store proof file: %w", err)
+	}
+	return stored, true, nil
+}
+
+func cleanupStoredProofArtifacts(ctx context.Context, rt RuntimeHandle, rawURLs []string) error {
+	var cleanupErr error
+	for _, rawURL := range rawURLs {
+		if err := rt.RemoveLocalArtifact(ctx, rawURL); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	return cleanupErr
 }
 
 func validateOptionalScopeFlags(workspaceID, projectID string, expectedWorkspaceID, expectedProjectID pgtype.UUID) error {

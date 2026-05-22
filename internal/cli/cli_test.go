@@ -20,6 +20,7 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
+	"github.com/vivek/agent-task-tracker/internal/storage"
 	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
 )
 
@@ -1234,6 +1235,39 @@ func TestRunCodexCompleteDoesNotPersistProofsWhenTransitionFails(t *testing.T) {
 	}
 }
 
+func TestRunCodexCompleteRemovesUploadedProofWhenTransitionFails(t *testing.T) {
+	proofPath := filepath.Join(t.TempDir(), "go-test.log")
+	if err := os.WriteFile(proofPath, []byte("ok\n"), 0o600); err != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt:     db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(2), ProjectID: testUUID(3), TicketID: testUUID(4)},
+		completeErr: errors.New("attempt is already closed"),
+		storedArtifact: storage.StoredArtifact{
+			Name: "go-test.log",
+			URL:  "local://artifacts/go-test.log",
+			Size: 3,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Implemented and verified",
+		"--proof", proofPath,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if fake.removedLocalArtifactURL != "local://artifacts/go-test.log" {
+		t.Fatalf("expected uploaded proof cleanup, got %q", fake.removedLocalArtifactURL)
+	}
+}
+
 func TestRunCodexCompleteUsesAttemptScopeForProofs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -1266,6 +1300,73 @@ func TestRunCodexCompleteUsesAttemptScopeForProofs(t *testing.T) {
 	}
 	if fake.artifactReqs[0].URL != "local://cli-test.log" || fake.artifactReqs[0].Name != "cli-test.log" {
 		t.Fatalf("expected normalized proof artifact input, got %#v", fake.artifactReqs[0])
+	}
+}
+
+func TestRunCodexCompleteUploadsFilesystemProofs(t *testing.T) {
+	proofPath := filepath.Join(t.TempDir(), "go-test.log")
+	if err := os.WriteFile(proofPath, []byte("ok\n"), 0o600); err != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+		completeResult: services.AttemptTransitionResult{
+			AttemptID:     testUUID(5),
+			TicketID:      testUUID(4),
+			AttemptStatus: services.AttemptStatusSucceeded,
+			TicketStatus:  services.TicketStatusDone,
+		},
+		storedArtifact: storage.StoredArtifact{
+			Name:     "go-test.log",
+			URL:      "local://artifacts/go-test.log",
+			MimeType: "text/plain",
+			Size:     3,
+		},
+		artifact: db.Artifact{ID: testUUID(7), Type: services.ArtifactTypeTestOutput, Role: services.ArtifactRoleEvidence, Name: "go-test.log", Url: "local://artifacts/go-test.log"},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Done",
+		"--proof", proofPath,
+		"--proof-type", services.ArtifactTypeTestOutput,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.storeLocalArtifactPath != proofPath || fake.storeLocalArtifactName != "go-test.log" {
+		t.Fatalf("expected proof file upload, got path=%q name=%q", fake.storeLocalArtifactPath, fake.storeLocalArtifactName)
+	}
+	if len(fake.artifactReqs) != 1 || fake.artifactReqs[0].URL != "local://artifacts/go-test.log" || fake.artifactReqs[0].SizeBytes != 3 {
+		t.Fatalf("expected uploaded proof registration, got %#v", fake.artifactReqs)
+	}
+}
+
+func TestRunCodexCompleteRejectsMissingFilesystemProof(t *testing.T) {
+	missingProof := filepath.Join(t.TempDir(), "go-test-output.txt")
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Done",
+		"--proof", missingProof,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.completeCalls != 0 || fake.storeLocalArtifactPath != "" {
+		t.Fatalf("missing proof should stop before transition/upload, completeCalls=%d storePath=%q", fake.completeCalls, fake.storeLocalArtifactPath)
+	}
+	if !strings.Contains(stderr.String(), "--proof file does not exist") {
+		t.Fatalf("expected missing proof error, got %q", stderr.String())
 	}
 }
 
@@ -1462,6 +1563,12 @@ type fakeRuntime struct {
 	artifactReq             services.RegisterArtifactRequest
 	artifact                db.Artifact
 	artifactErr             error
+	storedArtifact          storage.StoredArtifact
+	storeLocalArtifactPath  string
+	storeLocalArtifactName  string
+	storeLocalArtifactErr   error
+	removedLocalArtifactURL string
+	removeLocalArtifactErr  error
 	analyticsFilter         services.AnalyticsFilter
 	analyticsSummary        services.AnalyticsSummary
 	analyticsGroups         []services.AnalyticsGroup
@@ -1626,6 +1733,21 @@ func (f *fakeRuntime) ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db
 
 func (f *fakeRuntime) GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
 	return db.Artifact{}, nil
+}
+
+func (f *fakeRuntime) OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error) {
+	return storage.ArtifactContent{}, nil
+}
+
+func (f *fakeRuntime) StoreLocalArtifact(_ context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
+	f.storeLocalArtifactPath = sourcePath
+	f.storeLocalArtifactName = preferredName
+	return f.storedArtifact, f.storeLocalArtifactErr
+}
+
+func (f *fakeRuntime) RemoveLocalArtifact(_ context.Context, rawURL string) error {
+	f.removedLocalArtifactURL = rawURL
+	return f.removeLocalArtifactErr
 }
 
 func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {

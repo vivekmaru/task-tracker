@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -13,6 +14,7 @@ const (
 	defaultHTTPAddr          = "127.0.0.1:3017"
 	defaultLogLevel          = "info"
 	defaultWorkerConcurrency = 1
+	defaultArtifactRoot      = ".forge/artifacts"
 )
 
 // Config contains process configuration shared by Forge command modes.
@@ -23,6 +25,7 @@ type Config struct {
 	WorkerConcurrency int    `json:"worker_concurrency"`
 	AdminToken        string `json:"admin_token"`
 	AuthCookieSecure  bool   `json:"auth_cookie_secure"`
+	ArtifactRoot      string `json:"artifact_root"`
 }
 
 // Options controls configuration loading.
@@ -36,13 +39,18 @@ func Load(opts Options) (Config, error) {
 		HTTPAddr:          defaultHTTPAddr,
 		LogLevel:          defaultLogLevel,
 		WorkerConcurrency: defaultWorkerConcurrency,
+		ArtifactRoot:      defaultArtifactRoot,
 	}
 
-	path := firstNonEmpty(opts.ConfigPath, os.Getenv("FORGE_CONFIG"))
-	if path != "" {
-		if err := loadFile(path, &cfg); err != nil {
+	artifactRootExplicit := false
+	artifactRootFromEnv := false
+	configPath := firstNonEmpty(opts.ConfigPath, os.Getenv("FORGE_CONFIG"))
+	if configPath != "" {
+		metadata, err := loadFile(configPath, &cfg)
+		if err != nil {
 			return Config{}, err
 		}
+		artifactRootExplicit = metadata.ArtifactRootSet
 	}
 
 	if value := os.Getenv("FORGE_DATABASE_URL"); value != "" {
@@ -71,6 +79,16 @@ func Load(opts Options) (Config, error) {
 		}
 		cfg.AuthCookieSecure = secure
 	}
+	if value := os.Getenv("FORGE_ARTIFACT_ROOT"); value != "" {
+		cfg.ArtifactRoot = value
+		artifactRootExplicit = true
+		artifactRootFromEnv = true
+	}
+	artifactRoot, err := normalizeArtifactRoot(cfg.ArtifactRoot, configPath, artifactRootExplicit, artifactRootFromEnv)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ArtifactRoot = artifactRoot
 
 	return cfg, nil
 }
@@ -107,17 +125,59 @@ func (c Config) ValidateRuntime() error {
 	return nil
 }
 
-func loadFile(path string, cfg *Config) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open config file: %w", err)
-	}
-	defer f.Close()
+type fileConfigMetadata struct {
+	ArtifactRootSet bool
+}
 
-	if err := json.NewDecoder(f).Decode(cfg); err != nil {
-		return fmt.Errorf("decode config file: %w", err)
+func loadFile(path string, cfg *Config) (fileConfigMetadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fileConfigMetadata{}, fmt.Errorf("open config file: %w", err)
 	}
-	return nil
+
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return fileConfigMetadata{}, fmt.Errorf("decode config file: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fileConfigMetadata{}, fmt.Errorf("decode config file metadata: %w", err)
+	}
+	_, artifactRootSet := raw["artifact_root"]
+	return fileConfigMetadata{ArtifactRootSet: artifactRootSet}, nil
+}
+
+func normalizeArtifactRoot(root string, configPath string, explicit bool, fromEnv bool) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		root = defaultArtifactRoot
+		explicit = false
+	}
+	if filepath.IsAbs(root) {
+		return filepath.Clean(root), nil
+	}
+	base := ""
+	switch {
+	case explicit && !fromEnv && strings.TrimSpace(configPath) != "":
+		absoluteConfigPath, err := filepath.Abs(configPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve config path: %w", err)
+		}
+		base = filepath.Dir(absoluteConfigPath)
+	case !explicit && root == defaultArtifactRoot:
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			base = home
+			break
+		}
+		fallthrough
+	default:
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve working directory: %w", err)
+		}
+		base = wd
+	}
+	return filepath.Clean(filepath.Join(base, root)), nil
 }
 
 func firstNonEmpty(values ...string) string {
