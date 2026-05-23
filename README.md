@@ -101,6 +101,12 @@ Apply all migration `Up` sections:
 go run ./cmd/forge migrate
 ```
 
+If you already have a local Forge database created before `forge migrate` tracked applied migrations, adopt the existing schema once before applying new migrations:
+
+```bash
+go run ./cmd/forge migrate --baseline-existing
+```
+
 Regenerate sqlc code after query changes:
 
 ```bash

@@ -119,7 +119,7 @@ type RuntimeHandle interface {
 
 type Dependencies struct {
 	OpenRuntime func(context.Context, config.Config) (RuntimeHandle, error)
-	RunMigrate  func(context.Context, config.Config, string) (MigrationResult, error)
+	RunMigrate  func(context.Context, config.Config, string, MigrationOptions) (MigrationResult, error)
 	RunTUI      func(context.Context, io.Writer, RuntimeHandle, forgetui.Options) error
 	ServeHTTP   func(context.Context, string, http.Handler) error
 }

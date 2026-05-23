@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/vivek/agent-task-tracker/internal/config"
 )
@@ -23,8 +24,13 @@ CREATE TABLE IF NOT EXISTS forge_schema_migrations (
 )`
 
 type MigrationResult struct {
-	Applied []string `json:"applied"`
-	Skipped []string `json:"skipped"`
+	Applied   []string `json:"applied"`
+	Skipped   []string `json:"skipped"`
+	Baselined []string `json:"baselined"`
+}
+
+type MigrationOptions struct {
+	BaselineExisting bool
 }
 
 func runMigrateCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -32,7 +38,9 @@ func runMigrateCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	var opts commandOptions
 	opts.bind(flags)
 	var dir string
+	var baselineExisting bool
 	flags.StringVar(&dir, "dir", "sql/migrations", "migration directory")
+	flags.BoolVar(&baselineExisting, "baseline-existing", false, "record existing Forge schema migrations before applying new ones")
 	if !parseFlags(flags, args) {
 		return 2
 	}
@@ -47,10 +55,10 @@ func runMigrateCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 		return 2
 	}
 	if deps.RunMigrate == nil {
-		deps.RunMigrate = ApplyMigrations
+		deps.RunMigrate = ApplyMigrationsWithOptions
 	}
 
-	result, err := deps.RunMigrate(ctx, cfg, dir)
+	result, err := deps.RunMigrate(ctx, cfg, dir, MigrationOptions{BaselineExisting: baselineExisting})
 	if err != nil {
 		fmt.Fprintf(stderr, "migrate error: %v\n", err)
 		return 1
@@ -58,19 +66,26 @@ func runMigrateCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	if opts.JSON {
 		return writeJSON(stdout, stderr, result)
 	}
+	for _, id := range result.Baselined {
+		fmt.Fprintf(stdout, "baselined %s\n", id)
+	}
 	for _, id := range result.Applied {
 		fmt.Fprintf(stdout, "applied %s\n", id)
 	}
 	for _, id := range result.Skipped {
 		fmt.Fprintf(stdout, "skipped %s\n", id)
 	}
-	if len(result.Applied) == 0 && len(result.Skipped) == 0 {
+	if len(result.Applied) == 0 && len(result.Skipped) == 0 && len(result.Baselined) == 0 {
 		fmt.Fprintln(stdout, "no migrations found")
 	}
 	return 0
 }
 
 func ApplyMigrations(ctx context.Context, cfg config.Config, dir string) (MigrationResult, error) {
+	return ApplyMigrationsWithOptions(ctx, cfg, dir, MigrationOptions{})
+}
+
+func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir string, opts MigrationOptions) (MigrationResult, error) {
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return MigrationResult{}, fmt.Errorf("create postgres pool: %w", err)
@@ -103,13 +118,38 @@ func ApplyMigrations(ctx context.Context, cfg config.Config, dir string) (Migrat
 	}
 
 	result := MigrationResult{
-		Applied: []string{},
-		Skipped: []string{},
+		Applied:   []string{},
+		Skipped:   []string{},
+		Baselined: []string{},
+	}
+	baselinedThisRun := map[string]bool{}
+	if opts.BaselineExisting && len(applied) == 0 {
+		baseline, err := detectBaselineMigrations(ctx, tx, files)
+		if err != nil {
+			return MigrationResult{}, err
+		}
+		if len(baseline) == 0 {
+			return MigrationResult{}, errors.New("baseline-existing requires an existing Forge schema with recognized migration artifacts")
+		}
+		for _, path := range files {
+			id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+			if !baseline[id] {
+				continue
+			}
+			if err := recordMigration(ctx, tx, id, filepath.Base(path)); err != nil {
+				return MigrationResult{}, fmt.Errorf("record baseline migration %s: %w", id, err)
+			}
+			applied[id] = true
+			baselinedThisRun[id] = true
+			result.Baselined = append(result.Baselined, id)
+		}
 	}
 	for _, path := range files {
 		id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		if applied[id] {
-			result.Skipped = append(result.Skipped, id)
+			if !baselinedThisRun[id] {
+				result.Skipped = append(result.Skipped, id)
+			}
 			continue
 		}
 		sql, err := readMigrationUp(path)
@@ -119,7 +159,7 @@ func ApplyMigrations(ctx context.Context, cfg config.Config, dir string) (Migrat
 		if _, err := tx.Exec(ctx, sql); err != nil {
 			return MigrationResult{}, fmt.Errorf("apply migration %s: %w", id, err)
 		}
-		if _, err := tx.Exec(ctx, "INSERT INTO forge_schema_migrations (id, filename) VALUES ($1, $2)", id, filepath.Base(path)); err != nil {
+		if err := recordMigration(ctx, tx, id, filepath.Base(path)); err != nil {
 			return MigrationResult{}, fmt.Errorf("record migration %s: %w", id, err)
 		}
 		result.Applied = append(result.Applied, id)
@@ -129,6 +169,170 @@ func ApplyMigrations(ctx context.Context, cfg config.Config, dir string) (Migrat
 		return MigrationResult{}, fmt.Errorf("commit migrations: %w", err)
 	}
 	return result, nil
+}
+
+type migrationRecorder interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func recordMigration(ctx context.Context, q migrationRecorder, id string, filename string) error {
+	_, err := q.Exec(ctx, "INSERT INTO forge_schema_migrations (id, filename) VALUES ($1, $2)", id, filename)
+	return err
+}
+
+type baselineMigrationQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func detectBaselineMigrations(ctx context.Context, q baselineMigrationQuerier, files []string) (map[string]bool, error) {
+	coreSchema, err := hasAllRelations(ctx, q, []string{
+		"workspaces",
+		"projects",
+		"tickets",
+		"ticket_dependencies",
+		"attempts",
+		"attempt_checkpoints",
+		"ticket_events",
+		"artifacts",
+		"idempotency_keys",
+		"agent_capabilities",
+		"api_keys",
+		"attempt_metrics",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !coreSchema {
+		return map[string]bool{}, nil
+	}
+
+	candidates := map[string]bool{
+		"0001_initial_schema": true,
+	}
+	if ok, err := constraintContains(ctx, q, "ticket_events", "ticket_events_type_check", "ready"); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0002_ticket_transition_event_types"] = true
+	}
+	if ok, err := relationExists(ctx, q, "idx_attempt_checkpoints_ticket_id"); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0003_add_attempt_checkpoints_ticket_index"] = true
+	}
+	if ok, err := hasAllRelations(ctx, q, []string{
+		"idx_tickets_search_vector",
+		"idx_attempts_search_vector",
+		"idx_ticket_events_search_vector",
+		"idx_artifacts_search_vector",
+	}); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0003_full_text_search"] = true
+	}
+	if ok, err := hasAllRelations(ctx, q, []string{"webhook_subscriptions", "webhook_deliveries"}); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0004_webhook_deliveries"] = true
+	}
+	if ok, err := relationExists(ctx, q, "workspace_members"); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0005_workspace_members"] = true
+	}
+	if ok, err := columnExists(ctx, q, "ticket_events", "event_sequence"); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0006_ticket_event_sequence"] = true
+	}
+	if ok, err := functionSourceContains(ctx, q, "enqueue_webhook_deliveries_for_ticket_event", "'metrics'"); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0007_webhook_observability_snapshots"] = true
+	}
+	if ok, err := constraintContains(ctx, q, "tickets", "tickets_type_check", "task"); err != nil {
+		return nil, err
+	} else if ok {
+		candidates["0008_ticket_task_type"] = true
+	}
+
+	filtered := make(map[string]bool, len(candidates))
+	for _, path := range files {
+		id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if candidates[id] {
+			filtered[id] = true
+		}
+	}
+	return filtered, nil
+}
+
+func hasAllRelations(ctx context.Context, q baselineMigrationQuerier, names []string) (bool, error) {
+	for _, name := range names {
+		exists, err := relationExists(ctx, q, name)
+		if err != nil || !exists {
+			return exists, err
+		}
+	}
+	return true, nil
+}
+
+func relationExists(ctx context.Context, q baselineMigrationQuerier, name string) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect relation %s: %w", name, err)
+	}
+	return exists, nil
+}
+
+func columnExists(ctx context.Context, q baselineMigrationQuerier, table string, column string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = $1
+      AND column_name = $2
+)`, table, column).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("inspect column %s.%s: %w", table, column, err)
+	}
+	return exists, nil
+}
+
+func constraintContains(ctx context.Context, q baselineMigrationQuerier, table string, constraint string, fragment string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_constraint c
+    JOIN pg_class r ON r.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = r.relnamespace
+    WHERE n.nspname = current_schema()
+      AND r.relname = $1
+      AND c.conname = $2
+      AND pg_get_constraintdef(c.oid) ILIKE '%' || $3 || '%'
+)`, table, constraint, fragment).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("inspect constraint %s.%s: %w", table, constraint, err)
+	}
+	return exists, nil
+}
+
+func functionSourceContains(ctx context.Context, q baselineMigrationQuerier, name string, fragment string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = current_schema()
+      AND p.proname = $1
+      AND p.prosrc ILIKE '%' || $2 || '%'
+)`, name, fragment).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("inspect function %s: %w", name, err)
+	}
+	return exists, nil
 }
 
 type appliedMigrationQuerier interface {
