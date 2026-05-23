@@ -160,11 +160,8 @@ JSON
 Create a workspace and project:
 
 ```bash
-WORKSPACE_ID=$(go run ./cmd/forge workspaces create --config forge.local.json --json \
-  --name "Smoke Workspace" | jq -r '.id')
-PROJECT_ID=$(go run ./cmd/forge projects create --config forge.local.json --json \
-  --workspace-id "$WORKSPACE_ID" \
-  --name "Smoke Project" | jq -r '.id')
+WORKSPACE_ID=$(psql -X -q -At "$FORGE_DATABASE_URL" -c "insert into workspaces (name) values ('Smoke Workspace') returning id")
+PROJECT_ID=$(psql -X -q -At "$FORGE_DATABASE_URL" -c "insert into projects (workspace_id, name) values ('$WORKSPACE_ID', 'Smoke Project') returning id")
 ```
 
 Start the web server in one terminal:
