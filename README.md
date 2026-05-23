@@ -98,9 +98,7 @@ createdb forge
 Apply all migration `Up` sections:
 
 ```bash
-for migration in sql/migrations/*.sql; do
-  sed '/-- +goose Down/,$d' "$migration" | psql -X -q "$FORGE_DATABASE_URL"
-done
+go run ./cmd/forge migrate
 ```
 
 Regenerate sqlc code after query changes:
@@ -136,9 +134,7 @@ export FORGE_ADMIN_TOKEN='change-me-local-admin-token'
 export FORGE_ARTIFACT_ROOT="$PWD/.forge/artifacts"
 mkdir -p "$FORGE_ARTIFACT_ROOT"
 
-for migration in sql/migrations/*.sql; do
-  sed '/-- +goose Down/,$d' "$migration" | psql -X -q "$FORGE_DATABASE_URL"
-done
+go run ./cmd/forge migrate
 ```
 
 Create a config file:
