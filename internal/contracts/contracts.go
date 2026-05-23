@@ -705,16 +705,20 @@ func analyticsFilterSchema(title string) Schema {
 func analyticsSummarySchema(title string) Schema {
 	return objectSchema(title, []string{"summary"}, map[string]any{
 		"summary": objectSchema("Summary", []string{"attempt_count", "total_cost_usd"}, map[string]any{
-			"attempt_count":          integerSchema("Total attempts", 0, 1<<62),
-			"succeeded_attempts":     integerSchema("Succeeded attempts", 0, 1<<62),
-			"failed_attempts":        integerSchema("Failed attempts", 0, 1<<62),
-			"blocked_attempts":       integerSchema("Blocked attempts", 0, 1<<62),
-			"total_tokens_in":        integerSchema("Input tokens", 0, 1<<62),
-			"total_tokens_out":       integerSchema("Output tokens", 0, 1<<62),
-			"total_cost_usd":         numberSchema("Total cost in USD", 0),
-			"total_duration_seconds": numberSchema("Total duration in seconds", 0),
-			"total_retries":          integerSchema("Total retries", 0, 1<<62),
-			"attempts_with_metrics":  integerSchema("Attempts that submitted metrics", 0, 1<<62),
+			"attempt_count":            integerSchema("Total attempts", 0, 1<<62),
+			"succeeded_attempts":       integerSchema("Succeeded attempts", 0, 1<<62),
+			"failed_attempts":          integerSchema("Failed attempts", 0, 1<<62),
+			"blocked_attempts":         integerSchema("Blocked attempts", 0, 1<<62),
+			"total_tokens_in":          integerSchema("Input tokens", 0, 1<<62),
+			"total_tokens_out":         integerSchema("Output tokens", 0, 1<<62),
+			"total_tokens":             integerSchema("Input plus output tokens", 0, 1<<62),
+			"total_cost_usd":           numberSchema("Total cost in USD", 0),
+			"total_duration_seconds":   numberSchema("Total duration in seconds", 0),
+			"total_retries":            integerSchema("Total retries", 0, 1<<62),
+			"attempts_with_metrics":    integerSchema("Attempts that submitted metrics", 0, 1<<62),
+			"success_rate":             numberSchema("Succeeded attempts divided by total attempts", 0),
+			"average_cost_usd":         numberSchema("Average cost per attempt with metrics", 0),
+			"average_duration_seconds": numberSchema("Average duration per attempt with metrics", 0),
 		}),
 	})
 }
@@ -722,17 +726,21 @@ func analyticsSummarySchema(title string) Schema {
 func analyticsGroupSchema(title string) Schema {
 	return objectSchema(title, []string{"groups"}, map[string]any{
 		"groups": arraySchema("Grouped analytics rows", objectSchema("Group", []string{"group", "attempt_count"}, map[string]any{
-			"group":                  stringSchema("Analytics group value"),
-			"attempt_count":          integerSchema("Total attempts", 0, 1<<62),
-			"succeeded_attempts":     integerSchema("Succeeded attempts", 0, 1<<62),
-			"failed_attempts":        integerSchema("Failed attempts", 0, 1<<62),
-			"blocked_attempts":       integerSchema("Blocked attempts", 0, 1<<62),
-			"total_tokens_in":        integerSchema("Input tokens", 0, 1<<62),
-			"total_tokens_out":       integerSchema("Output tokens", 0, 1<<62),
-			"total_cost_usd":         numberSchema("Total cost in USD", 0),
-			"total_duration_seconds": numberSchema("Total duration in seconds", 0),
-			"total_retries":          integerSchema("Total retries", 0, 1<<62),
-			"attempts_with_metrics":  integerSchema("Attempts that submitted metrics", 0, 1<<62),
+			"group":                    stringSchema("Analytics group value"),
+			"attempt_count":            integerSchema("Total attempts", 0, 1<<62),
+			"succeeded_attempts":       integerSchema("Succeeded attempts", 0, 1<<62),
+			"failed_attempts":          integerSchema("Failed attempts", 0, 1<<62),
+			"blocked_attempts":         integerSchema("Blocked attempts", 0, 1<<62),
+			"total_tokens_in":          integerSchema("Input tokens", 0, 1<<62),
+			"total_tokens_out":         integerSchema("Output tokens", 0, 1<<62),
+			"total_tokens":             integerSchema("Input plus output tokens", 0, 1<<62),
+			"total_cost_usd":           numberSchema("Total cost in USD", 0),
+			"total_duration_seconds":   numberSchema("Total duration in seconds", 0),
+			"total_retries":            integerSchema("Total retries", 0, 1<<62),
+			"attempts_with_metrics":    integerSchema("Attempts that submitted metrics", 0, 1<<62),
+			"success_rate":             numberSchema("Succeeded attempts divided by total attempts", 0),
+			"average_cost_usd":         numberSchema("Average cost per attempt with metrics", 0),
+			"average_duration_seconds": numberSchema("Average duration per attempt with metrics", 0),
 		})),
 	})
 }

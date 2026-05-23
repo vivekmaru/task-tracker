@@ -32,30 +32,38 @@ type AnalyticsFilter struct {
 }
 
 type AnalyticsSummary struct {
-	AttemptCount         int64   `json:"attempt_count"`
-	SucceededAttempts    int64   `json:"succeeded_attempts"`
-	FailedAttempts       int64   `json:"failed_attempts"`
-	BlockedAttempts      int64   `json:"blocked_attempts"`
-	TotalTokensIn        int64   `json:"total_tokens_in"`
-	TotalTokensOut       int64   `json:"total_tokens_out"`
-	TotalCostUSD         float64 `json:"total_cost_usd"`
-	TotalDurationSeconds float64 `json:"total_duration_seconds"`
-	TotalRetries         int64   `json:"total_retries"`
-	AttemptsWithMetrics  int64   `json:"attempts_with_metrics"`
+	AttemptCount           int64   `json:"attempt_count"`
+	SucceededAttempts      int64   `json:"succeeded_attempts"`
+	FailedAttempts         int64   `json:"failed_attempts"`
+	BlockedAttempts        int64   `json:"blocked_attempts"`
+	TotalTokensIn          int64   `json:"total_tokens_in"`
+	TotalTokensOut         int64   `json:"total_tokens_out"`
+	TotalTokens            int64   `json:"total_tokens"`
+	TotalCostUSD           float64 `json:"total_cost_usd"`
+	TotalDurationSeconds   float64 `json:"total_duration_seconds"`
+	TotalRetries           int64   `json:"total_retries"`
+	AttemptsWithMetrics    int64   `json:"attempts_with_metrics"`
+	SuccessRate            float64 `json:"success_rate"`
+	AverageCostUSD         float64 `json:"average_cost_usd"`
+	AverageDurationSeconds float64 `json:"average_duration_seconds"`
 }
 
 type AnalyticsGroup struct {
-	Group                string  `json:"group"`
-	AttemptCount         int64   `json:"attempt_count"`
-	SucceededAttempts    int64   `json:"succeeded_attempts"`
-	FailedAttempts       int64   `json:"failed_attempts"`
-	BlockedAttempts      int64   `json:"blocked_attempts"`
-	TotalTokensIn        int64   `json:"total_tokens_in"`
-	TotalTokensOut       int64   `json:"total_tokens_out"`
-	TotalCostUSD         float64 `json:"total_cost_usd"`
-	TotalDurationSeconds float64 `json:"total_duration_seconds"`
-	TotalRetries         int64   `json:"total_retries"`
-	AttemptsWithMetrics  int64   `json:"attempts_with_metrics"`
+	Group                  string  `json:"group"`
+	AttemptCount           int64   `json:"attempt_count"`
+	SucceededAttempts      int64   `json:"succeeded_attempts"`
+	FailedAttempts         int64   `json:"failed_attempts"`
+	BlockedAttempts        int64   `json:"blocked_attempts"`
+	TotalTokensIn          int64   `json:"total_tokens_in"`
+	TotalTokensOut         int64   `json:"total_tokens_out"`
+	TotalTokens            int64   `json:"total_tokens"`
+	TotalCostUSD           float64 `json:"total_cost_usd"`
+	TotalDurationSeconds   float64 `json:"total_duration_seconds"`
+	TotalRetries           int64   `json:"total_retries"`
+	AttemptsWithMetrics    int64   `json:"attempts_with_metrics"`
+	SuccessRate            float64 `json:"success_rate"`
+	AverageCostUSD         float64 `json:"average_cost_usd"`
+	AverageDurationSeconds float64 `json:"average_duration_seconds"`
 }
 
 func (s *AnalyticsService) Summary(ctx context.Context, filter AnalyticsFilter) (AnalyticsSummary, error) {
@@ -130,22 +138,28 @@ func (s *AnalyticsService) ByAgent(ctx context.Context, filter AnalyticsFilter) 
 }
 
 func analyticsSummaryFromRow(row db.GetAnalyticsSummaryRow) AnalyticsSummary {
+	totalCost := numericFloat(row.TotalCostUsd)
+	totalDuration := numericFloat(row.TotalDurationSecs)
 	return AnalyticsSummary{
-		AttemptCount:         row.AttemptCount,
-		SucceededAttempts:    row.SucceededAttempts,
-		FailedAttempts:       row.FailedAttempts,
-		BlockedAttempts:      row.BlockedAttempts,
-		TotalTokensIn:        row.TotalTokensIn,
-		TotalTokensOut:       row.TotalTokensOut,
-		TotalCostUSD:         numericFloat(row.TotalCostUsd),
-		TotalDurationSeconds: numericFloat(row.TotalDurationSecs),
-		TotalRetries:         row.TotalRetries,
-		AttemptsWithMetrics:  row.AttemptsWithMetrics,
+		AttemptCount:           row.AttemptCount,
+		SucceededAttempts:      row.SucceededAttempts,
+		FailedAttempts:         row.FailedAttempts,
+		BlockedAttempts:        row.BlockedAttempts,
+		TotalTokensIn:          row.TotalTokensIn,
+		TotalTokensOut:         row.TotalTokensOut,
+		TotalTokens:            row.TotalTokensIn + row.TotalTokensOut,
+		TotalCostUSD:           totalCost,
+		TotalDurationSeconds:   totalDuration,
+		TotalRetries:           row.TotalRetries,
+		AttemptsWithMetrics:    row.AttemptsWithMetrics,
+		SuccessRate:            ratio(row.SucceededAttempts, row.AttemptCount),
+		AverageCostUSD:         average(totalCost, row.AttemptsWithMetrics),
+		AverageDurationSeconds: average(totalDuration, row.AttemptsWithMetrics),
 	}
 }
 
 func analyticsGroupFromModelRow(row db.GetAnalyticsByModelRow) AnalyticsGroup {
-	return AnalyticsGroup{
+	group := AnalyticsGroup{
 		Group:                row.Model,
 		AttemptCount:         row.AttemptCount,
 		SucceededAttempts:    row.SucceededAttempts,
@@ -158,10 +172,11 @@ func analyticsGroupFromModelRow(row db.GetAnalyticsByModelRow) AnalyticsGroup {
 		TotalRetries:         row.TotalRetries,
 		AttemptsWithMetrics:  row.AttemptsWithMetrics,
 	}
+	return withComparisonFields(group)
 }
 
 func analyticsGroupFromHarnessRow(row db.GetAnalyticsByHarnessRow) AnalyticsGroup {
-	return AnalyticsGroup{
+	group := AnalyticsGroup{
 		Group:                row.Harness,
 		AttemptCount:         row.AttemptCount,
 		SucceededAttempts:    row.SucceededAttempts,
@@ -174,10 +189,11 @@ func analyticsGroupFromHarnessRow(row db.GetAnalyticsByHarnessRow) AnalyticsGrou
 		TotalRetries:         row.TotalRetries,
 		AttemptsWithMetrics:  row.AttemptsWithMetrics,
 	}
+	return withComparisonFields(group)
 }
 
 func analyticsGroupFromStatusRow(row db.GetAnalyticsByStatusRow) AnalyticsGroup {
-	return AnalyticsGroup{
+	group := AnalyticsGroup{
 		Group:                row.Status,
 		AttemptCount:         row.AttemptCount,
 		SucceededAttempts:    row.SucceededAttempts,
@@ -190,10 +206,11 @@ func analyticsGroupFromStatusRow(row db.GetAnalyticsByStatusRow) AnalyticsGroup 
 		TotalRetries:         row.TotalRetries,
 		AttemptsWithMetrics:  row.AttemptsWithMetrics,
 	}
+	return withComparisonFields(group)
 }
 
 func analyticsGroupFromAgentRow(row db.GetAnalyticsByAgentRow) AnalyticsGroup {
-	return AnalyticsGroup{
+	group := AnalyticsGroup{
 		Group:                row.AgentID,
 		AttemptCount:         row.AttemptCount,
 		SucceededAttempts:    row.SucceededAttempts,
@@ -206,4 +223,27 @@ func analyticsGroupFromAgentRow(row db.GetAnalyticsByAgentRow) AnalyticsGroup {
 		TotalRetries:         row.TotalRetries,
 		AttemptsWithMetrics:  row.AttemptsWithMetrics,
 	}
+	return withComparisonFields(group)
+}
+
+func withComparisonFields(group AnalyticsGroup) AnalyticsGroup {
+	group.TotalTokens = group.TotalTokensIn + group.TotalTokensOut
+	group.SuccessRate = ratio(group.SucceededAttempts, group.AttemptCount)
+	group.AverageCostUSD = average(group.TotalCostUSD, group.AttemptsWithMetrics)
+	group.AverageDurationSeconds = average(group.TotalDurationSeconds, group.AttemptsWithMetrics)
+	return group
+}
+
+func ratio(numerator, denominator int64) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator)
+}
+
+func average(total float64, count int64) float64 {
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count)
 }
