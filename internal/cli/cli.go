@@ -106,6 +106,7 @@ type RuntimeHandle interface {
 	AnalyticsByHarness(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByStatus(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByAgent(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsTrends(context.Context, services.AnalyticsTrendFilter) ([]services.AnalyticsTrend, error)
 }
 
 type Dependencies struct {
@@ -754,9 +755,10 @@ func runAnalyticsCommand(ctx context.Context, args []string, stdout, stderr io.W
 	flags := newFlagSet("analytics "+subcommand, stderr)
 	var opts commandOptions
 	opts.bind(flags)
-	var workspaceID, projectID string
+	var workspaceID, projectID, bucket string
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&bucket, "bucket", string(services.AnalyticsTrendBucketDay), "trend bucket: day or week")
 	if !parseFlags(flags, args[1:]) {
 		return 2
 	}
@@ -825,6 +827,20 @@ func runAnalyticsCommand(ctx context.Context, args []string, stdout, stderr io.W
 			return writeJSON(stdout, stderr, map[string]any{"groups": groups})
 		}
 		writeAnalyticsGroups(stdout, "Agent", groups)
+		return 0
+	case "trends":
+		trends, err := rt.AnalyticsTrends(ctx, services.AnalyticsTrendFilter{
+			AnalyticsFilter: filter,
+			Bucket:          services.AnalyticsTrendBucket(bucket),
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "analytics trends error: %v\n", err)
+			return 1
+		}
+		if opts.JSON {
+			return writeJSON(stdout, stderr, map[string]any{"trends": trends})
+		}
+		writeAnalyticsTrends(stdout, trends)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown analytics command %q\n\n", subcommand)
@@ -1849,6 +1865,29 @@ func writeAnalyticsGroups(stdout io.Writer, label string, groups []services.Anal
 	}
 }
 
+func writeAnalyticsTrends(stdout io.Writer, trends []services.AnalyticsTrend) {
+	fmt.Fprintln(stdout, "Bucket\tAttempts\tSucceeded\tFailed\tBlocked\tSuccess Rate\tAvg Cost\tAvg Duration\tAvg Tokens\tCost\tTokens\tDuration\tRetries")
+	for _, trend := range trends {
+		fmt.Fprintf(
+			stdout,
+			"%s\t%d\t%d\t%d\t%d\t%.1f%%\t$%.6f\t%.3fs\t%.0f\t$%.6f\t%d\t%.3fs\t%d\n",
+			trend.BucketStart.UTC().Format("2006-01-02"),
+			trend.AttemptCount,
+			trend.SucceededAttempts,
+			trend.FailedAttempts,
+			trend.BlockedAttempts,
+			trend.SuccessRate*100,
+			trend.AverageCostUSD,
+			trend.AverageDurationSeconds,
+			trend.AverageTokens,
+			trend.TotalCostUSD,
+			trend.TotalTokens,
+			trend.TotalDurationSeconds,
+			trend.TotalRetries,
+		)
+	}
+}
+
 func proofName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1939,7 +1978,7 @@ func printCodexHelp(w io.Writer) {
 
 func printAnalyticsHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  forge analytics <summary|by-model|by-harness|by-status|by-agent> [flags]")
+	fmt.Fprintln(w, "  forge analytics <summary|by-model|by-harness|by-status|by-agent|trends> [flags]")
 }
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {

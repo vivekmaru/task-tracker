@@ -442,6 +442,10 @@ func (r *Runtime) AnalyticsByAgent(ctx context.Context, filter services.Analytic
 	return r.Analytics.ByAgent(ctx, filter)
 }
 
+func (r *Runtime) AnalyticsTrends(ctx context.Context, filter services.AnalyticsTrendFilter) ([]services.AnalyticsTrend, error) {
+	return r.Analytics.Trends(ctx, filter)
+}
+
 func (r *Runtime) ListCapabilities(ctx context.Context, req services.ListCapabilitiesRequest) ([]db.AgentCapability, error) {
 	return r.Capabilities.List(ctx, req)
 }

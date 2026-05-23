@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
@@ -14,6 +15,7 @@ type AnalyticsStore interface {
 	GetAnalyticsByHarness(context.Context, db.GetAnalyticsByHarnessParams) ([]db.GetAnalyticsByHarnessRow, error)
 	GetAnalyticsByStatus(context.Context, db.GetAnalyticsByStatusParams) ([]db.GetAnalyticsByStatusRow, error)
 	GetAnalyticsByAgent(context.Context, db.GetAnalyticsByAgentParams) ([]db.GetAnalyticsByAgentRow, error)
+	GetAnalyticsTrends(context.Context, db.GetAnalyticsTrendsParams) ([]db.GetAnalyticsTrendsRow, error)
 }
 
 var _ AnalyticsStore = (*db.Queries)(nil)
@@ -29,6 +31,18 @@ func NewAnalyticsService(store AnalyticsStore) *AnalyticsService {
 type AnalyticsFilter struct {
 	WorkspaceID pgtype.UUID
 	ProjectID   pgtype.UUID
+}
+
+type AnalyticsTrendBucket string
+
+const (
+	AnalyticsTrendBucketDay  AnalyticsTrendBucket = "day"
+	AnalyticsTrendBucketWeek AnalyticsTrendBucket = "week"
+)
+
+type AnalyticsTrendFilter struct {
+	AnalyticsFilter
+	Bucket AnalyticsTrendBucket
 }
 
 type AnalyticsSummary struct {
@@ -64,6 +78,26 @@ type AnalyticsGroup struct {
 	SuccessRate            float64 `json:"success_rate"`
 	AverageCostUSD         float64 `json:"average_cost_usd"`
 	AverageDurationSeconds float64 `json:"average_duration_seconds"`
+}
+
+type AnalyticsTrend struct {
+	BucketStart            time.Time `json:"bucket_start"`
+	Bucket                 string    `json:"bucket"`
+	AttemptCount           int64     `json:"attempt_count"`
+	SucceededAttempts      int64     `json:"succeeded_attempts"`
+	FailedAttempts         int64     `json:"failed_attempts"`
+	BlockedAttempts        int64     `json:"blocked_attempts"`
+	TotalTokensIn          int64     `json:"total_tokens_in"`
+	TotalTokensOut         int64     `json:"total_tokens_out"`
+	TotalTokens            int64     `json:"total_tokens"`
+	AverageTokens          float64   `json:"average_tokens"`
+	TotalCostUSD           float64   `json:"total_cost_usd"`
+	TotalDurationSeconds   float64   `json:"total_duration_seconds"`
+	TotalRetries           int64     `json:"total_retries"`
+	AttemptsWithMetrics    int64     `json:"attempts_with_metrics"`
+	SuccessRate            float64   `json:"success_rate"`
+	AverageCostUSD         float64   `json:"average_cost_usd"`
+	AverageDurationSeconds float64   `json:"average_duration_seconds"`
 }
 
 func (s *AnalyticsService) Summary(ctx context.Context, filter AnalyticsFilter) (AnalyticsSummary, error) {
@@ -135,6 +169,37 @@ func (s *AnalyticsService) ByAgent(ctx context.Context, filter AnalyticsFilter) 
 		groups = append(groups, analyticsGroupFromAgentRow(row))
 	}
 	return groups, nil
+}
+
+func (s *AnalyticsService) Trends(ctx context.Context, filter AnalyticsTrendFilter) ([]AnalyticsTrend, error) {
+	bucket, err := normalizeTrendBucket(filter.Bucket)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.store.GetAnalyticsTrends(ctx, db.GetAnalyticsTrendsParams{
+		Bucket:      string(bucket),
+		WorkspaceID: filter.WorkspaceID,
+		ProjectID:   filter.ProjectID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get analytics trends: %w", err)
+	}
+	trends := make([]AnalyticsTrend, 0, len(rows))
+	for _, row := range rows {
+		trends = append(trends, analyticsTrendFromRow(row, bucket))
+	}
+	return trends, nil
+}
+
+func normalizeTrendBucket(bucket AnalyticsTrendBucket) (AnalyticsTrendBucket, error) {
+	switch bucket {
+	case "", AnalyticsTrendBucketDay:
+		return AnalyticsTrendBucketDay, nil
+	case AnalyticsTrendBucketWeek:
+		return AnalyticsTrendBucketWeek, nil
+	default:
+		return "", fmt.Errorf("unsupported analytics trend bucket %q", bucket)
+	}
 }
 
 func analyticsSummaryFromRow(row db.GetAnalyticsSummaryRow) AnalyticsSummary {
@@ -224,6 +289,32 @@ func analyticsGroupFromAgentRow(row db.GetAnalyticsByAgentRow) AnalyticsGroup {
 		AttemptsWithMetrics:  row.AttemptsWithMetrics,
 	}
 	return withComparisonFields(group)
+}
+
+func analyticsTrendFromRow(row db.GetAnalyticsTrendsRow, bucket AnalyticsTrendBucket) AnalyticsTrend {
+	totalCost := numericFloat(row.TotalCostUsd)
+	totalDuration := numericFloat(row.TotalDurationSecs)
+	totalTokens := row.TotalTokensIn + row.TotalTokensOut
+	trend := AnalyticsTrend{
+		BucketStart:          row.BucketStart.Time,
+		Bucket:               string(bucket),
+		AttemptCount:         row.AttemptCount,
+		SucceededAttempts:    row.SucceededAttempts,
+		FailedAttempts:       row.FailedAttempts,
+		BlockedAttempts:      row.BlockedAttempts,
+		TotalTokensIn:        row.TotalTokensIn,
+		TotalTokensOut:       row.TotalTokensOut,
+		TotalTokens:          totalTokens,
+		TotalCostUSD:         totalCost,
+		TotalDurationSeconds: totalDuration,
+		TotalRetries:         row.TotalRetries,
+		AttemptsWithMetrics:  row.AttemptsWithMetrics,
+	}
+	trend.SuccessRate = ratio(trend.SucceededAttempts, trend.AttemptCount)
+	trend.AverageCostUSD = average(totalCost, row.AttemptsWithMetrics)
+	trend.AverageDurationSeconds = average(totalDuration, row.AttemptsWithMetrics)
+	trend.AverageTokens = average(float64(totalTokens), row.AttemptsWithMetrics)
+	return trend
 }
 
 func withComparisonFields(group AnalyticsGroup) AnalyticsGroup {
