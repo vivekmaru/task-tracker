@@ -15,6 +15,7 @@ const (
 	defaultLogLevel          = "info"
 	defaultWorkerConcurrency = 1
 	defaultArtifactRoot      = ".forge/artifacts"
+	defaultArtifactBackend   = "local"
 )
 
 // Config contains process configuration shared by Forge command modes.
@@ -26,6 +27,15 @@ type Config struct {
 	AdminToken        string `json:"admin_token"`
 	AuthCookieSecure  bool   `json:"auth_cookie_secure"`
 	ArtifactRoot      string `json:"artifact_root"`
+	ArtifactBackend   string `json:"artifact_backend"`
+	S3Endpoint        string `json:"s3_endpoint"`
+	S3Region          string `json:"s3_region"`
+	S3Bucket          string `json:"s3_bucket"`
+	S3Prefix          string `json:"s3_prefix"`
+	S3AccessKeyID     string `json:"s3_access_key_id"`
+	S3SecretAccessKey string `json:"s3_secret_access_key"`
+	S3SessionToken    string `json:"s3_session_token"`
+	S3UsePathStyle    bool   `json:"s3_use_path_style"`
 }
 
 // Options controls configuration loading.
@@ -40,6 +50,7 @@ func Load(opts Options) (Config, error) {
 		LogLevel:          defaultLogLevel,
 		WorkerConcurrency: defaultWorkerConcurrency,
 		ArtifactRoot:      defaultArtifactRoot,
+		ArtifactBackend:   defaultArtifactBackend,
 	}
 
 	artifactRootExplicit := false
@@ -84,11 +95,53 @@ func Load(opts Options) (Config, error) {
 		artifactRootExplicit = true
 		artifactRootFromEnv = true
 	}
+	if value := os.Getenv("FORGE_ARTIFACT_BACKEND"); value != "" {
+		cfg.ArtifactBackend = value
+	}
+	if value := os.Getenv("FORGE_S3_ENDPOINT"); value != "" {
+		cfg.S3Endpoint = value
+	}
+	if value := os.Getenv("FORGE_S3_REGION"); value != "" {
+		cfg.S3Region = value
+	}
+	if value := os.Getenv("FORGE_S3_BUCKET"); value != "" {
+		cfg.S3Bucket = value
+	}
+	if value := os.Getenv("FORGE_S3_PREFIX"); value != "" {
+		cfg.S3Prefix = value
+	}
+	if value := os.Getenv("FORGE_S3_ACCESS_KEY_ID"); value != "" {
+		cfg.S3AccessKeyID = value
+	}
+	if value := os.Getenv("FORGE_S3_SECRET_ACCESS_KEY"); value != "" {
+		cfg.S3SecretAccessKey = value
+	}
+	if value := os.Getenv("FORGE_S3_SESSION_TOKEN"); value != "" {
+		cfg.S3SessionToken = value
+	}
+	if value := os.Getenv("FORGE_S3_USE_PATH_STYLE"); value != "" {
+		usePathStyle, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("FORGE_S3_USE_PATH_STYLE must be a boolean: %w", err)
+		}
+		cfg.S3UsePathStyle = usePathStyle
+	}
 	artifactRoot, err := normalizeArtifactRoot(cfg.ArtifactRoot, configPath, artifactRootExplicit, artifactRootFromEnv)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.ArtifactRoot = artifactRoot
+	cfg.ArtifactBackend = strings.ToLower(strings.TrimSpace(cfg.ArtifactBackend))
+	if cfg.ArtifactBackend == "" {
+		cfg.ArtifactBackend = defaultArtifactBackend
+	}
+	cfg.S3Endpoint = strings.TrimSpace(cfg.S3Endpoint)
+	cfg.S3Region = strings.TrimSpace(cfg.S3Region)
+	cfg.S3Bucket = strings.TrimSpace(cfg.S3Bucket)
+	cfg.S3Prefix = strings.TrimSpace(cfg.S3Prefix)
+	cfg.S3AccessKeyID = strings.TrimSpace(cfg.S3AccessKeyID)
+	cfg.S3SecretAccessKey = strings.TrimSpace(cfg.S3SecretAccessKey)
+	cfg.S3SessionToken = strings.TrimSpace(cfg.S3SessionToken)
 
 	return cfg, nil
 }
@@ -104,6 +157,9 @@ func (c Config) ValidateServer() error {
 	if strings.TrimSpace(c.AdminToken) == "" {
 		return errors.New("admin_token is required")
 	}
+	if err := c.ValidateArtifactStorage(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -115,6 +171,9 @@ func (c Config) ValidateWorker() error {
 	if c.WorkerConcurrency <= 0 {
 		return errors.New("worker_concurrency must be greater than zero")
 	}
+	if err := c.ValidateArtifactStorage(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -122,7 +181,30 @@ func (c Config) ValidateRuntime() error {
 	if c.DatabaseURL == "" {
 		return errors.New("database_url is required")
 	}
+	if err := c.ValidateArtifactStorage(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c Config) ValidateArtifactStorage() error {
+	switch strings.ToLower(strings.TrimSpace(c.ArtifactBackend)) {
+	case "", "local":
+		return nil
+	case "s3":
+		if strings.TrimSpace(c.S3Bucket) == "" {
+			return errors.New("s3_bucket is required when artifact_backend is s3")
+		}
+		if strings.TrimSpace(c.S3SessionToken) != "" && (strings.TrimSpace(c.S3AccessKeyID) == "" || strings.TrimSpace(c.S3SecretAccessKey) == "") {
+			return errors.New("s3_access_key_id and s3_secret_access_key are required when s3_session_token is provided")
+		}
+		if (strings.TrimSpace(c.S3AccessKeyID) == "") != (strings.TrimSpace(c.S3SecretAccessKey) == "") {
+			return errors.New("s3_access_key_id and s3_secret_access_key must be provided together")
+		}
+		return nil
+	default:
+		return errors.New("artifact_backend must be local or s3")
+	}
 }
 
 type fileConfigMetadata struct {

@@ -42,6 +42,7 @@ type Runtime interface {
 	ListArtifacts(context.Context, services.ListArtifactsRequest) ([]db.Artifact, error)
 	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
 	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
+	ArtifactContentOpenable(db.Artifact) bool
 	DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
 	ListWorkspaces(context.Context) ([]db.Workspace, error)
 	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
@@ -416,9 +417,10 @@ func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	timeline, timelineErr := loadTimeline(r.Context(), h.runtime, ticketID)
 	renderComponent(r.Context(), w, http.StatusOK, ticketDetailPage(ticketDetailView{
-		Ticket:      ticket,
-		Timeline:    timeline,
-		TimelineErr: timelineErr,
+		Ticket:                  ticket,
+		Timeline:                timeline,
+		TimelineErr:             timelineErr,
+		ArtifactContentOpenable: artifactContentOpenability(h.runtime, timeline.Artifacts),
 	}))
 }
 
@@ -495,7 +497,7 @@ func (h Handler) renderArtifactDetail(w http.ResponseWriter, r *http.Request, id
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifact", err.Error())
 		return
 	}
-	renderComponent(r.Context(), w, http.StatusOK, artifactDetailPage(artifact))
+	renderComponent(r.Context(), w, http.StatusOK, artifactDetailPage(artifact, h.runtime.ArtifactContentOpenable(artifact)))
 }
 
 func (h Handler) renderArtifactContent(w http.ResponseWriter, r *http.Request, idText string) {
@@ -515,10 +517,6 @@ func (h Handler) renderArtifactContent(w http.ResponseWriter, r *http.Request, i
 			return
 		}
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifact", err.Error())
-		return
-	}
-	if !storage.IsLocalArtifactURL(artifact.Url) {
-		renderStatus(r.Context(), w, http.StatusConflict, "Artifact content unavailable", "Only local artifacts can be opened from Forge.")
 		return
 	}
 	content, err := h.runtime.OpenArtifact(r.Context(), artifact)
@@ -719,9 +717,10 @@ type ticketListView struct {
 }
 
 type ticketDetailView struct {
-	Ticket      db.Ticket
-	Timeline    ticketTimeline
-	TimelineErr error
+	Ticket                  db.Ticket
+	Timeline                ticketTimeline
+	TimelineErr             error
+	ArtifactContentOpenable map[string]bool
 }
 
 type searchView struct {
@@ -1081,7 +1080,7 @@ func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Compon
 	})
 }
 
-func artifactDetailPage(artifact db.Artifact) templ.Component {
+func artifactDetailPage(artifact db.Artifact, contentOpenable bool) templ.Component {
 	return layout("Artifact Detail", func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Artifact Detail</h1><p>%s</p></div><div class="actions"><a class="button" href="%s">Artifacts</a><a class="button" href="/tickets/%s">Ticket</a></div></section>`,
 			esc(artifact.Role),
@@ -1107,9 +1106,13 @@ func artifactDetailPage(artifact db.Artifact) templ.Component {
 			fmt.Fprintf(w, `<div class="list"><h3>Metadata JSON</h3><pre>%s</pre></div>`, esc(metadata))
 		}
 		fmt.Fprint(w, `</article><article class="panel"><h2>Actions</h2>`)
-		if storage.IsLocalArtifactURL(artifact.Url) {
+		if contentOpenable {
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s/content">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
+		}
+		if storage.IsLocalArtifactURL(artifact.Url) {
 			fmt.Fprintf(w, `<form method="post" action="/artifacts/%s/delete" hx-boost="false"><button type="submit">Delete local artifact</button></form>`, esc(uuidText(artifact.ID)))
+		} else if storage.IsS3ArtifactURL(artifact.Url) {
+			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
 			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
@@ -1310,7 +1313,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 	}
 	for _, artifact := range view.Timeline.Artifacts {
 		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s %s</span>`, esc(artifact.Name), esc(artifact.Role), esc(artifact.Type))
-		if storage.IsLocalArtifactURL(artifact.Url) {
+		if view.ArtifactContentOpenable[uuidText(artifact.ID)] {
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
@@ -1382,6 +1385,17 @@ func safeArtifactURL(value string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func artifactContentOpenability(runtime Runtime, artifacts []db.Artifact) map[string]bool {
+	openable := make(map[string]bool, len(artifacts))
+	if runtime == nil {
+		return openable
+	}
+	for _, artifact := range artifacts {
+		openable[uuidText(artifact.ID)] = runtime.ArtifactContentOpenable(artifact)
+	}
+	return openable
 }
 
 func headerFilename(value string) string {

@@ -939,6 +939,88 @@ func TestArtifactDetailShowsMetadataAndLocalOpenBehavior(t *testing.T) {
 	}
 }
 
+func TestArtifactDetailHidesContentLinkWhenStorageBackendAndURLDisagree(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageLocal,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/artifacts/"+uuidString(artifactID)+"/content") {
+		t.Fatalf("content link should be hidden when storage backend and URL disagree:\n%s", rec.Body.String())
+	}
+}
+
+func TestArtifactDetailHidesS3ContentLinkWhenRuntimeCannotOpenBucket(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "s3://other-bucket/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/artifacts/"+uuidString(artifactID)+"/content") {
+		t.Fatalf("content link should be hidden when runtime cannot open the s3 bucket:\n%s", rec.Body.String())
+	}
+}
+
+func TestArtifactDetailShowsS3ContentLinkWhenRuntimeCanOpenBucket(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		s3ArtifactOpenable: true,
+		artifact: db.Artifact{
+			ID:             artifactID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "/artifacts/"+uuidString(artifactID)+"/content") {
+		t.Fatalf("content link should be shown when runtime can open the s3 bucket:\n%s", rec.Body.String())
+	}
+}
+
 func TestArtifactContentRouteDownloadsLocalArtifactContent(t *testing.T) {
 	artifactID := testUUID(15)
 	runtime := &fakeRuntime{
@@ -973,6 +1055,40 @@ func TestArtifactContentRouteDownloadsLocalArtifactContent(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("expected nosniff header, got %q", got)
+	}
+	if rec.Body.String() != "all good\n" {
+		t.Fatalf("unexpected artifact body: %q", rec.Body.String())
+	}
+}
+
+func TestArtifactContentRouteDownloadsS3ArtifactContent(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			MimeType:       "text/plain",
+		},
+		artifactContent: storage.ArtifactContent{
+			Name:     "go-test.log",
+			MimeType: "text/plain",
+			Size:     9,
+			Reader:   io.NopCloser(strings.NewReader("all good\n")),
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID)+"/content", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.artifact.Url != "s3://forge-artifacts/proofs/go-test.log" {
+		t.Fatalf("expected runtime open call for s3 artifact, got %#v", runtime.artifact)
 	}
 	if rec.Body.String() != "all good\n" {
 		t.Fatalf("unexpected artifact body: %q", rec.Body.String())
@@ -1082,6 +1198,7 @@ type fakeRuntime struct {
 	attemptArtifacts          []db.Artifact
 	artifact                  db.Artifact
 	artifactContent           storage.ArtifactContent
+	s3ArtifactOpenable        bool
 	deletedArtifactID         pgtype.UUID
 	deleteArtifactErr         error
 	workspaces                []db.Workspace
@@ -1162,6 +1279,17 @@ func (f *fakeRuntime) GetArtifact(_ context.Context, id pgtype.UUID) (db.Artifac
 func (f *fakeRuntime) OpenArtifact(_ context.Context, artifact db.Artifact) (storage.ArtifactContent, error) {
 	f.artifact = artifact
 	return f.artifactContent, nil
+}
+
+func (f *fakeRuntime) ArtifactContentOpenable(artifact db.Artifact) bool {
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return storage.IsLocalArtifactURL(artifact.Url)
+	case services.ArtifactStorageS3:
+		return f.s3ArtifactOpenable && storage.IsS3ArtifactURL(artifact.Url)
+	default:
+		return false
+	}
 }
 
 func (f *fakeRuntime) DeleteLocalArtifact(_ context.Context, id pgtype.UUID) (db.Artifact, error) {

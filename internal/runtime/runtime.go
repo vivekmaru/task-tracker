@@ -3,7 +3,12 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,18 +20,20 @@ import (
 )
 
 type Runtime struct {
-	Pool         *pgxpool.Pool
-	Queries      *db.Queries
-	Tickets      *services.TicketService
-	Claims       *services.ClaimService
-	Attempts     *services.AttemptService
-	Artifacts    *services.ArtifactService
-	LocalStore   *storage.LocalStore
-	Search       *services.SearchService
-	Capabilities *services.CapabilityService
-	Analytics    *services.AnalyticsService
-	Maintenance  *jobs.MaintenanceWorker
-	Webhooks     *jobs.WebhookWorker
+	Pool          *pgxpool.Pool
+	Queries       *db.Queries
+	Tickets       *services.TicketService
+	Claims        *services.ClaimService
+	Attempts      *services.AttemptService
+	Artifacts     *services.ArtifactService
+	LocalStore    *storage.LocalStore
+	S3Store       *storage.S3Store
+	ArtifactStore storage.Store
+	Search        *services.SearchService
+	Capabilities  *services.CapabilityService
+	Analytics     *services.AnalyticsService
+	Maintenance   *jobs.MaintenanceWorker
+	Webhooks      *jobs.WebhookWorker
 }
 
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
@@ -39,33 +46,60 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	rt := NewWithConfig(db.New(pool), cfg)
+	rt, err := NewWithConfig(ctx, db.New(pool), cfg)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
 	rt.Pool = pool
 	return rt, nil
 }
 
 func New(queries *db.Queries) *Runtime {
-	return NewWithConfig(queries, config.Config{})
+	rt, err := NewWithConfig(context.Background(), queries, config.Config{})
+	if err != nil {
+		panic(err)
+	}
+	return rt
 }
 
-func NewWithConfig(queries *db.Queries, cfg config.Config) *Runtime {
+func NewWithConfig(ctx context.Context, queries *db.Queries, cfg config.Config) (*Runtime, error) {
+	if err := cfg.ValidateArtifactStorage(); err != nil {
+		return nil, err
+	}
 	artifactRoot := cfg.ArtifactRoot
 	if artifactRoot == "" {
 		artifactRoot = ".forge/artifacts"
 	}
-	return &Runtime{
-		Queries:      queries,
-		Tickets:      services.NewTicketService(queries),
-		Claims:       services.NewClaimService(queries),
-		Attempts:     services.NewAttemptService(queries),
-		Artifacts:    services.NewArtifactService(queries),
-		LocalStore:   storage.NewLocalStore(artifactRoot),
-		Search:       services.NewSearchService(queries),
-		Capabilities: services.NewCapabilityService(queries),
-		Analytics:    services.NewAnalyticsService(queries),
-		Maintenance:  jobs.NewMaintenanceWorker(queries),
-		Webhooks:     jobs.NewWebhookWorker(queries),
+	localStore := storage.NewLocalStore(artifactRoot)
+	artifactStore := storage.Store(localStore)
+	var s3Store *storage.S3Store
+	if strings.EqualFold(strings.TrimSpace(cfg.ArtifactBackend), storage.BackendS3) {
+		client, err := newS3Client(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		s3Store, err = storage.NewS3Store(client, storage.S3Options{Bucket: cfg.S3Bucket, Prefix: cfg.S3Prefix})
+		if err != nil {
+			return nil, fmt.Errorf("configure s3 artifact store: %w", err)
+		}
+		artifactStore = s3Store
 	}
+	return &Runtime{
+		Queries:       queries,
+		Tickets:       services.NewTicketService(queries),
+		Claims:        services.NewClaimService(queries),
+		Attempts:      services.NewAttemptService(queries),
+		Artifacts:     services.NewArtifactService(queries),
+		LocalStore:    localStore,
+		S3Store:       s3Store,
+		ArtifactStore: artifactStore,
+		Search:        services.NewSearchService(queries),
+		Capabilities:  services.NewCapabilityService(queries),
+		Analytics:     services.NewAnalyticsService(queries),
+		Maintenance:   jobs.NewMaintenanceWorker(queries),
+		Webhooks:      jobs.NewWebhookWorker(queries),
+	}, nil
 }
 
 func (r *Runtime) Close() {
@@ -293,14 +327,50 @@ func (r *Runtime) ListProjectsByWorkspace(ctx context.Context, workspaceID pgtyp
 }
 
 func (r *Runtime) OpenArtifact(ctx context.Context, artifact db.Artifact) (storage.ArtifactContent, error) {
-	if artifact.StorageBackend != services.ArtifactStorageLocal {
-		return storage.ArtifactContent{}, fmt.Errorf("artifact storage backend %q is not locally openable", artifact.StorageBackend)
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return r.LocalStore.Open(ctx, artifact)
+	case services.ArtifactStorageS3:
+		if r.S3Store == nil {
+			return storage.ArtifactContent{}, fmt.Errorf("s3 artifact storage is not configured")
+		}
+		return r.S3Store.Open(ctx, artifact)
+	default:
+		return storage.ArtifactContent{}, fmt.Errorf("artifact storage backend %q is not openable", artifact.StorageBackend)
 	}
-	return r.LocalStore.Open(ctx, artifact)
+}
+
+func (r *Runtime) ArtifactContentOpenable(artifact db.Artifact) bool {
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return storage.IsLocalArtifactURL(artifact.Url)
+	case services.ArtifactStorageS3:
+		return r.S3Store != nil && r.S3Store.CanOpenURL(artifact.Url)
+	default:
+		return false
+	}
+}
+
+func (r *Runtime) StoreArtifact(ctx context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
+	return r.ArtifactStore.StoreFile(ctx, sourcePath, preferredName)
 }
 
 func (r *Runtime) StoreLocalArtifact(ctx context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
 	return r.LocalStore.StoreFile(ctx, sourcePath, preferredName)
+}
+
+func (r *Runtime) RemoveArtifact(ctx context.Context, rawURL string) error {
+	switch storage.BackendForURL(rawURL) {
+	case storage.BackendLocal:
+		return r.LocalStore.Remove(ctx, rawURL)
+	case storage.BackendS3:
+		if r.S3Store == nil {
+			return fmt.Errorf("s3 artifact storage is not configured")
+		}
+		return r.S3Store.Remove(ctx, rawURL)
+	default:
+		return fmt.Errorf("artifact storage backend is not configured for %q", rawURL)
+	}
 }
 
 func (r *Runtime) RemoveLocalArtifact(ctx context.Context, rawURL string) error {
@@ -319,6 +389,33 @@ func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.Registe
 
 func (r *Runtime) DecomposeTicket(ctx context.Context, req services.DecomposeTicketRequest) (services.DecomposeTicketResult, error) {
 	return r.Tickets.DecomposeTicket(ctx, req)
+}
+
+func newS3Client(ctx context.Context, cfg config.Config) (storage.S3Client, error) {
+	region := strings.TrimSpace(cfg.S3Region)
+	if region == "" {
+		region = "us-east-1"
+	}
+	loadOptions := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(region),
+	}
+	if cfg.S3AccessKeyID != "" || cfg.S3SecretAccessKey != "" || cfg.S3SessionToken != "" {
+		loadOptions = append(loadOptions, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			cfg.S3AccessKeyID,
+			cfg.S3SecretAccessKey,
+			cfg.S3SessionToken,
+		)))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("load s3 configuration: %w", err)
+	}
+	return s3.NewFromConfig(awsCfg, func(opts *s3.Options) {
+		if endpoint := strings.TrimSpace(cfg.S3Endpoint); endpoint != "" {
+			opts.BaseEndpoint = aws.String(endpoint)
+		}
+		opts.UsePathStyle = cfg.S3UsePathStyle
+	}), nil
 }
 
 func (r *Runtime) GetCapabilities(ctx context.Context, req services.GetCapabilitiesRequest) (db.AgentCapability, error) {
