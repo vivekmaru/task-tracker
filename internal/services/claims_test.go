@@ -154,6 +154,48 @@ func TestClaimNextReplaysStoredIdempotencyResponse(t *testing.T) {
 	}
 }
 
+func TestClaimNextReplaysStoredIdempotencyResponseBeforePolicy(t *testing.T) {
+	ticketID := testUUID(15)
+	attemptID := testUUID(16)
+	req := ClaimNextRequest{
+		WorkspaceID:    testUUID(1),
+		ProjectID:      testUUID(2),
+		Harness:        "codex",
+		AgentID:        "codex",
+		Lease:          2 * time.Hour,
+		IdempotencyKey: "stable-key",
+	}
+	req = trimClaimNextRequest(req)
+	requestHash, err := claimRequestHash(req)
+	if err != nil {
+		t.Fatalf("hash claim request: %v", err)
+	}
+	store := &fakeClaimStore{
+		idempotency: db.IdempotencyKey{
+			RequestHash:  requestHash,
+			ResponseBody: claimResponseJSON(t, ticketID, attemptID),
+		},
+		ticket: db.Ticket{ID: ticketID},
+		attempt: db.Attempt{
+			ID:       attemptID,
+			TicketID: ticketID,
+		},
+	}
+	service := NewClaimService(store, WithClaimPolicy(NewPolicyService(PolicyConfig{MaxClaimLease: time.Hour})))
+
+	result, err := service.ClaimNext(context.Background(), req)
+	if err != nil {
+		t.Fatalf("claim replay: %v", err)
+	}
+
+	if len(store.claimParams) != 0 {
+		t.Fatalf("expected replay without a fresh claim, got %#v", store.claimParams)
+	}
+	if result.Ticket.ID != ticketID || result.Attempt.ID != attemptID {
+		t.Fatalf("unexpected replay result: %#v", result)
+	}
+}
+
 func TestClaimNextRejectsIdempotencyConflict(t *testing.T) {
 	service := NewClaimService(&fakeClaimStore{
 		idempotency: db.IdempotencyKey{

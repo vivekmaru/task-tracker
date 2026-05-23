@@ -30,6 +30,21 @@ Each operation includes:
 
 Agent-created ticket flows should prefer `propose_ticket` and `create_ticket_from_attempt`. Their schemas deliberately ask for acceptance criteria, verification commands, relevant paths, and creation reason so agents can create useful work without adding Jira-style ceremony.
 
+## Workflow Policy Guardrails
+
+Forge now has a small workflow policy service in `internal/services/policy.go`. It is not RBAC; it is a shared guardrail layer that evaluates common ticket and attempt workflow inputs and returns an `allow`, `warn`, or `deny` decision with human-readable reasons.
+
+Current defaults:
+
+- Agent-created work may not be directly enqueued unless the caller has enqueue authority.
+- Thin agent-created tickets are warnings, not denials: missing source attribution, creation reason, acceptance criteria, or verification commands should be surfaced for triage.
+- Claim requests deny excessive leases; the default maximum claim lease is 24 hours, matching the published `claim_next` contract.
+- Ticket-aware claim checks can deny disallowed harnesses or missing required capabilities, and warn when required tools or permissions need human attention.
+- Attempt checkpoint and terminal transitions deny non-running attempts when attempt status is supplied.
+- Archived tickets deny workflow transitions until reopened; done tickets produce a warning so callers can ask for an explicit reason.
+
+The first runtime integration is `claim_next_ticket`: `Runtime` constructs the policy service and `ClaimService` denies claim requests that violate claim-level policy before touching storage. Other callers can use `PolicyService.Evaluate` directly when they already have richer ticket or attempt context.
+
 See [Harness Integration Examples](harness-integration.md) for copy-pasteable CLI and MCP-oriented flows for Codex, Claude Code, Gemini CLI, OpenCode, and custom agents.
 
 See [Phase 2 Closeout](phase-2-closeout.md) for the current REST, CLI, and MCP parity matrix, test commands, and known adapter boundaries.

@@ -24,6 +24,7 @@ type Runtime struct {
 	Queries       *db.Queries
 	Tickets       *services.TicketService
 	Claims        *services.ClaimService
+	Policy        *services.PolicyService
 	Attempts      *services.AttemptService
 	Artifacts     *services.ArtifactService
 	LocalStore    *storage.LocalStore
@@ -85,10 +86,12 @@ func NewWithConfig(ctx context.Context, queries *db.Queries, cfg config.Config) 
 		}
 		artifactStore = s3Store
 	}
+	policy := services.NewPolicyService(services.PolicyConfig{})
 	return &Runtime{
 		Queries:       queries,
 		Tickets:       services.NewTicketService(queries),
-		Claims:        services.NewClaimService(queries),
+		Claims:        services.NewClaimService(queries, services.WithClaimPolicy(policy)),
+		Policy:        policy,
 		Attempts:      services.NewAttemptService(queries),
 		Artifacts:     services.NewArtifactService(queries),
 		LocalStore:    localStore,
