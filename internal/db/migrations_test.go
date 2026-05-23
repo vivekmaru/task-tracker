@@ -75,9 +75,28 @@ func TestInitialMigrationDefinesTicketAndAttemptFields(t *testing.T) {
 		"progress_percent integer",
 		"failure_category text",
 		"blocker jsonb",
+		"'task'",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("expected migration to contain %q", want)
+		}
+	}
+}
+
+func TestForwardMigrationAddsTaskTicketType(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0008_ticket_task_type.sql"))
+	if err != nil {
+		t.Fatalf("read task type migration: %v", err)
+	}
+	sql := strings.ToLower(string(data))
+
+	for _, want := range []string{
+		"drop constraint if exists tickets_type_check",
+		"add constraint tickets_type_check",
+		"'task'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected task type migration to contain %q", want)
 		}
 	}
 }
