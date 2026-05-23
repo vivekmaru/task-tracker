@@ -157,11 +157,17 @@ cat > forge.local.json <<JSON
 JSON
 ```
 
-Create a workspace and project:
+Create a workspace and project through Forge:
 
 ```bash
-WORKSPACE_ID=$(psql -X -q -At "$FORGE_DATABASE_URL" -c "insert into workspaces (name) values ('Smoke Workspace') returning id")
-PROJECT_ID=$(psql -X -q -At "$FORGE_DATABASE_URL" -c "insert into projects (workspace_id, name) values ('$WORKSPACE_ID', 'Smoke Project') returning id")
+WORKSPACE_JSON=$(go run ./cmd/forge workspaces create --config forge.local.json --json \
+  --name "Smoke Workspace")
+WORKSPACE_ID=$(printf '%s' "$WORKSPACE_JSON" | jq -r '.id')
+
+PROJECT_JSON=$(go run ./cmd/forge projects create --config forge.local.json --json \
+  --workspace-id "$WORKSPACE_ID" \
+  --name "Smoke Project")
+PROJECT_ID=$(printf '%s' "$PROJECT_JSON" | jq -r '.id')
 ```
 
 Start the web server in one terminal:
@@ -364,7 +370,7 @@ forge get --json --kind attempt "$ATTEMPT_ID"
 
 The first end-to-end dogfood path should prove this sequence:
 
-1. Create a workspace and project from `/workspaces`, or seed them directly in Postgres.
+1. Create a workspace and project with `forge workspaces create` and `forge projects create`, or from `/workspaces`.
 2. Create tickets with `forge create --json`.
 3. Have an agent claim eligible work with `forge claim-next --json`.
 4. Heartbeat during execution.
