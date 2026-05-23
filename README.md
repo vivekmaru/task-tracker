@@ -132,7 +132,6 @@ createdb forge_smoke
 export FORGE_DATABASE_URL='postgres://localhost:5432/forge_smoke?sslmode=disable'
 export FORGE_ADMIN_TOKEN='change-me-local-admin-token'
 export FORGE_ARTIFACT_ROOT="$PWD/.forge/artifacts"
-mkdir -p "$FORGE_ARTIFACT_ROOT"
 
 go run ./cmd/forge migrate
 ```
@@ -140,17 +139,11 @@ go run ./cmd/forge migrate
 Create a config file:
 
 ```bash
-cat > forge.local.json <<JSON
-{
-  "database_url": "$FORGE_DATABASE_URL",
-  "http_addr": "127.0.0.1:3017",
-  "worker_concurrency": 1,
-  "admin_token": "$FORGE_ADMIN_TOKEN",
-  "auth_cookie_secure": false,
-  "artifact_root": "$FORGE_ARTIFACT_ROOT",
-  "artifact_backend": "local"
-}
-JSON
+go run ./cmd/forge init \
+  --path forge.local.json \
+  --database-url "$FORGE_DATABASE_URL" \
+  --admin-token "$FORGE_ADMIN_TOKEN" \
+  --artifact-root "$FORGE_ARTIFACT_ROOT"
 ```
 
 Create a workspace and project through Forge:

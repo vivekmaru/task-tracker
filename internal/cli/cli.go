@@ -36,6 +36,7 @@ type command struct {
 var commands = []command{
 	{"server", "Start the Forge API server."},
 	{"worker", "Run Forge background workers."},
+	{"init", "Create a local Forge config file."},
 	{"migrate", "Apply Forge database migrations."},
 	{"mcp", "Start the Forge MCP server."},
 	{"tui", "Open the Forge terminal UI."},
@@ -150,6 +151,9 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 
 	if name == "migrate" {
 		return runMigrateCommand(context.Background(), args[1:], stdout, stderr, deps)
+	}
+	if name == "init" {
+		return runInitCommand(args[1:], stdout, stderr)
 	}
 	if name == "server" || name == "worker" || name == "mcp" || name == "tui" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
