@@ -569,6 +569,11 @@ func runWorkspacesCommand(ctx context.Context, args []string, stdout, stderr io.
 	if !parseFlags(flags, args[1:]) {
 		return 2
 	}
+	if !isWorkspaceSubcommand(subcommand) {
+		fmt.Fprintf(stderr, "unknown workspaces command %q\n\n", subcommand)
+		printWorkspacesHelp(stderr)
+		return 2
+	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
 		return 1
@@ -594,11 +599,8 @@ func runWorkspacesCommand(ctx context.Context, args []string, stdout, stderr io.
 			return 1
 		}
 		return writeJSON(stdout, stderr, workspacePayload(workspace))
-	default:
-		fmt.Fprintf(stderr, "unknown workspaces command %q\n\n", subcommand)
-		printWorkspacesHelp(stderr)
-		return 2
 	}
+	return 1
 }
 
 func runProjectsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -614,6 +616,11 @@ func runProjectsCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
 	flags.StringVar(&name, "name", "", "project name")
 	if !parseFlags(flags, args[1:]) {
+		return 2
+	}
+	if !isProjectSubcommand(subcommand) {
+		fmt.Fprintf(stderr, "unknown projects command %q\n\n", subcommand)
+		printProjectsHelp(stderr)
 		return 2
 	}
 	workspaceUUID, err := requiredUUIDFlag("--workspace-id", workspaceID)
@@ -646,11 +653,8 @@ func runProjectsCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 			return 1
 		}
 		return writeJSON(stdout, stderr, projectPayload(project))
-	default:
-		fmt.Fprintf(stderr, "unknown projects command %q\n\n", subcommand)
-		printProjectsHelp(stderr)
-		return 2
 	}
+	return 1
 }
 
 func runHeartbeatCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -2137,6 +2141,24 @@ func isKnownCommand(name string) bool {
 func isRuntimeCommand(name string) bool {
 	switch name {
 	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "workspaces", "projects", "related", "analytics":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWorkspaceSubcommand(name string) bool {
+	switch name {
+	case "list", "create":
+		return true
+	default:
+		return false
+	}
+}
+
+func isProjectSubcommand(name string) bool {
+	switch name {
+	case "list", "create":
 		return true
 	default:
 		return false

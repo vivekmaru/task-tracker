@@ -590,6 +590,51 @@ func TestRunProjectsRequiresWorkspaceID(t *testing.T) {
 	}
 }
 
+func TestRunWorkspaceProjectUnknownSubcommandsDoNotOpenRuntime(t *testing.T) {
+	openRuntime := func(context.Context, config.Config) (RuntimeHandle, error) {
+		t.Fatal("runtime should not open for unknown workspace/project subcommands")
+		return nil, errors.New("unexpected runtime open")
+	}
+
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{
+			name:       "workspaces",
+			args:       []string{"workspaces", "delet"},
+			wantStderr: `unknown workspaces command "delet"`,
+		},
+		{
+			name:       "projects",
+			args:       []string{"projects", "delet"},
+			wantStderr: `unknown projects command "delet"`,
+		},
+		{
+			name:       "projects valid workspace",
+			args:       []string{"projects", "delet", "--workspace-id", uuidString(t, testUUID(2))},
+			wantStderr: `unknown projects command "delet"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := RunWithDependencies(tc.args, &stdout, &stderr, Dependencies{OpenRuntime: openRuntime})
+
+			if code != 2 {
+				t.Fatalf("expected exit code 2, got %d", code)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected no stdout, got %q", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), tc.wantStderr) {
+				t.Fatalf("expected %q, got %q", tc.wantStderr, stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunClaimNextJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
