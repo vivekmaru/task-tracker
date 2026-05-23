@@ -1103,7 +1103,7 @@ func artifactDetailPage(artifact db.Artifact) templ.Component {
 			fmt.Fprintf(w, `<div class="list"><h3>Metadata JSON</h3><pre>%s</pre></div>`, esc(metadata))
 		}
 		fmt.Fprint(w, `</article><article class="panel"><h2>Actions</h2>`)
-		if storage.IsLocalArtifactURL(artifact.Url) || storage.IsS3ArtifactURL(artifact.Url) {
+		if artifactContentOpenable(artifact) {
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s/content">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
 		}
 		if storage.IsLocalArtifactURL(artifact.Url) {
@@ -1310,7 +1310,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 	}
 	for _, artifact := range view.Timeline.Artifacts {
 		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s %s</span>`, esc(artifact.Name), esc(artifact.Role), esc(artifact.Type))
-		if storage.IsLocalArtifactURL(artifact.Url) || storage.IsS3ArtifactURL(artifact.Url) {
+		if artifactContentOpenable(artifact) {
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
@@ -1381,6 +1381,17 @@ func safeArtifactURL(value string) (string, bool) {
 		return value, true
 	default:
 		return "", false
+	}
+}
+
+func artifactContentOpenable(artifact db.Artifact) bool {
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return storage.IsLocalArtifactURL(artifact.Url)
+	case services.ArtifactStorageS3:
+		return storage.IsS3ArtifactURL(artifact.Url)
+	default:
+		return false
 	}
 }
 

@@ -195,6 +195,9 @@ func (c Config) ValidateArtifactStorage() error {
 		if strings.TrimSpace(c.S3Bucket) == "" {
 			return errors.New("s3_bucket is required when artifact_backend is s3")
 		}
+		if strings.TrimSpace(c.S3SessionToken) != "" && (strings.TrimSpace(c.S3AccessKeyID) == "" || strings.TrimSpace(c.S3SecretAccessKey) == "") {
+			return errors.New("s3_access_key_id and s3_secret_access_key are required when s3_session_token is provided")
+		}
 		if (strings.TrimSpace(c.S3AccessKeyID) == "") != (strings.TrimSpace(c.S3SecretAccessKey) == "") {
 			return errors.New("s3_access_key_id and s3_secret_access_key must be provided together")
 		}

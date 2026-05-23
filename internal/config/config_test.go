@@ -226,6 +226,19 @@ func TestValidateArtifactStorageRejectsPartialS3Credentials(t *testing.T) {
 	}
 }
 
+func TestValidateArtifactStorageRejectsSessionTokenWithoutStaticCredentials(t *testing.T) {
+	cfg := Config{DatabaseURL: "postgres://db", ArtifactBackend: "s3", S3Bucket: "forge", S3SessionToken: "session"}
+
+	err := cfg.ValidateRuntime()
+
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if got, want := err.Error(), "s3_access_key_id and s3_secret_access_key are required when s3_session_token is provided"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestValidateArtifactStorageRejectsUnknownBackend(t *testing.T) {
 	cfg := Config{DatabaseURL: "postgres://db", ArtifactBackend: "ftp"}
 

@@ -165,9 +165,12 @@ func S3ObjectLocation(rawURL string) (string, string, error) {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", "", fmt.Errorf("invalid s3 artifact URL %q", rawURL)
 	}
-	key, err := cleanArtifactName(strings.TrimPrefix(parsed.Path, "/"))
+	key, err := url.PathUnescape(strings.TrimPrefix(parsed.EscapedPath(), "/"))
 	if err != nil {
 		return "", "", fmt.Errorf("invalid s3 artifact URL: %w", err)
+	}
+	if key == "" {
+		return "", "", fmt.Errorf("invalid s3 artifact URL %q", rawURL)
 	}
 	return parsed.Host, key, nil
 }

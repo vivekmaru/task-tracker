@@ -89,11 +89,14 @@ func TestS3StoreRejectsBucketMismatch(t *testing.T) {
 	}
 }
 
-func TestS3StoreRejectsTraversalURLs(t *testing.T) {
-	_, _, err := S3ObjectLocation("s3://forge-artifacts/../secret.txt")
+func TestS3ObjectLocationPreservesObjectKeys(t *testing.T) {
+	bucket, key, err := S3ObjectLocation("s3://forge-artifacts/proofs//./..%2Fsecret%20proof.log")
 
-	if err == nil || !strings.Contains(err.Error(), "invalid s3 artifact URL") {
-		t.Fatalf("expected traversal rejection, got %v", err)
+	if err != nil {
+		t.Fatalf("parse s3 artifact URL: %v", err)
+	}
+	if bucket != "forge-artifacts" || key != "proofs//./../secret proof.log" {
+		t.Fatalf("expected exact key preservation, got bucket=%q key=%q", bucket, key)
 	}
 }
 

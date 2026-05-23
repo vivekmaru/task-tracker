@@ -939,6 +939,33 @@ func TestArtifactDetailShowsMetadataAndLocalOpenBehavior(t *testing.T) {
 	}
 }
 
+func TestArtifactDetailHidesContentLinkWhenStorageBackendAndURLDisagree(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageLocal,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/artifacts/"+uuidString(artifactID)+"/content") {
+		t.Fatalf("content link should be hidden when storage backend and URL disagree:\n%s", rec.Body.String())
+	}
+}
+
 func TestArtifactContentRouteDownloadsLocalArtifactContent(t *testing.T) {
 	artifactID := testUUID(15)
 	runtime := &fakeRuntime{
