@@ -74,6 +74,24 @@ func TestRuntimeOpensS3ArtifactsWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestRuntimeReportsS3ArtifactOpenability(t *testing.T) {
+	store, err := storage.NewS3Store(&fakeS3Client{}, storage.S3Options{Bucket: "forge-artifacts"})
+	if err != nil {
+		t.Fatalf("new s3 store: %v", err)
+	}
+	rt := &Runtime{S3Store: store}
+
+	if !rt.ArtifactContentOpenable(db.Artifact{StorageBackend: services.ArtifactStorageS3, Url: "s3://forge-artifacts/proof.log"}) {
+		t.Fatal("expected configured s3 bucket to be openable")
+	}
+	if rt.ArtifactContentOpenable(db.Artifact{StorageBackend: services.ArtifactStorageS3, Url: "s3://other-bucket/proof.log"}) {
+		t.Fatal("expected different s3 bucket to be hidden")
+	}
+	if (&Runtime{}).ArtifactContentOpenable(db.Artifact{StorageBackend: services.ArtifactStorageS3, Url: "s3://forge-artifacts/proof.log"}) {
+		t.Fatal("expected unconfigured s3 runtime to hide s3 content")
+	}
+}
+
 func TestRuntimeStoreArtifactUsesConfiguredStore(t *testing.T) {
 	source := t.TempDir() + "/proof.log"
 	if err := os.WriteFile(source, []byte("proof\n"), 0o600); err != nil {

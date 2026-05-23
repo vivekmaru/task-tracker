@@ -1834,6 +1834,17 @@ func (f *fakeRuntime) OpenArtifact(context.Context, db.Artifact) (storage.Artifa
 	return storage.ArtifactContent{}, nil
 }
 
+func (f *fakeRuntime) ArtifactContentOpenable(artifact db.Artifact) bool {
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return storage.IsLocalArtifactURL(artifact.Url)
+	case services.ArtifactStorageS3:
+		return storage.IsS3ArtifactURL(artifact.Url)
+	default:
+		return false
+	}
+}
+
 func (f *fakeRuntime) DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
 	return db.Artifact{}, nil
 }

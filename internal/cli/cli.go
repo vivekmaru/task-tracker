@@ -85,6 +85,7 @@ type RuntimeHandle interface {
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	ListArtifacts(context.Context, services.ListArtifactsRequest) ([]db.Artifact, error)
 	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
+	ArtifactContentOpenable(db.Artifact) bool
 	DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
 	StoreArtifact(context.Context, string, string) (storage.StoredArtifact, error)
 	StoreLocalArtifact(context.Context, string, string) (storage.StoredArtifact, error)

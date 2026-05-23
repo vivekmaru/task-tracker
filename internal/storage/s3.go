@@ -153,6 +153,11 @@ func (s *S3Store) Remove(ctx context.Context, rawURL string) error {
 	return nil
 }
 
+func (s *S3Store) CanOpenURL(rawURL string) bool {
+	bucket, _, err := S3ObjectLocation(rawURL)
+	return err == nil && bucket == s.bucket
+}
+
 func S3ObjectLocation(rawURL string) (string, string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	parsed, err := url.Parse(rawURL)

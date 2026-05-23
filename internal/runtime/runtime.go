@@ -340,6 +340,17 @@ func (r *Runtime) OpenArtifact(ctx context.Context, artifact db.Artifact) (stora
 	}
 }
 
+func (r *Runtime) ArtifactContentOpenable(artifact db.Artifact) bool {
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return storage.IsLocalArtifactURL(artifact.Url)
+	case services.ArtifactStorageS3:
+		return r.S3Store != nil && r.S3Store.CanOpenURL(artifact.Url)
+	default:
+		return false
+	}
+}
+
 func (r *Runtime) StoreArtifact(ctx context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
 	return r.ArtifactStore.StoreFile(ctx, sourcePath, preferredName)
 }
