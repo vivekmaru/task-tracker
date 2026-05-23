@@ -36,6 +36,7 @@ type command struct {
 var commands = []command{
 	{"server", "Start the Forge API server."},
 	{"worker", "Run Forge background workers."},
+	{"migrate", "Apply Forge database migrations."},
 	{"mcp", "Start the Forge MCP server."},
 	{"tui", "Open the Forge terminal UI."},
 	{"create", "Create a ticket."},
@@ -117,6 +118,7 @@ type RuntimeHandle interface {
 
 type Dependencies struct {
 	OpenRuntime func(context.Context, config.Config) (RuntimeHandle, error)
+	RunMigrate  func(context.Context, config.Config, string) (MigrationResult, error)
 	RunTUI      func(context.Context, io.Writer, RuntimeHandle, forgetui.Options) error
 	ServeHTTP   func(context.Context, string, http.Handler) error
 }
@@ -146,6 +148,9 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 		return 0
 	}
 
+	if name == "migrate" {
+		return runMigrateCommand(context.Background(), args[1:], stdout, stderr, deps)
+	}
 	if name == "server" || name == "worker" || name == "mcp" || name == "tui" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
 	}
