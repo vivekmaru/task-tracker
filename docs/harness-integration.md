@@ -26,6 +26,21 @@ Every harness should follow the same small loop:
 
 Keep required fields sparse. Prefer concise acceptance criteria, verification commands, and relevant paths over labels, boards, or workflow ceremony.
 
+Before claiming, an agent can ask Forge for deterministic next-work
+recommendations. Recommendations only consider claimable `todo` tickets and
+include transparent ranking reasons, so the result is useful for planning
+without turning routing into a hidden model decision:
+
+```bash
+forge recommendations \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID" \
+  --harness "codex" \
+  --capability codegen \
+  --capability tests \
+  --limit 5
+```
+
 ## Codex
 
 Codex has thin convenience commands that set `harness=codex` and use attempt-derived scope for proof and follow-up work.

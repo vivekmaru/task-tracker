@@ -1974,6 +1974,93 @@ func TestRunRelatedRejectsOffsetAboveInt32(t *testing.T) {
 	}
 }
 
+func TestRunRecommendationsReturnsRankedTickets(t *testing.T) {
+	fake := &fakeRuntime{
+		recommendationResults: []services.RecommendationResult{
+			{
+				Ticket: db.Ticket{
+					ID:          testUUID(6),
+					WorkspaceID: testUUID(2),
+					ProjectID:   testUUID(3),
+					Title:       "Harden proof upload",
+					Type:        services.TicketTypeBug,
+					Status:      services.TicketStatusTodo,
+					Priority:    1,
+					CreatedBy:   services.ActorAgent,
+				},
+				Score:   119,
+				Reasons: []string{"priority:1", "has_verification_commands", "agent_created"},
+			},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"recommendations",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--harness", "codex",
+		"--capability", "codegen",
+		"--capability", "testing",
+		"--limit", "7",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.recommendationReq.WorkspaceID != testUUID(2) || fake.recommendationReq.ProjectID != testUUID(3) {
+		t.Fatalf("unexpected recommendation scope: %#v", fake.recommendationReq)
+	}
+	if fake.recommendationReq.Harness != "codex" || fake.recommendationReq.Limit != 7 {
+		t.Fatalf("unexpected recommendation request: %#v", fake.recommendationReq)
+	}
+	if got := fake.recommendationReq.Capabilities; len(got) != 2 || got[0] != "codegen" || got[1] != "testing" {
+		t.Fatalf("unexpected capabilities: %#v", got)
+	}
+
+	var payload struct {
+		Recommendations []struct {
+			Ticket  map[string]any `json:"ticket"`
+			Score   int32          `json:"score"`
+			Reasons []string       `json:"reasons"`
+		} `json:"recommendations"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal recommendations output: %v\n%s", err, stdout.String())
+	}
+	if len(payload.Recommendations) != 1 {
+		t.Fatalf("expected one recommendation, got %#v", payload.Recommendations)
+	}
+	if payload.Recommendations[0].Ticket["id"] != uuidString(t, testUUID(6)) {
+		t.Fatalf("unexpected recommendation ticket: %#v", payload.Recommendations[0])
+	}
+	if payload.Recommendations[0].Score != 119 {
+		t.Fatalf("unexpected score: %#v", payload.Recommendations[0])
+	}
+	if got := payload.Recommendations[0].Reasons; len(got) != 3 || got[2] != "agent_created" {
+		t.Fatalf("unexpected reasons: %#v", got)
+	}
+}
+
+func TestRunRecommendationsRejectsOffsetAboveInt32(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"recommendations",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--harness", "codex",
+		"--offset", "2147483648",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(&fakeRuntime{})})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "recommendations argument error: --offset must be between 0 and 2147483647") {
+		t.Fatalf("expected offset bound error, got %q", stderr.String())
+	}
+}
+
 type noopRuntime struct {
 	fakeRuntime
 }
@@ -2011,6 +2098,8 @@ type fakeRuntime struct {
 	storeLocalArtifactErr   error
 	removedLocalArtifactURL string
 	removeLocalArtifactErr  error
+	recommendationReq       services.RecommendationRequest
+	recommendationResults   []services.RecommendationResult
 	relatedReq              services.RelatedWorkRequest
 	relatedResults          []services.RelatedWorkResult
 	analyticsFilter         services.AnalyticsFilter
@@ -2156,6 +2245,11 @@ func (f *fakeRuntime) ListTickets(context.Context, services.ListTicketsRequest) 
 
 func (f *fakeRuntime) SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error) {
 	return nil, nil
+}
+
+func (f *fakeRuntime) RecommendTickets(_ context.Context, req services.RecommendationRequest) ([]services.RecommendationResult, error) {
+	f.recommendationReq = req
+	return f.recommendationResults, nil
 }
 
 func (f *fakeRuntime) RelatedWork(_ context.Context, req services.RelatedWorkRequest) ([]services.RelatedWorkResult, error) {

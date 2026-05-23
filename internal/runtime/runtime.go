@@ -205,6 +205,10 @@ func (r *Runtime) SearchTickets(ctx context.Context, req services.SearchTicketsR
 	return r.Search.SearchTickets(ctx, req)
 }
 
+func (r *Runtime) RecommendTickets(ctx context.Context, req services.RecommendationRequest) ([]services.RecommendationResult, error) {
+	return r.Search.RecommendTickets(ctx, req)
+}
+
 func (r *Runtime) RelatedWork(ctx context.Context, req services.RelatedWorkRequest) ([]services.RelatedWorkResult, error) {
 	return r.Search.RelatedWork(ctx, req)
 }
