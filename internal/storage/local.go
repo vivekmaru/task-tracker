@@ -19,6 +19,17 @@ import (
 
 const localArtifactPrefix = "local://artifacts/"
 
+const (
+	BackendLocal = "local"
+	BackendS3    = "s3"
+)
+
+type Store interface {
+	Open(context.Context, db.Artifact) (ArtifactContent, error)
+	StoreFile(context.Context, string, string) (StoredArtifact, error)
+	Remove(context.Context, string) error
+}
+
 type LocalStore struct {
 	root string
 }
@@ -31,10 +42,11 @@ type ArtifactContent struct {
 }
 
 type StoredArtifact struct {
-	Name     string
-	URL      string
-	MimeType string
-	Size     int64
+	Name           string
+	URL            string
+	StorageBackend string
+	MimeType       string
+	Size           int64
 }
 
 func NewLocalStore(root string) *LocalStore {
@@ -162,10 +174,11 @@ func (s *LocalStore) StoreFile(_ context.Context, sourcePath string, preferredNa
 		mimeType = "application/octet-stream"
 	}
 	return StoredArtifact{
-		Name:     name,
-		URL:      localArtifactURL(relativeName),
-		MimeType: mimeType,
-		Size:     written,
+		Name:           name,
+		URL:            localArtifactURL(relativeName),
+		StorageBackend: BackendLocal,
+		MimeType:       mimeType,
+		Size:           written,
 	}, nil
 }
 
@@ -226,6 +239,16 @@ func LocalRelativePath(rawURL string) (string, error) {
 func IsLocalArtifactURL(rawURL string) bool {
 	_, err := LocalRelativePath(rawURL)
 	return err == nil
+}
+
+func BackendForURL(rawURL string) string {
+	if IsLocalArtifactURL(rawURL) {
+		return BackendLocal
+	}
+	if IsS3ArtifactURL(rawURL) {
+		return BackendS3
+	}
+	return BackendLocal
 }
 
 func cleanArtifactName(name string) (string, error) {

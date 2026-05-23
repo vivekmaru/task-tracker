@@ -2,7 +2,7 @@
 
 Forge is a pull-based work ledger for autonomous AI agents.
 
-Forge currently includes the execution core, JSON-first CLI commands, Codex-oriented convenience commands, a Bubble Tea TUI, server-rendered web views, local proof artifact storage, search, and basic attempt analytics.
+Forge currently includes the execution core, JSON-first CLI commands, Codex-oriented convenience commands, a Bubble Tea TUI, server-rendered web views, local and S3-compatible proof artifact storage, search, and basic attempt analytics.
 
 ## Current Status
 
@@ -15,7 +15,7 @@ Implemented:
 - Transactional `claim-next` query and claim context bundle hydration.
 - Heartbeat, checkpoint, terminal attempt transitions, lease expiry transition, and idempotency cleanup worker.
 - Claim idempotency replay for stable retry keys.
-- Local proof artifact upload, metadata registration, and human web access.
+- Local and S3-compatible proof artifact upload, metadata registration, and human web access.
 - JSON-first CLI commands over the shared runtime.
 - Codex harness commands for claim, checkpoint, complete, follow-up, and block flows.
 - Huma OpenAPI route registration under `/api/v1`.
@@ -50,6 +50,7 @@ export FORGE_WORKER_CONCURRENCY=1
 export FORGE_ADMIN_TOKEN='change-me-local-admin-token'
 export FORGE_AUTH_COOKIE_SECURE=false
 export FORGE_ARTIFACT_ROOT="$PWD/.forge/artifacts"
+export FORGE_ARTIFACT_BACKEND=local
 ```
 
 Equivalent config file:
@@ -61,13 +62,18 @@ Equivalent config file:
   "worker_concurrency": 1,
   "admin_token": "change-me-local-admin-token",
   "auth_cookie_secure": false,
-  "artifact_root": ".forge/artifacts"
+  "artifact_root": ".forge/artifacts",
+  "artifact_backend": "local"
 }
 ```
 
 Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Keep it `false` for direct plain HTTP access.
 
-Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be inspected from the human `/artifacts/{id}` route and opened from `/artifacts/{id}/content` when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user's home directory. `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` also copy filesystem proofs into that root before registering them.
+Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be inspected from the human `/artifacts/{id}` route and opened from `/artifacts/{id}/content` when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user's home directory.
+
+Set `FORGE_ARTIFACT_BACKEND=s3` or `"artifact_backend": "s3"` to store filesystem proofs in an S3-compatible bucket instead. The S3 backend uses the AWS SDK credential chain by default, or explicit static credentials when `FORGE_S3_ACCESS_KEY_ID` and `FORGE_S3_SECRET_ACCESS_KEY` are set. S3-compatible providers can be configured with `FORGE_S3_ENDPOINT`, `FORGE_S3_REGION`, `FORGE_S3_BUCKET`, `FORGE_S3_PREFIX`, and `FORGE_S3_USE_PATH_STYLE=true`. Equivalent JSON keys are `s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_access_key_id`, `s3_secret_access_key`, `s3_session_token`, and `s3_use_path_style`.
+
+With either backend, `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` copy filesystem proofs into the selected artifact store before registering them. Existing URL proofs such as `local://artifacts/go-test-output.txt` or `s3://forge-bucket/proofs/go-test-output.txt` are registered directly with the matching storage backend.
 
 Pass it with:
 
@@ -140,7 +146,8 @@ cat > forge.local.json <<JSON
   "worker_concurrency": 1,
   "admin_token": "$FORGE_ADMIN_TOKEN",
   "auth_cookie_secure": false,
-  "artifact_root": "$FORGE_ARTIFACT_ROOT"
+  "artifact_root": "$FORGE_ARTIFACT_ROOT",
+  "artifact_backend": "local"
 }
 JSON
 ```

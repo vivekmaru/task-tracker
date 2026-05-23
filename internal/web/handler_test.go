@@ -979,6 +979,40 @@ func TestArtifactContentRouteDownloadsLocalArtifactContent(t *testing.T) {
 	}
 }
 
+func TestArtifactContentRouteDownloadsS3ArtifactContent(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			MimeType:       "text/plain",
+		},
+		artifactContent: storage.ArtifactContent{
+			Name:     "go-test.log",
+			MimeType: "text/plain",
+			Size:     9,
+			Reader:   io.NopCloser(strings.NewReader("all good\n")),
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID)+"/content", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.artifact.Url != "s3://forge-artifacts/proofs/go-test.log" {
+		t.Fatalf("expected runtime open call for s3 artifact, got %#v", runtime.artifact)
+	}
+	if rec.Body.String() != "all good\n" {
+		t.Fatalf("unexpected artifact body: %q", rec.Body.String())
+	}
+}
+
 func TestArtifactDeleteRemovesLocalArtifactAndRedirectsToBrowser(t *testing.T) {
 	workspaceID := testUUID(1)
 	projectID := testUUID(2)

@@ -1395,6 +1395,46 @@ func TestRunCodexCompleteUploadsFilesystemProofs(t *testing.T) {
 	}
 }
 
+func TestRunCodexCompleteRegistersConfiguredS3ProofUploads(t *testing.T) {
+	proofPath := filepath.Join(t.TempDir(), "go-test.log")
+	if err := os.WriteFile(proofPath, []byte("ok\n"), 0o600); err != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+		completeResult: services.AttemptTransitionResult{
+			AttemptID:     testUUID(5),
+			TicketID:      testUUID(4),
+			AttemptStatus: services.AttemptStatusSucceeded,
+			TicketStatus:  services.TicketStatusDone,
+		},
+		storedArtifact: storage.StoredArtifact{
+			Name:           "go-test.log",
+			URL:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			MimeType:       "text/plain",
+			Size:           3,
+		},
+		artifact: db.Artifact{ID: testUUID(7), Type: services.ArtifactTypeTestOutput, Role: services.ArtifactRoleEvidence, Name: "go-test.log", Url: "s3://forge-artifacts/proofs/go-test.log", StorageBackend: services.ArtifactStorageS3},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Done",
+		"--proof", proofPath,
+		"--proof-type", services.ArtifactTypeTestOutput,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if len(fake.artifactReqs) != 1 || fake.artifactReqs[0].StorageBackend != services.ArtifactStorageS3 || fake.artifactReqs[0].URL != "s3://forge-artifacts/proofs/go-test.log" {
+		t.Fatalf("expected s3 proof artifact registration, got %#v", fake.artifactReqs)
+	}
+}
+
 func TestRunCodexCompleteRejectsMissingFilesystemProof(t *testing.T) {
 	missingProof := filepath.Join(t.TempDir(), "go-test-output.txt")
 	var stdout, stderr bytes.Buffer
@@ -1798,10 +1838,18 @@ func (f *fakeRuntime) DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Arti
 	return db.Artifact{}, nil
 }
 
+func (f *fakeRuntime) StoreArtifact(ctx context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
+	return f.StoreLocalArtifact(ctx, sourcePath, preferredName)
+}
+
 func (f *fakeRuntime) StoreLocalArtifact(_ context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
 	f.storeLocalArtifactPath = sourcePath
 	f.storeLocalArtifactName = preferredName
 	return f.storedArtifact, f.storeLocalArtifactErr
+}
+
+func (f *fakeRuntime) RemoveArtifact(ctx context.Context, rawURL string) error {
+	return f.RemoveLocalArtifact(ctx, rawURL)
 }
 
 func (f *fakeRuntime) RemoveLocalArtifact(_ context.Context, rawURL string) error {

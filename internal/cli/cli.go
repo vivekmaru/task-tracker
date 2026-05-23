@@ -86,7 +86,9 @@ type RuntimeHandle interface {
 	ListArtifacts(context.Context, services.ListArtifactsRequest) ([]db.Artifact, error)
 	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
 	DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
+	StoreArtifact(context.Context, string, string) (storage.StoredArtifact, error)
 	StoreLocalArtifact(context.Context, string, string) (storage.StoredArtifact, error)
+	RemoveArtifact(context.Context, string) error
 	RemoveLocalArtifact(context.Context, string) error
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
 	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
@@ -1026,7 +1028,7 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 		Metrics: metricsReq,
 	}, proofArtifacts.Requests)
 	if err != nil {
-		if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, proofArtifacts.UploadedLocalURLs); cleanupErr != nil {
+		if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, proofArtifacts.UploadedURLs); cleanupErr != nil {
 			fmt.Fprintf(stderr, "codex complete artifact cleanup warning: %v\n", cleanupErr)
 		}
 		fmt.Fprintf(stderr, "codex complete error: %v\n", err)
@@ -1166,7 +1168,7 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 		Metrics: metricsReq,
 	}, proofArtifacts.Requests)
 	if err != nil {
-		if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, proofArtifacts.UploadedLocalURLs); cleanupErr != nil {
+		if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, proofArtifacts.UploadedURLs); cleanupErr != nil {
 			fmt.Fprintf(stderr, "codex block artifact cleanup warning: %v\n", cleanupErr)
 		}
 		fmt.Fprintf(stderr, "codex block error: %v\n", err)
@@ -1188,8 +1190,8 @@ type codexProofFlags struct {
 }
 
 type codexProofArtifactBundle struct {
-	Requests          []services.RegisterArtifactRequest
-	UploadedLocalURLs []string
+	Requests     []services.RegisterArtifactRequest
+	UploadedURLs []string
 }
 
 func (f *codexProofFlags) bind(flags *flag.FlagSet) {
@@ -1253,20 +1255,25 @@ func codexProofArtifactRequests(ctx context.Context, rt RuntimeHandle, flags cod
 		proof = strings.TrimSpace(proof)
 		stored, hasStoredArtifact, err := storeFilesystemProof(ctx, rt, proof)
 		if err != nil {
-			if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, bundle.UploadedLocalURLs); cleanupErr != nil {
+			if cleanupErr := cleanupStoredProofArtifacts(ctx, rt, bundle.UploadedURLs); cleanupErr != nil {
 				return codexProofArtifactBundle{}, errors.Join(err, cleanupErr)
 			}
 			return codexProofArtifactBundle{}, err
 		}
 		name := proofName(proof)
 		url := proof
+		storageBackend := storage.BackendForURL(proof)
 		sizeBytes := int64(0)
 		mimeType := flags.MimeType
 		if hasStoredArtifact {
 			name = stored.Name
 			url = stored.URL
+			storageBackend = stored.StorageBackend
+			if storageBackend == "" {
+				storageBackend = storage.BackendForURL(stored.URL)
+			}
 			sizeBytes = stored.Size
-			bundle.UploadedLocalURLs = append(bundle.UploadedLocalURLs, stored.URL)
+			bundle.UploadedURLs = append(bundle.UploadedURLs, stored.URL)
 			if mimeType == "" {
 				mimeType = stored.MimeType
 			}
@@ -1280,7 +1287,7 @@ func codexProofArtifactRequests(ctx context.Context, rt RuntimeHandle, flags cod
 			Role:           flags.ProofRole,
 			Name:           name,
 			URL:            url,
-			StorageBackend: services.ArtifactStorageLocal,
+			StorageBackend: storageBackend,
 			SizeBytes:      sizeBytes,
 			MimeType:       mimeType,
 		})
@@ -1316,7 +1323,7 @@ func storeFilesystemProof(ctx context.Context, rt RuntimeHandle, proof string) (
 	if info.IsDir() {
 		return storage.StoredArtifact{}, false, cliArgumentError{err: fmt.Errorf("--proof must be a file, got directory %q", proof)}
 	}
-	stored, err := rt.StoreLocalArtifact(ctx, proof, filepath.Base(proof))
+	stored, err := rt.StoreArtifact(ctx, proof, filepath.Base(proof))
 	if err != nil {
 		return storage.StoredArtifact{}, false, fmt.Errorf("store proof file: %w", err)
 	}
@@ -1326,7 +1333,7 @@ func storeFilesystemProof(ctx context.Context, rt RuntimeHandle, proof string) (
 func cleanupStoredProofArtifacts(ctx context.Context, rt RuntimeHandle, rawURLs []string) error {
 	var cleanupErr error
 	for _, rawURL := range rawURLs {
-		if err := rt.RemoveLocalArtifact(ctx, rawURL); err != nil {
+		if err := rt.RemoveArtifact(ctx, rawURL); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}

@@ -517,10 +517,6 @@ func (h Handler) renderArtifactContent(w http.ResponseWriter, r *http.Request, i
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifact", err.Error())
 		return
 	}
-	if !storage.IsLocalArtifactURL(artifact.Url) {
-		renderStatus(r.Context(), w, http.StatusConflict, "Artifact content unavailable", "Only local artifacts can be opened from Forge.")
-		return
-	}
 	content, err := h.runtime.OpenArtifact(r.Context(), artifact)
 	if err != nil {
 		renderStatus(r.Context(), w, http.StatusNotFound, "Artifact content unavailable", err.Error())
@@ -1107,9 +1103,13 @@ func artifactDetailPage(artifact db.Artifact) templ.Component {
 			fmt.Fprintf(w, `<div class="list"><h3>Metadata JSON</h3><pre>%s</pre></div>`, esc(metadata))
 		}
 		fmt.Fprint(w, `</article><article class="panel"><h2>Actions</h2>`)
-		if storage.IsLocalArtifactURL(artifact.Url) {
+		if storage.IsLocalArtifactURL(artifact.Url) || storage.IsS3ArtifactURL(artifact.Url) {
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s/content">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
+		}
+		if storage.IsLocalArtifactURL(artifact.Url) {
 			fmt.Fprintf(w, `<form method="post" action="/artifacts/%s/delete" hx-boost="false"><button type="submit">Delete local artifact</button></form>`, esc(uuidText(artifact.ID)))
+		} else if storage.IsS3ArtifactURL(artifact.Url) {
+			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
 			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
@@ -1310,7 +1310,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 	}
 	for _, artifact := range view.Timeline.Artifacts {
 		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s %s</span>`, esc(artifact.Name), esc(artifact.Role), esc(artifact.Type))
-		if storage.IsLocalArtifactURL(artifact.Url) {
+		if storage.IsLocalArtifactURL(artifact.Url) || storage.IsS3ArtifactURL(artifact.Url) {
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
