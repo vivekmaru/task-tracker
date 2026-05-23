@@ -70,7 +70,7 @@ func TestListEventsUsesCursorForFollowUpRequests(t *testing.T) {
 	if store.afterParams.WorkspaceID != testUUID(1) {
 		t.Fatalf("workspace filter did not reach follow-up query: %#v", store.afterParams)
 	}
-	if store.afterParams.AfterID != testUUID(20) || !store.afterParams.AfterCreatedAt.Time.Equal(createdAt) {
+	if !store.afterParams.AfterCreatedAt.Time.Equal(createdAt) {
 		t.Fatalf("cursor did not reach follow-up query: %#v", store.afterParams)
 	}
 	if store.afterParams.LimitCount != maxEventFeedLimit {

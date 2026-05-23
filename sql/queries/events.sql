@@ -39,12 +39,6 @@ WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('work
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id')::uuid)
   AND (sqlc.narg('ticket_id')::uuid IS NULL OR ticket_id = sqlc.narg('ticket_id')::uuid)
   AND (sqlc.narg('attempt_id')::uuid IS NULL OR attempt_id = sqlc.narg('attempt_id')::uuid)
-  AND (
-      created_at > sqlc.arg('after_created_at')::timestamptz
-      OR (
-          created_at = sqlc.arg('after_created_at')::timestamptz
-          AND id > sqlc.arg('after_id')::uuid
-      )
-  )
+  AND created_at >= sqlc.arg('after_created_at')::timestamptz
 ORDER BY created_at ASC, id ASC
 LIMIT sqlc.arg('limit_count')::integer;

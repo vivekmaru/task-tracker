@@ -85,7 +85,6 @@ func (s *EventService) ListEvents(ctx context.Context, req ListEventsRequest) (L
 			TicketID:       req.TicketID,
 			AttemptID:      req.AttemptID,
 			AfterCreatedAt: cursor.CreatedAt,
-			AfterID:        cursor.ID,
 			LimitCount:     limit,
 		})
 	}

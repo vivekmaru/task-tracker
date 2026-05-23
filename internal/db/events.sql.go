@@ -131,15 +131,9 @@ WHERE ($1::uuid IS NULL OR workspace_id = $1::uuid)
   AND ($2::uuid IS NULL OR project_id = $2::uuid)
   AND ($3::uuid IS NULL OR ticket_id = $3::uuid)
   AND ($4::uuid IS NULL OR attempt_id = $4::uuid)
-  AND (
-      created_at > $5::timestamptz
-      OR (
-          created_at = $5::timestamptz
-          AND id > $6::uuid
-      )
-  )
+  AND created_at >= $5::timestamptz
 ORDER BY created_at ASC, id ASC
-LIMIT $7::integer
+LIMIT $6::integer
 `
 
 type ListTicketEventsAfterCursorParams struct {
@@ -148,7 +142,6 @@ type ListTicketEventsAfterCursorParams struct {
 	TicketID       pgtype.UUID        `db:"ticket_id" json:"ticket_id"`
 	AttemptID      pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
 	AfterCreatedAt pgtype.Timestamptz `db:"after_created_at" json:"after_created_at"`
-	AfterID        pgtype.UUID        `db:"after_id" json:"after_id"`
 	LimitCount     int32              `db:"limit_count" json:"limit_count"`
 }
 
@@ -159,7 +152,6 @@ func (q *Queries) ListTicketEventsAfterCursor(ctx context.Context, arg ListTicke
 		arg.TicketID,
 		arg.AttemptID,
 		arg.AfterCreatedAt,
-		arg.AfterID,
 		arg.LimitCount,
 	)
 	if err != nil {
