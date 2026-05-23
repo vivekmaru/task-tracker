@@ -34,3 +34,30 @@ func (w *MaintenanceRiverWorker) Work(ctx context.Context, _ *river.Job[Maintena
 func RegisterMaintenanceWorker(workers *river.Workers, worker *MaintenanceWorker) {
 	river.AddWorker(workers, NewMaintenanceRiverWorker(worker))
 }
+
+type WebhookDeliveryArgs struct{}
+
+func (WebhookDeliveryArgs) Kind() string {
+	return WebhookDeliveryJobKind
+}
+
+type WebhookDeliveryRiverWorker struct {
+	river.WorkerDefaults[WebhookDeliveryArgs]
+
+	Worker *WebhookWorker
+}
+
+var _ river.Worker[WebhookDeliveryArgs] = (*WebhookDeliveryRiverWorker)(nil)
+
+func NewWebhookDeliveryRiverWorker(worker *WebhookWorker) *WebhookDeliveryRiverWorker {
+	return &WebhookDeliveryRiverWorker{Worker: worker}
+}
+
+func (w *WebhookDeliveryRiverWorker) Work(ctx context.Context, _ *river.Job[WebhookDeliveryArgs]) error {
+	_, err := w.Worker.RunOnce(ctx)
+	return err
+}
+
+func RegisterWebhookDeliveryWorker(workers *river.Workers, worker *WebhookWorker) {
+	river.AddWorker(workers, NewWebhookDeliveryRiverWorker(worker))
+}

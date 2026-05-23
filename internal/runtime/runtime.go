@@ -26,6 +26,7 @@ type Runtime struct {
 	Capabilities *services.CapabilityService
 	Analytics    *services.AnalyticsService
 	Maintenance  *jobs.MaintenanceWorker
+	Webhooks     *jobs.WebhookWorker
 }
 
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
@@ -63,6 +64,7 @@ func NewWithConfig(queries *db.Queries, cfg config.Config) *Runtime {
 		Capabilities: services.NewCapabilityService(queries),
 		Analytics:    services.NewAnalyticsService(queries),
 		Maintenance:  jobs.NewMaintenanceWorker(queries),
+		Webhooks:     jobs.NewWebhookWorker(queries),
 	}
 }
 
