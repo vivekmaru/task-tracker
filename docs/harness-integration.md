@@ -47,6 +47,19 @@ attempt_id=$(printf '%s' "$claim_json" | jq -r '.attempt_id')
 ticket_id=$(printf '%s' "$claim_json" | jq -r '.ticket_id')
 ```
 
+The claim response includes an agent-ready context bundle. Use the decoded
+`context.ticket` fields as the starting brief instead of inspecting raw database
+rows:
+
+```bash
+printf '%s' "$claim_json" | jq -r '.context.ticket.title'
+printf '%s' "$claim_json" | jq -r '.context.ticket.verification_commands[]?'
+printf '%s' "$claim_json" | jq -r '.context.ticket.relevant_paths[]?'
+```
+
+`context.attempt`, `context.checkpoints`, and `context.artifacts` provide the
+compact handoff state for resumptions and retries.
+
 Checkpoint:
 
 ```bash

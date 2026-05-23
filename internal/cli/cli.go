@@ -1979,13 +1979,101 @@ func transitionPayload(result services.AttemptTransitionResult) map[string]any {
 }
 
 func claimPayload(result services.ClaimNextResult) map[string]any {
+	context := claimContextPayload(result.Context)
 	return map[string]any{
 		"ticket":     ticketPayload(result.Ticket),
 		"attempt":    attemptPayload(result.Attempt),
-		"context":    result.Context,
+		"context":    context,
 		"ticket_id":  uuidText(result.Ticket.ID),
 		"attempt_id": uuidText(result.Attempt.ID),
 	}
+}
+
+func claimContextPayload(context services.ClaimContextBundle) map[string]any {
+	return map[string]any{
+		"ticket": map[string]any{
+			"id":                    uuidText(context.Ticket.ID),
+			"workspace_id":          uuidText(context.Ticket.WorkspaceID),
+			"project_id":            uuidText(context.Ticket.ProjectID),
+			"title":                 context.Ticket.Title,
+			"description":           context.Ticket.Description,
+			"type":                  context.Ticket.Type,
+			"status":                context.Ticket.Status,
+			"priority":              context.Ticket.Priority,
+			"tags":                  context.Ticket.Tags,
+			"acceptance_criteria":   context.AcceptanceCriteria,
+			"verification_commands": context.VerificationCommands,
+			"expected_artifacts":    context.ExpectedArtifacts,
+			"relevant_paths":        context.RelevantPaths,
+			"required_tools":        context.RequiredTools,
+			"required_permissions":  context.RequiredPermissions,
+			"environment":           context.Environment,
+			"input":                 context.Input,
+			"retry_policy":          jsonValuePayload(context.Ticket.RetryPolicy),
+			"created_by":            context.Ticket.CreatedBy,
+			"created_by_id":         textPayload(context.Ticket.CreatedByID),
+			"creation_reason":       textPayload(context.Ticket.CreationReason),
+		},
+		"attempt": map[string]any{
+			"id":               uuidText(context.Attempt.ID),
+			"ticket_id":        uuidText(context.Attempt.TicketID),
+			"agent_id":         context.Attempt.AgentID,
+			"harness":          context.Attempt.Harness,
+			"model":            context.Attempt.Model,
+			"status":           context.Attempt.Status,
+			"progress_percent": context.Attempt.ProgressPercent,
+			"current_summary":  textPayload(context.Attempt.CurrentSummary),
+			"next_step":        textPayload(context.Attempt.NextStep),
+			"output":           jsonValuePayload(context.Attempt.Output),
+		},
+		"prior_attempts": attemptPayloads(context.PriorAttempts),
+		"checkpoints":    checkpointContextPayloads(context.Checkpoints),
+		"artifacts":      artifactPayloads(context.Artifacts),
+	}
+}
+
+func textPayload(value pgtype.Text) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.String
+}
+
+func jsonValuePayload(raw []byte) any {
+	if len(raw) == 0 || string(raw) == "null" {
+		return map[string]any{}
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return string(raw)
+	}
+	if value == nil {
+		return map[string]any{}
+	}
+	return value
+}
+
+func attemptPayloads(attempts []db.Attempt) []map[string]any {
+	payloads := make([]map[string]any, 0, len(attempts))
+	for _, attempt := range attempts {
+		payloads = append(payloads, attemptPayload(attempt))
+	}
+	return payloads
+}
+
+func checkpointContextPayloads(checkpoints []db.AttemptCheckpoint) []map[string]any {
+	payloads := make([]map[string]any, 0, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		payloads = append(payloads, map[string]any{
+			"id":         uuidText(checkpoint.ID),
+			"attempt_id": uuidText(checkpoint.AttemptID),
+			"ticket_id":  uuidText(checkpoint.TicketID),
+			"summary":    checkpoint.Summary,
+			"next_step":  textPayload(checkpoint.NextStep),
+			"risk":       textPayload(checkpoint.Risk),
+		})
+	}
+	return payloads
 }
 
 func checkpointPayload(result services.CheckpointResult) map[string]any {

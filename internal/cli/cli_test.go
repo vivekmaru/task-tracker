@@ -639,8 +639,37 @@ func TestRunClaimNextJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		claimResult: services.ClaimNextResult{
-			Ticket:  db.Ticket{ID: testUUID(4), Title: "Fix auth"},
-			Attempt: db.Attempt{ID: testUUID(5), AgentID: "codex", Harness: "codex"},
+			Ticket: db.Ticket{ID: testUUID(4), Title: "Fix auth"},
+			Attempt: db.Attempt{
+				ID:       testUUID(5),
+				TicketID: testUUID(4),
+				AgentID:  "codex",
+				Harness:  "codex",
+				Status:   services.AttemptStatusRunning,
+				Output:   []byte(`{"summary":"starting"}`),
+				NextStep: pgtype.Text{String: "run tests", Valid: true},
+				Model:    "gpt-5.4",
+			},
+			Context: services.ClaimContextBundle{
+				Ticket: db.Ticket{
+					ID:                   testUUID(4),
+					WorkspaceID:          testUUID(2),
+					ProjectID:            testUUID(3),
+					Title:                "Fix auth",
+					Description:          "Repair auth",
+					Type:                 services.TicketTypeBug,
+					Status:               services.TicketStatusInProgress,
+					Priority:             2,
+					VerificationCommands: []byte(`["go test ./..."]`),
+					RetryPolicy:          []byte(`{"max_attempts":3}`),
+					CreatedBy:            services.ActorHuman,
+				},
+				Attempt:              db.Attempt{ID: testUUID(5), TicketID: testUUID(4), AgentID: "codex", Harness: "codex", Status: services.AttemptStatusRunning, Output: []byte(`{"summary":"starting"}`)},
+				AcceptanceCriteria:   []string{"Auth works"},
+				VerificationCommands: []string{"go test ./..."},
+				Environment:          map[string]any{"GOFLAGS": "-count=1"},
+				Input:                map[string]any{"scope": "auth"},
+			},
 		},
 	}
 
@@ -667,6 +696,25 @@ func TestRunClaimNextJSON(t *testing.T) {
 	}
 	if body["attempt_id"] == "" {
 		t.Fatalf("expected attempt_id in JSON, got %#v", body)
+	}
+	context, ok := body["context"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected agent-friendly context object, got %#v", body["context"])
+	}
+	if _, ok := context["Ticket"]; ok {
+		t.Fatalf("context should not expose raw DB-shaped Ticket field: %#v", context)
+	}
+	ticket, ok := context["ticket"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected context.ticket object, got %#v", context)
+	}
+	commands, ok := ticket["verification_commands"].([]any)
+	if !ok || len(commands) != 1 || commands[0] != "go test ./..." {
+		t.Fatalf("expected decoded verification commands, got %#v", ticket["verification_commands"])
+	}
+	retryPolicy, ok := ticket["retry_policy"].(map[string]any)
+	if !ok || retryPolicy["max_attempts"] != float64(3) {
+		t.Fatalf("expected decoded retry policy, got %#v", ticket["retry_policy"])
 	}
 }
 
