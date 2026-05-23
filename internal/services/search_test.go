@@ -100,9 +100,9 @@ func TestRecommendTicketsDefaultsLimitAndMapsReasons(t *testing.T) {
 		WorkspaceID:  testUUID(1),
 		ProjectID:    testUUID(2),
 		Type:         TicketTypeBug,
-		Tags:         []string{"phase-5"},
+		Tags:         []string{" phase-5 ", ""},
 		Harness:      "codex",
-		Capabilities: []string{"codegen", "testing"},
+		Capabilities: []string{" codegen ", "testing", ""},
 	})
 	if err != nil {
 		t.Fatalf("recommend tickets: %v", err)
@@ -118,6 +118,12 @@ func TestRecommendTicketsDefaultsLimitAndMapsReasons(t *testing.T) {
 	}
 	if store.recommendationParams.Harness != "codex" {
 		t.Fatalf("expected harness to reach store, got %#v", store.recommendationParams)
+	}
+	if got, want := store.recommendationParams.Tags, []string{"phase-5"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("expected compacted tags %#v, got %#v", want, got)
+	}
+	if got, want := store.recommendationParams.Capabilities, []string{"codegen", "testing"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("expected compacted capabilities %#v, got %#v", want, got)
 	}
 	if results[0].Ticket.ID != testUUID(4) {
 		t.Fatalf("unexpected mapped ticket: %#v", results[0].Ticket)

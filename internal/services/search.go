@@ -79,6 +79,8 @@ type RecommendationResult struct {
 func (s *SearchService) RecommendTickets(ctx context.Context, req RecommendationRequest) ([]RecommendationResult, error) {
 	req.Type = strings.TrimSpace(req.Type)
 	req.Harness = strings.TrimSpace(req.Harness)
+	req.Tags = compactStrings(req.Tags)
+	req.Capabilities = compactStrings(req.Capabilities)
 	if problems := validateRecommendationRequest(req); len(problems) > 0 {
 		return nil, ValidationError{Problems: problems}
 	}
