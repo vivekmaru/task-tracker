@@ -398,7 +398,9 @@ func runClaimNextCommand(ctx context.Context, args []string, stdout, stderr io.W
 	var workspaceID, projectID, ticketType, harness, agentID, model, lease, idempotencyKey string
 	var tags, capabilities stringList
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&ticketType, "type", "", "ticket type filter")
 	flags.Var(&tags, "tag", "ticket tag filter")
 	flags.StringVar(&harness, "harness", "", "agent harness")
@@ -447,7 +449,9 @@ func runListCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	var workspaceID, projectID, status, ticketType string
 	var offset, limit int
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&status, "status", "", "status filter")
 	flags.StringVar(&ticketType, "type", "", "type filter")
 	flags.IntVar(&offset, "offset", 0, "offset")
@@ -527,7 +531,9 @@ func runRecommendationsCommand(ctx context.Context, args []string, stdout, stder
 	var tags, capabilities stringList
 	var offset, limit int
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&ticketType, "type", "", "ticket type filter")
 	flags.Var(&tags, "tag", "ticket tag filter")
 	flags.StringVar(&harness, "harness", "", "agent harness")
@@ -984,7 +990,9 @@ func runAnalyticsCommand(ctx context.Context, args []string, stdout, stderr io.W
 	opts.bind(flags)
 	var workspaceID, projectID, bucket string
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&bucket, "bucket", string(services.AnalyticsTrendBucketDay), "trend bucket: day or week")
 	if !parseFlags(flags, args[1:]) {
 		return 2
@@ -1113,7 +1121,9 @@ func runCodexClaimCommand(ctx context.Context, args []string, stdout, stderr io.
 	var workspaceID, projectID, ticketType, agentID, model, lease, idempotencyKey string
 	var tags, capabilities stringList
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&ticketType, "type", "", "ticket type filter")
 	flags.Var(&tags, "tag", "ticket tag filter")
 	flags.Var(&capabilities, "capability", "agent capability")
@@ -2433,7 +2443,9 @@ func codexFlagConsumesValue(arg string) bool {
 	switch name {
 	case "config",
 		"workspace-id",
+		"workspace",
 		"project-id",
+		"project",
 		"type",
 		"tag",
 		"capability",

@@ -526,6 +526,30 @@ func TestRunCreateTicketAcceptsWorkspaceProjectAliases(t *testing.T) {
 	}
 }
 
+func TestRunListAcceptsWorkspaceProjectAliases(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{}
+
+	code := RunWithDependencies([]string{
+		"list",
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
+		"--status", services.TicketStatusTodo,
+		"--type", services.TicketTypeTask,
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.listReq.WorkspaceID != testUUID(2) || fake.listReq.ProjectID != testUUID(3) {
+		t.Fatalf("expected alias scope in list request, got %#v", fake.listReq)
+	}
+	if fake.listReq.Status != services.TicketStatusTodo || fake.listReq.Type != services.TicketTypeTask {
+		t.Fatalf("expected list filters, got %#v", fake.listReq)
+	}
+}
+
 func TestRunWorkspacesCreateAndListJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -805,8 +829,8 @@ func TestRunCodexClaimDefaultsHarnessAndWritesJSON(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"codex", "claim",
-		"--workspace-id", uuidString(t, testUUID(2)),
-		"--project-id", uuidString(t, testUUID(3)),
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
 		"--agent-id", "codex-local",
 		"--capability", "codegen",
 		"--lease", "20m",
@@ -817,6 +841,9 @@ func TestRunCodexClaimDefaultsHarnessAndWritesJSON(t *testing.T) {
 	}
 	if fake.claimReq.Harness != "codex" || fake.claimReq.Lease != 20*time.Minute {
 		t.Fatalf("unexpected codex claim request: %#v", fake.claimReq)
+	}
+	if fake.claimReq.WorkspaceID != testUUID(2) || fake.claimReq.ProjectID != testUUID(3) {
+		t.Fatalf("expected alias scope in codex claim request, got %#v", fake.claimReq)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &body); err != nil {
@@ -1404,7 +1431,7 @@ func TestRunAnalyticsSummaryPrintsMinimalHumanOutput(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"analytics", "summary",
-		"--workspace-id", uuidString(t, testUUID(2)),
+		"--workspace", uuidString(t, testUUID(2)),
 	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
 
 	if code != 0 {
@@ -2033,8 +2060,8 @@ func TestRunRecommendationsReturnsRankedTickets(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"recommendations",
-		"--workspace-id", uuidString(t, testUUID(2)),
-		"--project-id", uuidString(t, testUUID(3)),
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
 		"--harness", "codex",
 		"--capability", "codegen",
 		"--capability", "testing",
@@ -2134,6 +2161,7 @@ type fakeRuntime struct {
 	storeLocalArtifactErr   error
 	removedLocalArtifactURL string
 	removeLocalArtifactErr  error
+	listReq                 services.ListTicketsRequest
 	recommendationReq       services.RecommendationRequest
 	recommendationResults   []services.RecommendationResult
 	relatedReq              services.RelatedWorkRequest
@@ -2275,7 +2303,8 @@ func (f *fakeRuntime) Cancel(context.Context, services.CancelAttemptRequest) (se
 	return services.AttemptTransitionResult{}, nil
 }
 
-func (f *fakeRuntime) ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error) {
+func (f *fakeRuntime) ListTickets(_ context.Context, req services.ListTicketsRequest) ([]db.Ticket, error) {
+	f.listReq = req
 	return nil, nil
 }
 
