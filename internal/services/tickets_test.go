@@ -933,6 +933,29 @@ func TestValidateTicketRequiresQualityFields(t *testing.T) {
 	}
 }
 
+func TestValidateTicketAcceptsTaskType(t *testing.T) {
+	store := &fakeTicketStore{}
+	service := NewTicketService(store)
+	priority := int32(2)
+
+	_, err := service.CreateTicket(context.Background(), CreateTicketRequest{
+		WorkspaceID:        testUUID(1),
+		ProjectID:          testUUID(2),
+		Title:              "Agent-created follow-up",
+		Description:        "Track a concrete next step from dogfood",
+		Type:               TicketTypeTask,
+		Priority:           &priority,
+		AcceptanceCriteria: []string{"Follow-up is captured"},
+		CreatedBy:          ActorHuman,
+	})
+	if err != nil {
+		t.Fatalf("expected task type to be valid, got %v", err)
+	}
+	if store.createdTickets[0].Type != TicketTypeTask {
+		t.Fatalf("expected task type to persist, got %q", store.createdTickets[0].Type)
+	}
+}
+
 func TestListTicketsDefaultsPaginationAndFilters(t *testing.T) {
 	store := &fakeTicketStore{}
 	service := NewTicketService(store)
