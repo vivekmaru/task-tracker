@@ -31,6 +31,8 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.ListAttemptCheckpointsByTicket
 	_ = q.CreateTicketEvent
 	_ = q.ListTicketEventsByTicket
+	_ = q.ListRecentTicketEvents
+	_ = q.ListTicketEventsAfterCursor
 	_ = q.CreateIdempotencyKey
 	_ = q.GetIdempotencyKey
 	_ = q.DeleteExpiredIdempotencyKeys
