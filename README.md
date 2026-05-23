@@ -159,8 +159,8 @@ JSON
 Create a workspace and project:
 
 ```bash
-WORKSPACE_ID=$(psql -X -At "$FORGE_DATABASE_URL" -c "insert into workspaces (name) values ('Smoke Workspace') returning id")
-PROJECT_ID=$(psql -X -At "$FORGE_DATABASE_URL" -c "insert into projects (workspace_id, name) values ('$WORKSPACE_ID', 'Smoke Project') returning id")
+WORKSPACE_ID=$(psql -X -q -At "$FORGE_DATABASE_URL" -c "insert into workspaces (name) values ('Smoke Workspace') returning id")
+PROJECT_ID=$(psql -X -q -At "$FORGE_DATABASE_URL" -c "insert into projects (workspace_id, name) values ('$WORKSPACE_ID', 'Smoke Project') returning id")
 ```
 
 Start the web server in one terminal:
