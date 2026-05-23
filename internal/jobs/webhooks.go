@@ -68,7 +68,7 @@ func WithWebhookHTTPClient(client HTTPDoer) WebhookOption {
 func NewWebhookWorker(store WebhookDeliveryStore, opts ...WebhookOption) *WebhookWorker {
 	worker := &WebhookWorker{
 		store:      store,
-		client:     &http.Client{Timeout: defaultWebhookTimeout},
+		client:     newWebhookHTTPClient(),
 		now:        time.Now,
 		batchLimit: defaultWebhookBatchLimit,
 		lockTTL:    defaultWebhookLockTTL,
@@ -83,6 +83,15 @@ func NewWebhookWorker(store WebhookDeliveryStore, opts ...WebhookOption) *Webhoo
 		worker.lockTTL = defaultWebhookLockTTL
 	}
 	return worker
+}
+
+func newWebhookHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: defaultWebhookTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 type WebhookRunResult struct {
@@ -161,7 +170,7 @@ func (w *WebhookWorker) deliver(ctx context.Context, delivery db.ClaimPendingWeb
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	outcome := deliveryOutcome{statusCode: int32(resp.StatusCode), body: string(body)}
-	if readErr != nil {
+	if readErr != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 		outcome.err = readErr
 	}
 	return outcome

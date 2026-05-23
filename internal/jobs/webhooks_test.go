@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,81 @@ func TestWebhookWorkerClaimsDefaultBatchWithLongEnoughLock(t *testing.T) {
 	wantLockedUntil := now.Add(time.Duration(defaultWebhookBatchLimit)*defaultWebhookTimeout + defaultWebhookLockBuffer)
 	if !store.claimParams[0].LockedUntil.Time.Equal(wantLockedUntil) {
 		t.Fatalf("expected lock to cover full default batch until %v, got %v", wantLockedUntil, store.claimParams[0].LockedUntil.Time)
+	}
+}
+
+func TestWebhookWorkerDoesNotFollowRedirects(t *testing.T) {
+	now := time.Date(2026, 5, 22, 9, 0, 0, 0, time.UTC)
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/ok", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	store := &fakeWebhookStore{
+		claimed: []db.ClaimPendingWebhookDeliveriesRow{{
+			ID:           testUUID(57),
+			EventID:      testUUID(58),
+			EndpointUrl:  server.URL + "/redirect",
+			Payload:      []byte(`{"event_type":"completed"}`),
+			AttemptCount: 0,
+			MaxAttempts:  3,
+		}},
+	}
+	worker := NewWebhookWorker(store, WithWebhookClock(func() time.Time { return now }))
+
+	result, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run webhooks: %v", err)
+	}
+
+	if result.Retried != 1 || result.Succeeded != 0 {
+		t.Fatalf("expected redirect response to retry instead of succeeding, got %#v", result)
+	}
+	if strings.Join(seen, ",") != "POST /redirect" {
+		t.Fatalf("expected webhook client to stop at redirect, saw %v", seen)
+	}
+	if len(store.failed) != 1 || !store.failed[0].ResponseStatus.Valid || store.failed[0].ResponseStatus.Int32 != http.StatusFound {
+		t.Fatalf("expected redirect status to be recorded as failed attempt, got %#v", store.failed)
+	}
+}
+
+func TestWebhookWorkerTreatsTwoXXWithUnreadableBodyAsSuccess(t *testing.T) {
+	now := time.Date(2026, 5, 22, 9, 0, 0, 0, time.UTC)
+	store := &fakeWebhookStore{
+		claimed: []db.ClaimPendingWebhookDeliveriesRow{{
+			ID:           testUUID(59),
+			EventID:      testUUID(60),
+			EndpointUrl:  "https://example.test/hooks/forge",
+			Payload:      []byte(`{"event_type":"completed"}`),
+			AttemptCount: 0,
+			MaxAttempts:  3,
+		}},
+	}
+	client := &fakeHTTPClient{response: &http.Response{
+		StatusCode: http.StatusAccepted,
+		Body:       io.NopCloser(errorReader{}),
+	}}
+	worker := NewWebhookWorker(store, WithWebhookClock(func() time.Time { return now }), WithWebhookHTTPClient(client))
+
+	result, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run webhooks: %v", err)
+	}
+
+	if result.Succeeded != 1 || result.Retried != 0 || result.Failed != 0 {
+		t.Fatalf("expected accepted webhook to succeed despite response body read error, got %#v", result)
+	}
+	if len(store.succeeded) != 1 {
+		t.Fatalf("expected success update, got %d", len(store.succeeded))
+	}
+	if len(store.failed) != 0 {
+		t.Fatalf("did not expect retry update, got %#v", store.failed)
 	}
 }
 
@@ -189,6 +265,12 @@ type fakeHTTPClient struct {
 	requests []*http.Request
 	response *http.Response
 	err      error
+}
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) {
+	return 0, errors.New("truncated response body")
 }
 
 func (c *fakeHTTPClient) Do(req *http.Request) (*http.Response, error) {
