@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,8 +45,9 @@ type ListEventsResult struct {
 }
 
 type eventCursor struct {
-	CreatedAt pgtype.Timestamptz
-	ID        pgtype.UUID
+	EventSequence int64
+	CreatedAt     pgtype.Timestamptz
+	ID            pgtype.UUID
 }
 
 func (s *EventService) ListEvents(ctx context.Context, req ListEventsRequest) (ListEventsResult, error) {
@@ -84,8 +86,8 @@ func (s *EventService) ListEvents(ctx context.Context, req ListEventsRequest) (L
 			ProjectID:      req.ProjectID,
 			TicketID:       req.TicketID,
 			AttemptID:      req.AttemptID,
-			AfterCreatedAt: cursor.CreatedAt,
-			LimitCount:     limit,
+			AfterEventSequence: cursor.EventSequence,
+			LimitCount:         limit,
 		})
 	}
 	if err != nil {
@@ -111,7 +113,7 @@ func formatEventCursor(event db.TicketEvent) string {
 	if !event.CreatedAt.Valid || !event.ID.Valid {
 		return ""
 	}
-	value := event.CreatedAt.Time.UTC().Format(time.RFC3339Nano) + "|" + eventUUIDString(event.ID)
+	value := strconv.FormatInt(event.EventSequence, 10) + "|" + event.CreatedAt.Time.UTC().Format(time.RFC3339Nano) + "|" + eventUUIDString(event.ID)
 	return base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
@@ -120,21 +122,26 @@ func parseEventCursor(value string) (eventCursor, error) {
 	if err != nil {
 		return eventCursor{}, err
 	}
-	parts := strings.SplitN(string(decoded), "|", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	parts := strings.SplitN(string(decoded), "|", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return eventCursor{}, fmt.Errorf("malformed cursor")
 	}
-	createdAt, err := time.Parse(time.RFC3339Nano, parts[0])
+	eventSequence, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || eventSequence < 1 {
+		return eventCursor{}, fmt.Errorf("malformed cursor")
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, parts[1])
 	if err != nil {
 		return eventCursor{}, err
 	}
 	var id pgtype.UUID
-	if err := id.Scan(parts[1]); err != nil {
+	if err := id.Scan(parts[2]); err != nil {
 		return eventCursor{}, err
 	}
 	return eventCursor{
-		CreatedAt: pgtype.Timestamptz{Time: createdAt, Valid: true},
-		ID:        id,
+		EventSequence: eventSequence,
+		CreatedAt:     pgtype.Timestamptz{Time: createdAt, Valid: true},
+		ID:            id,
 	}, nil
 }
 

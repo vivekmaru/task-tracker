@@ -14,8 +14,8 @@ func TestListEventsReturnsRecentWindowWithNextCursor(t *testing.T) {
 	lastCreatedAt := time.Date(2026, 5, 23, 8, 30, 0, 0, time.UTC)
 	store := &fakeEventStore{
 		recentEvents: []db.TicketEvent{
-			{ID: testUUID(10), CreatedAt: timestamptzForTest(lastCreatedAt.Add(-time.Second))},
-			{ID: testUUID(11), CreatedAt: timestamptzForTest(lastCreatedAt)},
+			{ID: testUUID(10), CreatedAt: timestamptzForTest(lastCreatedAt.Add(-time.Second)), EventSequence: 41},
+			{ID: testUUID(11), CreatedAt: timestamptzForTest(lastCreatedAt), EventSequence: 42},
 		},
 	}
 	service := NewEventService(store)
@@ -48,11 +48,14 @@ func TestListEventsReturnsRecentWindowWithNextCursor(t *testing.T) {
 	if cursor.ID != testUUID(11) || !cursor.CreatedAt.Time.Equal(lastCreatedAt) {
 		t.Fatalf("next cursor points at wrong event: %#v", cursor)
 	}
+	if cursor.EventSequence != 42 {
+		t.Fatalf("next cursor has wrong event sequence: %#v", cursor)
+	}
 }
 
 func TestListEventsUsesCursorForFollowUpRequests(t *testing.T) {
 	createdAt := time.Date(2026, 5, 23, 9, 0, 0, 0, time.UTC)
-	cursor := formatEventCursor(db.TicketEvent{ID: testUUID(20), CreatedAt: timestamptzForTest(createdAt)})
+	cursor := formatEventCursor(db.TicketEvent{ID: testUUID(20), CreatedAt: timestamptzForTest(createdAt), EventSequence: 123})
 	store := &fakeEventStore{}
 	service := NewEventService(store)
 
@@ -70,7 +73,7 @@ func TestListEventsUsesCursorForFollowUpRequests(t *testing.T) {
 	if store.afterParams.WorkspaceID != testUUID(1) {
 		t.Fatalf("workspace filter did not reach follow-up query: %#v", store.afterParams)
 	}
-	if !store.afterParams.AfterCreatedAt.Time.Equal(createdAt) {
+	if store.afterParams.AfterEventSequence != 123 {
 		t.Fatalf("cursor did not reach follow-up query: %#v", store.afterParams)
 	}
 	if store.afterParams.LimitCount != maxEventFeedLimit {

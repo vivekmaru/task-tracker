@@ -172,16 +172,17 @@ type TicketDependency struct {
 }
 
 type TicketEvent struct {
-	ID          pgtype.UUID        `db:"id" json:"id"`
-	WorkspaceID pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
-	ProjectID   pgtype.UUID        `db:"project_id" json:"project_id"`
-	TicketID    pgtype.UUID        `db:"ticket_id" json:"ticket_id"`
-	AttemptID   pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
-	Type        string             `db:"type" json:"type"`
-	ActorType   string             `db:"actor_type" json:"actor_type"`
-	ActorID     pgtype.Text        `db:"actor_id" json:"actor_id"`
-	Data        []byte             `db:"data" json:"data"`
-	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	ID            pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID   pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID     pgtype.UUID        `db:"project_id" json:"project_id"`
+	TicketID      pgtype.UUID        `db:"ticket_id" json:"ticket_id"`
+	AttemptID     pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	Type          string             `db:"type" json:"type"`
+	ActorType     string             `db:"actor_type" json:"actor_type"`
+	ActorID       pgtype.Text        `db:"actor_id" json:"actor_id"`
+	Data          []byte             `db:"data" json:"data"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	EventSequence int64              `db:"event_sequence" json:"event_sequence"`
 }
 
 type WebhookDelivery struct {

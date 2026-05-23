@@ -16,7 +16,7 @@ RETURNING *;
 SELECT *
 FROM ticket_events
 WHERE ticket_id = $1
-ORDER BY created_at ASC, id ASC;
+ORDER BY event_sequence ASC;
 
 -- name: ListRecentTicketEvents :many
 SELECT *
@@ -27,10 +27,10 @@ FROM (
       AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id')::uuid)
       AND (sqlc.narg('ticket_id')::uuid IS NULL OR ticket_id = sqlc.narg('ticket_id')::uuid)
       AND (sqlc.narg('attempt_id')::uuid IS NULL OR attempt_id = sqlc.narg('attempt_id')::uuid)
-    ORDER BY created_at DESC, id DESC
+    ORDER BY event_sequence DESC
     LIMIT sqlc.arg('limit_count')::integer
 ) recent
-ORDER BY created_at ASC, id ASC;
+ORDER BY event_sequence ASC;
 
 -- name: ListTicketEventsAfterCursor :many
 SELECT *
@@ -39,6 +39,6 @@ WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('work
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id')::uuid)
   AND (sqlc.narg('ticket_id')::uuid IS NULL OR ticket_id = sqlc.narg('ticket_id')::uuid)
   AND (sqlc.narg('attempt_id')::uuid IS NULL OR attempt_id = sqlc.narg('attempt_id')::uuid)
-  AND created_at >= sqlc.arg('after_created_at')::timestamptz
-ORDER BY created_at ASC, id ASC
+  AND event_sequence > sqlc.arg('after_event_sequence')::bigint
+ORDER BY event_sequence ASC
 LIMIT sqlc.arg('limit_count')::integer;

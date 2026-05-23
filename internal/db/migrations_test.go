@@ -166,6 +166,26 @@ func TestForwardMigrationAddsWebhookDeliveryQueue(t *testing.T) {
 	}
 }
 
+func TestForwardMigrationAddsTicketEventSequence(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0006_ticket_event_sequence.sql"))
+	if err != nil {
+		t.Fatalf("read event sequence migration: %v", err)
+	}
+	sql := strings.ToLower(string(data))
+
+	for _, want := range []string{
+		"alter table ticket_events",
+		"add column event_sequence bigint",
+		"ticket_events_event_sequence_seq",
+		"idx_ticket_events_event_sequence",
+		"order by created_at asc, id asc",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected event sequence migration to contain %q", want)
+		}
+	}
+}
+
 func readInitialMigration(t *testing.T) string {
 	t.Helper()
 
