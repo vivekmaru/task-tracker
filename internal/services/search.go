@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"errors"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 )
@@ -12,6 +14,7 @@ const defaultSearchLimit int32 = 25
 const maxSearchLimit int32 = 100
 
 type SearchStore interface {
+	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	SearchTickets(context.Context, db.SearchTicketsParams) ([]db.SearchTicketsRow, error)
 	SearchRelatedTickets(context.Context, db.SearchRelatedTicketsParams) ([]db.SearchRelatedTicketsRow, error)
 }
@@ -95,6 +98,12 @@ func (s *SearchService) SearchTickets(ctx context.Context, req SearchTicketsRequ
 func (s *SearchService) RelatedWork(ctx context.Context, req RelatedWorkRequest) ([]RelatedWorkResult, error) {
 	if problems := validateRelatedWorkRequest(req); len(problems) > 0 {
 		return nil, ValidationError{Problems: problems}
+	}
+	if _, err := s.store.GetTicket(ctx, req.TicketID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrTicketNotFound
+		}
+		return nil, err
 	}
 
 	limit := req.Limit

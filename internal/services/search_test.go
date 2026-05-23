@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 )
@@ -77,6 +78,7 @@ func TestSearchTicketsValidatesScopeAndQuery(t *testing.T) {
 
 func TestRelatedWorkDefaultsLimitAndMapsMatches(t *testing.T) {
 	store := &fakeSearchStore{
+		sourceTicket: db.Ticket{ID: testUUID(3)},
 		relatedRows: []db.SearchRelatedTicketsRow{
 			{
 				ID:           testUUID(4),
@@ -126,6 +128,17 @@ func TestRelatedWorkDefaultsLimitAndMapsMatches(t *testing.T) {
 	}
 }
 
+func TestRelatedWorkReturnsNotFoundForUnknownSourceTicket(t *testing.T) {
+	service := NewSearchService(&fakeSearchStore{getTicketErr: pgx.ErrNoRows})
+
+	_, err := service.RelatedWork(context.Background(), RelatedWorkRequest{
+		TicketID: testUUID(3),
+	})
+	if !errors.Is(err, ErrTicketNotFound) {
+		t.Fatalf("expected ticket not found, got %v", err)
+	}
+}
+
 func TestRelatedWorkValidatesTicketID(t *testing.T) {
 	service := NewSearchService(&fakeSearchStore{})
 
@@ -142,9 +155,24 @@ func TestRelatedWorkValidatesTicketID(t *testing.T) {
 type fakeSearchStore struct {
 	params        db.SearchTicketsParams
 	rows          []db.SearchTicketsRow
+	sourceTicket  db.Ticket
+	getTicketErr  error
 	relatedParams db.SearchRelatedTicketsParams
 	relatedRows   []db.SearchRelatedTicketsRow
 	err           error
+}
+
+func (s *fakeSearchStore) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
+	if s.getTicketErr != nil {
+		return db.Ticket{}, s.getTicketErr
+	}
+	if !s.sourceTicket.ID.Valid {
+		return db.Ticket{}, pgx.ErrNoRows
+	}
+	if s.sourceTicket.ID != id {
+		return db.Ticket{}, pgx.ErrNoRows
+	}
+	return s.sourceTicket, nil
 }
 
 func (s *fakeSearchStore) SearchTickets(_ context.Context, params db.SearchTicketsParams) ([]db.SearchTicketsRow, error) {

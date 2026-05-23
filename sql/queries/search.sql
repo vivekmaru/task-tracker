@@ -120,7 +120,7 @@ WITH source_ticket AS (
     WHERE t.id = sqlc.arg('ticket_id')::uuid
 ),
 search_query AS (
-    SELECT websearch_to_tsquery('english', st.search_text) AS query
+    SELECT plainto_tsquery('english', st.search_text) AS query
     FROM source_ticket st
 ),
 matches AS (

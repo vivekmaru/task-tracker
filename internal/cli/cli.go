@@ -523,6 +523,10 @@ func runRelatedCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "related argument error: --offset must be non-negative")
 		return 2
 	}
+	if offset > math.MaxInt32 {
+		fmt.Fprintf(stderr, "related argument error: --offset must be between 0 and %d\n", math.MaxInt32)
+		return 2
+	}
 	if limit < 0 || limit > math.MaxInt32 {
 		fmt.Fprintf(stderr, "related argument error: --limit must be between 0 and %d\n", math.MaxInt32)
 		return 2

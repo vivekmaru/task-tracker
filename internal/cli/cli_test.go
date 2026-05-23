@@ -1683,6 +1683,23 @@ func TestRunRelatedReturnsRelatedWork(t *testing.T) {
 	}
 }
 
+func TestRunRelatedRejectsOffsetAboveInt32(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"related",
+		"--ticket-id", uuidString(t, testUUID(5)),
+		"--offset", "2147483648",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(&fakeRuntime{})})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "related argument error: --offset must be between 0 and 2147483647") {
+		t.Fatalf("expected offset bound error, got %q", stderr.String())
+	}
+}
+
 type noopRuntime struct {
 	fakeRuntime
 }
