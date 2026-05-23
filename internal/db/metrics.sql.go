@@ -422,6 +422,82 @@ func (q *Queries) GetAnalyticsSummary(ctx context.Context, arg GetAnalyticsSumma
 	return i, err
 }
 
+const getAnalyticsTrends = `-- name: GetAnalyticsTrends :many
+SELECT
+    CASE
+        WHEN $1::text = 'week' THEN date_trunc('week', COALESCE(a.completed_at, a.started_at))
+        ELSE date_trunc('day', COALESCE(a.completed_at, a.started_at))
+    END::timestamptz AS bucket_start,
+    COUNT(a.id)::bigint AS attempt_count,
+    COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
+    COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
+    COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
+    COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
+    COALESCE(SUM(m.duration_seconds), 0)::numeric(12, 3) AS total_duration_secs,
+    COALESCE(SUM(m.retry_count), 0)::bigint AS total_retries,
+    COUNT(m.id)::bigint AS attempts_with_metrics
+FROM attempts a
+LEFT JOIN attempt_metrics m ON m.attempt_id = a.id
+WHERE ($2::uuid IS NULL OR a.workspace_id = $2)
+  AND ($3::uuid IS NULL OR a.project_id = $3)
+GROUP BY bucket_start
+ORDER BY bucket_start ASC
+`
+
+type GetAnalyticsTrendsParams struct {
+	Bucket      string      `db:"bucket" json:"bucket"`
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
+}
+
+type GetAnalyticsTrendsRow struct {
+	BucketStart         pgtype.Timestamptz `db:"bucket_start" json:"bucket_start"`
+	AttemptCount        int64              `db:"attempt_count" json:"attempt_count"`
+	SucceededAttempts   int64              `db:"succeeded_attempts" json:"succeeded_attempts"`
+	FailedAttempts      int64              `db:"failed_attempts" json:"failed_attempts"`
+	BlockedAttempts     int64              `db:"blocked_attempts" json:"blocked_attempts"`
+	TotalTokensIn       int64              `db:"total_tokens_in" json:"total_tokens_in"`
+	TotalTokensOut      int64              `db:"total_tokens_out" json:"total_tokens_out"`
+	TotalCostUsd        pgtype.Numeric     `db:"total_cost_usd" json:"total_cost_usd"`
+	TotalDurationSecs   pgtype.Numeric     `db:"total_duration_secs" json:"total_duration_secs"`
+	TotalRetries        int64              `db:"total_retries" json:"total_retries"`
+	AttemptsWithMetrics int64              `db:"attempts_with_metrics" json:"attempts_with_metrics"`
+}
+
+func (q *Queries) GetAnalyticsTrends(ctx context.Context, arg GetAnalyticsTrendsParams) ([]GetAnalyticsTrendsRow, error) {
+	rows, err := q.db.Query(ctx, getAnalyticsTrends, arg.Bucket, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAnalyticsTrendsRow{}
+	for rows.Next() {
+		var i GetAnalyticsTrendsRow
+		if err := rows.Scan(
+			&i.BucketStart,
+			&i.AttemptCount,
+			&i.SucceededAttempts,
+			&i.FailedAttempts,
+			&i.BlockedAttempts,
+			&i.TotalTokensIn,
+			&i.TotalTokensOut,
+			&i.TotalCostUsd,
+			&i.TotalDurationSecs,
+			&i.TotalRetries,
+			&i.AttemptsWithMetrics,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAttemptMetrics = `-- name: GetAttemptMetrics :one
 SELECT id, attempt_id, workspace_id, project_id, tokens_in, tokens_out, cost_usd, duration_seconds, retry_count, agent_success_score, human_rating, created_at
 FROM attempt_metrics

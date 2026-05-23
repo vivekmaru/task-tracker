@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
@@ -159,6 +160,62 @@ func TestAnalyticsByModelAndHarnessReturnGroupedRows(t *testing.T) {
 	}
 }
 
+func TestAnalyticsTrendsReturnBucketedRows(t *testing.T) {
+	bucketStart := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	store := &fakeAnalyticsStore{
+		trends: []db.GetAnalyticsTrendsRow{
+			{
+				BucketStart:         pgtype.Timestamptz{Time: bucketStart, Valid: true},
+				AttemptCount:        4,
+				SucceededAttempts:   3,
+				FailedAttempts:      1,
+				TotalTokensIn:       4200,
+				TotalTokensOut:      1600,
+				TotalCostUsd:        numericForTest(t, 0.84),
+				TotalDurationSecs:   numericForTest(t, 480),
+				TotalRetries:        2,
+				AttemptsWithMetrics: 4,
+			},
+		},
+	}
+	service := NewAnalyticsService(store)
+
+	got, err := service.Trends(context.Background(), AnalyticsTrendFilter{
+		AnalyticsFilter: AnalyticsFilter{
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+		},
+		Bucket: AnalyticsTrendBucketWeek,
+	})
+	if err != nil {
+		t.Fatalf("analytics trends: %v", err)
+	}
+
+	params := store.trendParams[0]
+	if params.WorkspaceID != testUUID(1) || params.ProjectID != testUUID(2) || params.Bucket != string(AnalyticsTrendBucketWeek) {
+		t.Fatalf("expected scoped trend params, got %#v", params)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected one trend row, got %#v", got)
+	}
+	row := got[0]
+	if !row.BucketStart.Equal(bucketStart) || row.AttemptCount != 4 || row.SuccessRate != 0.75 {
+		t.Fatalf("unexpected trend row: %#v", row)
+	}
+	if row.TotalTokens != 5800 || row.AverageTokens != 1450 || row.AverageCostUSD != 0.21 || row.AverageDurationSeconds != 120 {
+		t.Fatalf("expected derived trend metrics, got %#v", row)
+	}
+}
+
+func TestAnalyticsTrendsRejectUnknownBucket(t *testing.T) {
+	service := NewAnalyticsService(&fakeAnalyticsStore{})
+
+	_, err := service.Trends(context.Background(), AnalyticsTrendFilter{Bucket: "month"})
+	if err == nil {
+		t.Fatal("expected unknown trend bucket to fail")
+	}
+}
+
 type fakeAnalyticsStore struct {
 	summaryParams []db.GetAnalyticsSummaryParams
 	summary       db.GetAnalyticsSummaryRow
@@ -175,6 +232,9 @@ type fakeAnalyticsStore struct {
 	agentParams   []db.GetAnalyticsByAgentParams
 	byAgent       []db.GetAnalyticsByAgentRow
 	agentErr      error
+	trendParams   []db.GetAnalyticsTrendsParams
+	trends        []db.GetAnalyticsTrendsRow
+	trendErr      error
 }
 
 func (s *fakeAnalyticsStore) GetAnalyticsSummary(_ context.Context, params db.GetAnalyticsSummaryParams) (db.GetAnalyticsSummaryRow, error) {
@@ -200,6 +260,11 @@ func (s *fakeAnalyticsStore) GetAnalyticsByStatus(_ context.Context, params db.G
 func (s *fakeAnalyticsStore) GetAnalyticsByAgent(_ context.Context, params db.GetAnalyticsByAgentParams) ([]db.GetAnalyticsByAgentRow, error) {
 	s.agentParams = append(s.agentParams, params)
 	return s.byAgent, s.agentErr
+}
+
+func (s *fakeAnalyticsStore) GetAnalyticsTrends(_ context.Context, params db.GetAnalyticsTrendsParams) ([]db.GetAnalyticsTrendsRow, error) {
+	s.trendParams = append(s.trendParams, params)
+	return s.trends, s.trendErr
 }
 
 func numericForTest(t *testing.T, value float64) pgtype.Numeric {

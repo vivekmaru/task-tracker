@@ -44,6 +44,29 @@ LEFT JOIN attempt_metrics m ON m.attempt_id = a.id
 WHERE (sqlc.narg(workspace_id)::uuid IS NULL OR a.workspace_id = sqlc.narg(workspace_id))
   AND (sqlc.narg(project_id)::uuid IS NULL OR a.project_id = sqlc.narg(project_id));
 
+-- name: GetAnalyticsTrends :many
+SELECT
+    CASE
+        WHEN sqlc.arg(bucket)::text = 'week' THEN date_trunc('week', COALESCE(a.completed_at, a.started_at))
+        ELSE date_trunc('day', COALESCE(a.completed_at, a.started_at))
+    END::timestamptz AS bucket_start,
+    COUNT(a.id)::bigint AS attempt_count,
+    COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
+    COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
+    COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
+    COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
+    COALESCE(SUM(m.duration_seconds), 0)::numeric(12, 3) AS total_duration_secs,
+    COALESCE(SUM(m.retry_count), 0)::bigint AS total_retries,
+    COUNT(m.id)::bigint AS attempts_with_metrics
+FROM attempts a
+LEFT JOIN attempt_metrics m ON m.attempt_id = a.id
+WHERE (sqlc.narg(workspace_id)::uuid IS NULL OR a.workspace_id = sqlc.narg(workspace_id))
+  AND (sqlc.narg(project_id)::uuid IS NULL OR a.project_id = sqlc.narg(project_id))
+GROUP BY bucket_start
+ORDER BY bucket_start ASC;
+
 -- name: GetAnalyticsByModel :many
 SELECT
     COALESCE(NULLIF(a.model, ''), '(unknown)')::text AS model,

@@ -1261,6 +1261,80 @@ func TestRunAnalyticsByStatusAndAgentUseScopedFilters(t *testing.T) {
 	}
 }
 
+func TestRunAnalyticsTrendsUsesBucketAndScopedFilters(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsTrends: []services.AnalyticsTrend{
+			{
+				BucketStart:            time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
+				AttemptCount:           4,
+				SucceededAttempts:      3,
+				FailedAttempts:         1,
+				SuccessRate:            0.75,
+				AverageCostUSD:         0.21,
+				AverageDurationSeconds: 120,
+				AverageTokens:          1450,
+				TotalCostUSD:           0.84,
+				TotalTokens:            5800,
+				TotalDurationSeconds:   480,
+				TotalRetries:           2,
+			},
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "trends",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--project-id", uuidString(t, testUUID(3)),
+		"--bucket", "week",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsTrendFilter.WorkspaceID != testUUID(2) || fake.analyticsTrendFilter.ProjectID != testUUID(3) {
+		t.Fatalf("expected scoped trend filter, got %#v", fake.analyticsTrendFilter)
+	}
+	if fake.analyticsTrendFilter.Bucket != services.AnalyticsTrendBucketWeek {
+		t.Fatalf("expected week trend bucket, got %#v", fake.analyticsTrendFilter)
+	}
+	if !strings.Contains(stdout.String(), "Bucket\tAttempts\tSucceeded\tFailed\tBlocked\tSuccess Rate\tAvg Cost\tAvg Duration\tAvg Tokens\tCost\tTokens\tDuration\tRetries") {
+		t.Fatalf("expected trend header, got %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "2026-05-18\t4\t3\t1\t0\t75.0%\t$0.210000\t120.000s\t1450") {
+		t.Fatalf("expected trend row, got %s", stdout.String())
+	}
+}
+
+func TestRunAnalyticsTrendsWritesJSONWhenRequested(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsTrends: []services.AnalyticsTrend{
+			{
+				BucketStart:  time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC),
+				AttemptCount: 2,
+				TotalTokens:  3000,
+			},
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "trends",
+		"--bucket", "day",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsTrendFilter.Bucket != services.AnalyticsTrendBucketDay {
+		t.Fatalf("expected day trend bucket, got %#v", fake.analyticsTrendFilter)
+	}
+	if !strings.Contains(stdout.String(), `"trends":[{"bucket_start":"2026-05-23T00:00:00Z"`) {
+		t.Fatalf("expected analytics trend JSON rows, got %s", stdout.String())
+	}
+}
+
 func TestRunCodexCompleteDoesNotPersistProofsWhenTransitionFails(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -1670,6 +1744,8 @@ type fakeRuntime struct {
 	analyticsCall           string
 	analyticsSummary        services.AnalyticsSummary
 	analyticsGroups         []services.AnalyticsGroup
+	analyticsTrendFilter    services.AnalyticsTrendFilter
+	analyticsTrends         []services.AnalyticsTrend
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -1936,6 +2012,12 @@ func (f *fakeRuntime) AnalyticsByAgent(_ context.Context, filter services.Analyt
 	f.analyticsFilter = filter
 	f.analyticsCall = "agent"
 	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsTrends(_ context.Context, filter services.AnalyticsTrendFilter) ([]services.AnalyticsTrend, error) {
+	f.analyticsTrendFilter = filter
+	f.analyticsCall = "trends"
+	return f.analyticsTrends, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {
