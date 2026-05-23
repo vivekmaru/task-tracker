@@ -6,6 +6,7 @@ sql:
       - sql/migrations/0002_ticket_transition_event_types.sql
       - sql/migrations/0003_full_text_search.sql
       - sql/migrations/0004_webhook_deliveries.sql
+      - sql/migrations/0005_workspace_members.sql
     queries:
       - sql/queries
     gen:

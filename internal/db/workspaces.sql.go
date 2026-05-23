@@ -53,6 +53,24 @@ func (q *Queries) CreateWorkspace(ctx context.Context, name string) (Workspace, 
 	return i, err
 }
 
+const deleteWorkspaceMember = `-- name: DeleteWorkspaceMember :exec
+DELETE FROM workspace_members
+WHERE workspace_id = $1
+  AND actor_type = $2
+  AND actor_id = $3
+`
+
+type DeleteWorkspaceMemberParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ActorType   string      `db:"actor_type" json:"actor_type"`
+	ActorID     string      `db:"actor_id" json:"actor_id"`
+}
+
+func (q *Queries) DeleteWorkspaceMember(ctx context.Context, arg DeleteWorkspaceMemberParams) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceMember, arg.WorkspaceID, arg.ActorType, arg.ActorID)
+	return err
+}
+
 const getProject = `-- name: GetProject :one
 SELECT id, workspace_id, name, created_at, updated_at
 FROM projects
@@ -123,6 +141,49 @@ func (q *Queries) ListProjectsByWorkspace(ctx context.Context, workspaceID pgtyp
 	return items, nil
 }
 
+const listWorkspaceMembers = `-- name: ListWorkspaceMembers :many
+SELECT workspace_id, actor_type, actor_id, role, created_at, updated_at
+FROM workspace_members
+WHERE workspace_id = $1
+ORDER BY
+    CASE role
+        WHEN 'owner' THEN 1
+        WHEN 'admin' THEN 2
+        WHEN 'member' THEN 3
+        WHEN 'viewer' THEN 4
+        ELSE 5
+    END,
+    actor_type ASC,
+    actor_id ASC
+`
+
+func (q *Queries) ListWorkspaceMembers(ctx context.Context, workspaceID pgtype.UUID) ([]WorkspaceMember, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceMembers, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceMember{}
+	for rows.Next() {
+		var i WorkspaceMember
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Role,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaces = `-- name: ListWorkspaces :many
 SELECT id, name, created_at, updated_at
 FROM workspaces
@@ -152,4 +213,73 @@ func (q *Queries) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateWorkspaceMemberRole = `-- name: UpdateWorkspaceMemberRole :one
+UPDATE workspace_members
+SET role = $4, updated_at = now()
+WHERE workspace_id = $1
+  AND actor_type = $2
+  AND actor_id = $3
+RETURNING workspace_id, actor_type, actor_id, role, created_at, updated_at
+`
+
+type UpdateWorkspaceMemberRoleParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ActorType   string      `db:"actor_type" json:"actor_type"`
+	ActorID     string      `db:"actor_id" json:"actor_id"`
+	Role        string      `db:"role" json:"role"`
+}
+
+func (q *Queries) UpdateWorkspaceMemberRole(ctx context.Context, arg UpdateWorkspaceMemberRoleParams) (WorkspaceMember, error) {
+	row := q.db.QueryRow(ctx, updateWorkspaceMemberRole,
+		arg.WorkspaceID,
+		arg.ActorType,
+		arg.ActorID,
+		arg.Role,
+	)
+	var i WorkspaceMember
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.ActorType,
+		&i.ActorID,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertWorkspaceMember = `-- name: UpsertWorkspaceMember :one
+INSERT INTO workspace_members (workspace_id, actor_type, actor_id, role)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (workspace_id, actor_type, actor_id)
+DO UPDATE SET role = EXCLUDED.role, updated_at = now()
+RETURNING workspace_id, actor_type, actor_id, role, created_at, updated_at
+`
+
+type UpsertWorkspaceMemberParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ActorType   string      `db:"actor_type" json:"actor_type"`
+	ActorID     string      `db:"actor_id" json:"actor_id"`
+	Role        string      `db:"role" json:"role"`
+}
+
+func (q *Queries) UpsertWorkspaceMember(ctx context.Context, arg UpsertWorkspaceMemberParams) (WorkspaceMember, error) {
+	row := q.db.QueryRow(ctx, upsertWorkspaceMember,
+		arg.WorkspaceID,
+		arg.ActorType,
+		arg.ActorID,
+		arg.Role,
+	)
+	var i WorkspaceMember
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.ActorType,
+		&i.ActorID,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
