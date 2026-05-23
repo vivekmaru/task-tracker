@@ -1840,7 +1840,9 @@ type createTicketFlags struct {
 
 func (f *createTicketFlags) bind(flags *flag.FlagSet) {
 	flags.StringVar(&f.WorkspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&f.WorkspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&f.ProjectID, "project-id", "", "project id")
+	flags.StringVar(&f.ProjectID, "project", "", "project id")
 	flags.StringVar(&f.Title, "title", "", "ticket title")
 	flags.StringVar(&f.Description, "description", "", "ticket description")
 	flags.StringVar(&f.Type, "type", "", "ticket type")

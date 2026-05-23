@@ -490,6 +490,42 @@ func TestRunCreateTicketJSON(t *testing.T) {
 	}
 }
 
+func TestRunCreateTicketAcceptsWorkspaceProjectAliases(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		createTicket: db.Ticket{
+			ID:     testUUID(1),
+			Title:  "Write task",
+			Status: services.TicketStatusTodo,
+			Type:   services.TicketTypeTask,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"create",
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
+		"--title", "Write task",
+		"--type", services.TicketTypeTask,
+		"--acceptance", "Task is tracked",
+		"--description", "Use the shorter agent-friendly aliases",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.createReq.WorkspaceID != testUUID(2) {
+		t.Fatalf("expected workspace alias to populate request, got %#v", fake.createReq.WorkspaceID)
+	}
+	if fake.createReq.ProjectID != testUUID(3) {
+		t.Fatalf("expected project alias to populate request, got %#v", fake.createReq.ProjectID)
+	}
+	if fake.createReq.Type != services.TicketTypeTask {
+		t.Fatalf("expected task type, got %q", fake.createReq.Type)
+	}
+}
+
 func TestRunWorkspacesCreateAndListJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{

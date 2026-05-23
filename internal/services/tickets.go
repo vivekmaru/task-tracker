@@ -18,6 +18,7 @@ const (
 	ActorSystem = "system"
 
 	TicketTypeFeature       = "feature"
+	TicketTypeTask          = "task"
 	TicketTypeBug           = "bug"
 	TicketTypeDocumentation = "documentation"
 	TicketTypeResearch      = "research"
@@ -833,7 +834,7 @@ func validateCreateTicketRequest(req CreateTicketRequest) []string {
 	if req.Type == "" {
 		problems = append(problems, "type is required")
 	} else if !isAllowedTicketType(req.Type) {
-		problems = append(problems, "type must be one of feature, bug, documentation, research, analysis, planning, review, integration, investigation, cleanup, follow_up, custom")
+		problems = append(problems, "type must be one of feature, task, bug, documentation, research, analysis, planning, review, integration, investigation, cleanup, follow_up, custom")
 	}
 	if req.Status == "" {
 		problems = append(problems, "status is required")
@@ -1225,6 +1226,7 @@ func isAllowedActor(value string) bool {
 func isAllowedTicketType(value string) bool {
 	switch value {
 	case TicketTypeFeature,
+		TicketTypeTask,
 		TicketTypeBug,
 		TicketTypeDocumentation,
 		TicketTypeResearch,
