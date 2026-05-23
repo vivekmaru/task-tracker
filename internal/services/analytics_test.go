@@ -130,8 +130,14 @@ func TestAnalyticsByModelAndHarnessReturnGroupedRows(t *testing.T) {
 	if len(byModel) != 1 || byModel[0].Group != "gpt-5.4" || byModel[0].FailedAttempts != 1 {
 		t.Fatalf("unexpected by-model rows: %#v", byModel)
 	}
+	if byModel[0].SuccessRate != 2.0/3.0 || byModel[0].AverageCostUSD != 0.105 || byModel[0].AverageDurationSeconds != 160 {
+		t.Fatalf("expected by-model comparison fields, got %#v", byModel[0])
+	}
 	if len(byHarness) != 1 || byHarness[0].Group != "codex" || byHarness[0].BlockedAttempts != 1 {
 		t.Fatalf("unexpected by-harness rows: %#v", byHarness)
+	}
+	if byHarness[0].SuccessRate != 0.8 || byHarness[0].AverageCostUSD != 0.1525 || byHarness[0].AverageDurationSeconds != 225 {
+		t.Fatalf("expected by-harness comparison fields, got %#v", byHarness[0])
 	}
 	if len(byStatus) != 1 || byStatus[0].Group != "failed" || byStatus[0].FailedAttempts != 2 {
 		t.Fatalf("unexpected by-status rows: %#v", byStatus)

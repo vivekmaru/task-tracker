@@ -1157,15 +1157,19 @@ func TestRunAnalyticsSummaryPrintsMinimalHumanOutput(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		analyticsSummary: services.AnalyticsSummary{
-			AttemptCount:         3,
-			SucceededAttempts:    2,
-			FailedAttempts:       1,
-			TotalTokensIn:        2200,
-			TotalTokensOut:       900,
-			TotalCostUSD:         0.34,
-			TotalDurationSeconds: 180.5,
-			TotalRetries:         1,
-			AttemptsWithMetrics:  2,
+			AttemptCount:           3,
+			SucceededAttempts:      2,
+			FailedAttempts:         1,
+			TotalTokensIn:          2200,
+			TotalTokensOut:         900,
+			TotalTokens:            3100,
+			TotalCostUSD:           0.34,
+			TotalDurationSeconds:   180.5,
+			TotalRetries:           1,
+			AttemptsWithMetrics:    2,
+			SuccessRate:            2.0 / 3.0,
+			AverageCostUSD:         0.17,
+			AverageDurationSeconds: 90.25,
 		},
 	}
 
@@ -1181,7 +1185,7 @@ func TestRunAnalyticsSummaryPrintsMinimalHumanOutput(t *testing.T) {
 		t.Fatalf("expected workspace filter, got %#v", fake.analyticsFilter)
 	}
 	out := stdout.String()
-	for _, want := range []string{"Attempts: 3", "Succeeded: 2", "Cost: $0.340000", "Tokens: 3100", "Retries: 1"} {
+	for _, want := range []string{"Attempts: 3", "Succeeded: 2", "Success rate: 66.7%", "Cost: $0.340000", "Average cost: $0.170000", "Tokens: 3100", "Retries: 1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected analytics output to contain %q, got:\n%s", want, out)
 		}
@@ -1216,7 +1220,7 @@ func TestRunAnalyticsByStatusAndAgentUseScopedFilters(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		analyticsGroups: []services.AnalyticsGroup{
-			{Group: "blocked", AttemptCount: 2, BlockedAttempts: 2, TotalDurationSeconds: 45.5},
+			{Group: "blocked", AttemptCount: 2, BlockedAttempts: 2, SuccessRate: 0, AverageCostUSD: 0.015, AverageDurationSeconds: 22.75, TotalDurationSeconds: 45.5},
 		},
 	}
 
@@ -1231,8 +1235,11 @@ func TestRunAnalyticsByStatusAndAgentUseScopedFilters(t *testing.T) {
 	if fake.analyticsCall != "status" || fake.analyticsFilter.WorkspaceID != testUUID(2) {
 		t.Fatalf("expected by-status workspace filter, got call=%q filter=%#v", fake.analyticsCall, fake.analyticsFilter)
 	}
-	if !strings.Contains(stdout.String(), "Status\tAttempts\tSucceeded\tFailed\tBlocked\tCost\tTokens\tDuration\tRetries") {
+	if !strings.Contains(stdout.String(), "Status\tAttempts\tSucceeded\tFailed\tBlocked\tSuccess Rate\tAvg Cost\tAvg Duration\tCost\tTokens\tDuration\tRetries") {
 		t.Fatalf("expected expanded analytics header, got %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "0.0%\t$0.015000\t22.750s") {
+		t.Fatalf("expected comparison fields in analytics output, got %s", stdout.String())
 	}
 
 	stdout.Reset()

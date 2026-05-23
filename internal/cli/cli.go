@@ -1817,26 +1817,32 @@ func writeAnalyticsSummary(stdout io.Writer, summary services.AnalyticsSummary) 
 	fmt.Fprintf(stdout, "Succeeded: %d\n", summary.SucceededAttempts)
 	fmt.Fprintf(stdout, "Failed: %d\n", summary.FailedAttempts)
 	fmt.Fprintf(stdout, "Blocked: %d\n", summary.BlockedAttempts)
-	fmt.Fprintf(stdout, "Tokens: %d\n", summary.TotalTokensIn+summary.TotalTokensOut)
+	fmt.Fprintf(stdout, "Success rate: %.1f%%\n", summary.SuccessRate*100)
+	fmt.Fprintf(stdout, "Tokens: %d\n", summary.TotalTokens)
 	fmt.Fprintf(stdout, "Cost: $%.6f\n", summary.TotalCostUSD)
+	fmt.Fprintf(stdout, "Average cost: $%.6f\n", summary.AverageCostUSD)
 	fmt.Fprintf(stdout, "Duration: %.3fs\n", summary.TotalDurationSeconds)
+	fmt.Fprintf(stdout, "Average duration: %.3fs\n", summary.AverageDurationSeconds)
 	fmt.Fprintf(stdout, "Retries: %d\n", summary.TotalRetries)
 	fmt.Fprintf(stdout, "Attempts with metrics: %d\n", summary.AttemptsWithMetrics)
 }
 
 func writeAnalyticsGroups(stdout io.Writer, label string, groups []services.AnalyticsGroup) {
-	fmt.Fprintf(stdout, "%s\tAttempts\tSucceeded\tFailed\tBlocked\tCost\tTokens\tDuration\tRetries\n", label)
+	fmt.Fprintf(stdout, "%s\tAttempts\tSucceeded\tFailed\tBlocked\tSuccess Rate\tAvg Cost\tAvg Duration\tCost\tTokens\tDuration\tRetries\n", label)
 	for _, group := range groups {
 		fmt.Fprintf(
 			stdout,
-			"%s\t%d\t%d\t%d\t%d\t$%.6f\t%d\t%.3fs\t%d\n",
+			"%s\t%d\t%d\t%d\t%d\t%.1f%%\t$%.6f\t%.3fs\t$%.6f\t%d\t%.3fs\t%d\n",
 			group.Group,
 			group.AttemptCount,
 			group.SucceededAttempts,
 			group.FailedAttempts,
 			group.BlockedAttempts,
+			group.SuccessRate*100,
+			group.AverageCostUSD,
+			group.AverageDurationSeconds,
 			group.TotalCostUSD,
-			group.TotalTokensIn+group.TotalTokensOut,
+			group.TotalTokens,
 			group.TotalDurationSeconds,
 			group.TotalRetries,
 		)
