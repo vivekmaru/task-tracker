@@ -1703,6 +1703,84 @@ func TestRunCodexRejectsUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestRunRelatedReturnsRelatedWork(t *testing.T) {
+	fake := &fakeRuntime{
+		relatedResults: []services.RelatedWorkResult{
+			{
+				Ticket: db.Ticket{
+					ID:          testUUID(6),
+					WorkspaceID: testUUID(2),
+					ProjectID:   testUUID(3),
+					Title:       "Recover deploy proof upload",
+					Type:        services.TicketTypeBug,
+					Status:      services.TicketStatusDone,
+					Priority:    1,
+					CreatedBy:   services.ActorAgent,
+				},
+				MatchSources: []string{"attempt", "ticket"},
+				AttemptIDs:   []pgtype.UUID{testUUID(7)},
+				Snippet:      "proof artifact upload retry",
+				Rank:         0.77,
+			},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"related",
+		"--ticket-id", uuidString(t, testUUID(5)),
+		"--limit", "12",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.relatedReq.TicketID != testUUID(5) || fake.relatedReq.Limit != 12 {
+		t.Fatalf("unexpected related request: %#v", fake.relatedReq)
+	}
+	var payload struct {
+		RelatedWork []struct {
+			Ticket       map[string]any `json:"ticket"`
+			MatchSources []string       `json:"match_sources"`
+			AttemptIDs   []string       `json:"attempt_ids"`
+			Snippet      string         `json:"snippet"`
+			Rank         float64        `json:"rank"`
+		} `json:"related_work"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal related output: %v\n%s", err, stdout.String())
+	}
+	if len(payload.RelatedWork) != 1 {
+		t.Fatalf("expected one related result, got %#v", payload.RelatedWork)
+	}
+	if payload.RelatedWork[0].Ticket["id"] != uuidString(t, testUUID(6)) {
+		t.Fatalf("unexpected related ticket payload: %#v", payload.RelatedWork[0])
+	}
+	if got := payload.RelatedWork[0].AttemptIDs; len(got) != 1 || got[0] != uuidString(t, testUUID(7)) {
+		t.Fatalf("unexpected attempt ids: %#v", got)
+	}
+	if payload.RelatedWork[0].Snippet != "proof artifact upload retry" || payload.RelatedWork[0].Rank != 0.77 {
+		t.Fatalf("unexpected related metadata: %#v", payload.RelatedWork[0])
+	}
+}
+
+func TestRunRelatedRejectsOffsetAboveInt32(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"related",
+		"--ticket-id", uuidString(t, testUUID(5)),
+		"--offset", "2147483648",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(&fakeRuntime{})})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "related argument error: --offset must be between 0 and 2147483647") {
+		t.Fatalf("expected offset bound error, got %q", stderr.String())
+	}
+}
+
 type noopRuntime struct {
 	fakeRuntime
 }
@@ -1740,6 +1818,8 @@ type fakeRuntime struct {
 	storeLocalArtifactErr   error
 	removedLocalArtifactURL string
 	removeLocalArtifactErr  error
+	relatedReq              services.RelatedWorkRequest
+	relatedResults          []services.RelatedWorkResult
 	analyticsFilter         services.AnalyticsFilter
 	analyticsCall           string
 	analyticsSummary        services.AnalyticsSummary
@@ -1875,6 +1955,11 @@ func (f *fakeRuntime) ListTickets(context.Context, services.ListTicketsRequest) 
 
 func (f *fakeRuntime) SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error) {
 	return nil, nil
+}
+
+func (f *fakeRuntime) RelatedWork(_ context.Context, req services.RelatedWorkRequest) ([]services.RelatedWorkResult, error) {
+	f.relatedReq = req
+	return f.relatedResults, nil
 }
 
 func (f *fakeRuntime) GetTicket(context.Context, pgtype.UUID) (db.Ticket, error) {

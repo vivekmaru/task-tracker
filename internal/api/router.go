@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -68,6 +69,7 @@ func RegisterPhaseOneRoutes(api huma.API, rt web.Runtime) {
 
 	register[idInput](api, http.MethodGet, "/tickets/{id}/events", "list-ticket-events", "List ticket events")
 	register[idInput](api, http.MethodGet, "/attempts/{id}/events", "list-attempt-events", "List attempt events")
+	registerEventRoutes(api, rt)
 
 	register[bodyInput](api, http.MethodPost, "/artifacts", contracts.RESTAttachArtifact, "Register artifact")
 	register[idInput](api, http.MethodGet, "/artifacts/{id}", "get-artifact", "Get artifact")
@@ -120,6 +122,78 @@ type analyticsRuntime interface {
 	AnalyticsByHarness(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByStatus(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByAgent(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+}
+
+type eventRuntime interface {
+	ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error)
+}
+
+type eventsInput struct {
+	WorkspaceID string `query:"workspace_id,omitempty"`
+	ProjectID   string `query:"project_id,omitempty"`
+	TicketID    string `query:"ticket_id,omitempty"`
+	AttemptID   string `query:"attempt_id,omitempty"`
+	Cursor      string `query:"cursor,omitempty"`
+	Limit       int32  `query:"limit,omitempty"`
+}
+
+type eventsOutput struct {
+	Body services.ListEventsResult `json:"body"`
+}
+
+func registerEventRoutes(api huma.API, rt web.Runtime) {
+	events, _ := rt.(eventRuntime)
+	huma.Register[eventsInput, eventsOutput](api, huma.Operation{
+		OperationID: "list-events",
+		Method:      http.MethodGet,
+		Path:        "/events",
+		Summary:     "List ticket ledger events",
+		Tags:        []string{"Phase 5"},
+	}, func(ctx context.Context, input *eventsInput) (*eventsOutput, error) {
+		if events == nil {
+			return nil, huma.Error501NotImplemented("route is registered; handler wiring is not implemented yet")
+		}
+		req, err := listEventsRequest(input)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		result, err := events.ListEvents(ctx, req)
+		if err != nil {
+			var validationErr services.ValidationError
+			if errors.As(err, &validationErr) {
+				return nil, huma.Error400BadRequest(validationErr.Error())
+			}
+			return nil, huma.Error500InternalServerError("event feed failed", err)
+		}
+		return &eventsOutput{Body: result}, nil
+	})
+}
+
+func listEventsRequest(input *eventsInput) (services.ListEventsRequest, error) {
+	workspaceID, err := parseOptionalUUID(input.WorkspaceID)
+	if err != nil {
+		return services.ListEventsRequest{}, err
+	}
+	projectID, err := parseOptionalUUID(input.ProjectID)
+	if err != nil {
+		return services.ListEventsRequest{}, err
+	}
+	ticketID, err := parseOptionalUUID(input.TicketID)
+	if err != nil {
+		return services.ListEventsRequest{}, err
+	}
+	attemptID, err := parseOptionalUUID(input.AttemptID)
+	if err != nil {
+		return services.ListEventsRequest{}, err
+	}
+	return services.ListEventsRequest{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		TicketID:    ticketID,
+		AttemptID:   attemptID,
+		Cursor:      input.Cursor,
+		Limit:       input.Limit,
+	}, nil
 }
 
 type analyticsInput struct {

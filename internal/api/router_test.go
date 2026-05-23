@@ -56,6 +56,7 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		{"post", "/attempts/{id}/cancel"},
 		{"get", "/tickets/{id}/events"},
 		{"get", "/attempts/{id}/events"},
+		{"get", "/events"},
 		{"post", "/artifacts"},
 		{"get", "/artifacts/{id}"},
 		{"delete", "/artifacts/{id}"},
@@ -72,6 +73,18 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		if _, ok := methods[route.method]; !ok {
 			t.Fatalf("expected OpenAPI operation %s %s", route.method, route.path)
 		}
+	}
+}
+
+func TestListEventsRouteValidatesQueryParams(t *testing.T) {
+	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace_id=not-a-uuid", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected event route status 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

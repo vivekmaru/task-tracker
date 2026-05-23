@@ -50,6 +50,7 @@ var commands = []command{
 	{"attach", "Attach or register proof artifacts."},
 	{"list", "List tickets."},
 	{"get", "Show a ticket or attempt."},
+	{"related", "Find historical tickets related to a ticket."},
 	{"analytics", "Show basic attempt metrics and analytics."},
 	{"codex", "Codex harness convenience commands."},
 }
@@ -77,6 +78,7 @@ type RuntimeHandle interface {
 	Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error)
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
 	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
+	RelatedWork(context.Context, services.RelatedWorkRequest) ([]services.RelatedWorkResult, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
@@ -171,6 +173,8 @@ func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, dep
 		return runListCommand(ctx, args, stdout, stderr, deps)
 	case "get":
 		return runGetCommand(ctx, args, stdout, stderr, deps)
+	case "related":
+		return runRelatedCommand(ctx, args, stdout, stderr, deps)
 	case "heartbeat":
 		return runHeartbeatCommand(ctx, args, stdout, stderr, deps)
 	case "checkpoint":
@@ -494,6 +498,55 @@ func runGetCommand(ctx context.Context, args []string, stdout, stderr io.Writer,
 		fmt.Fprintf(stderr, "get argument error: kind must be ticket or attempt\n")
 		return 2
 	}
+}
+
+func runRelatedCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("related", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var ticketID string
+	var offset, limit int
+	flags.StringVar(&ticketID, "ticket-id", "", "source ticket id")
+	flags.IntVar(&offset, "offset", 0, "offset")
+	flags.IntVar(&limit, "limit", 25, "limit")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	if ticketID == "" && flags.NArg() > 0 {
+		ticketID = flags.Arg(0)
+	}
+	sourceTicketID, err := requiredUUIDFlag("--ticket-id", ticketID)
+	if err != nil {
+		fmt.Fprintf(stderr, "related argument error: %v\n", err)
+		return 2
+	}
+	if offset < 0 {
+		fmt.Fprintln(stderr, "related argument error: --offset must be non-negative")
+		return 2
+	}
+	if offset > math.MaxInt32 {
+		fmt.Fprintf(stderr, "related argument error: --offset must be between 0 and %d\n", math.MaxInt32)
+		return 2
+	}
+	if limit < 0 || limit > math.MaxInt32 {
+		fmt.Fprintf(stderr, "related argument error: --limit must be between 0 and %d\n", math.MaxInt32)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	results, err := rt.RelatedWork(ctx, services.RelatedWorkRequest{
+		TicketID: sourceTicketID,
+		Offset:   int32(offset),
+		Limit:    int32(limit),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "related error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{"related_work": relatedWorkPayloads(results)})
 }
 
 func runHeartbeatCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -1828,6 +1881,24 @@ func artifactPayloads(artifacts []db.Artifact) []map[string]any {
 	return payloads
 }
 
+func relatedWorkPayloads(results []services.RelatedWorkResult) []map[string]any {
+	payloads := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		attemptIDs := make([]string, 0, len(result.AttemptIDs))
+		for _, id := range result.AttemptIDs {
+			attemptIDs = append(attemptIDs, uuidText(id))
+		}
+		payloads = append(payloads, map[string]any{
+			"ticket":        ticketPayload(result.Ticket),
+			"match_sources": result.MatchSources,
+			"attempt_ids":   attemptIDs,
+			"snippet":       result.Snippet,
+			"rank":          result.Rank,
+		})
+	}
+	return payloads
+}
+
 func writeAnalyticsSummary(stdout io.Writer, summary services.AnalyticsSummary) {
 	fmt.Fprintf(stdout, "Attempts: %d\n", summary.AttemptCount)
 	fmt.Fprintf(stdout, "Succeeded: %d\n", summary.SucceededAttempts)
@@ -1930,7 +2001,7 @@ func isKnownCommand(name string) bool {
 
 func isRuntimeCommand(name string) bool {
 	switch name {
-	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "analytics":
+	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "related", "analytics":
 		return true
 	default:
 		return false
