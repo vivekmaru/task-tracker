@@ -2,7 +2,7 @@
 
 Forge is a pull-based work ledger for autonomous AI agents.
 
-Forge currently includes the execution core, JSON-first CLI commands, Codex-oriented convenience commands, a Bubble Tea TUI, server-rendered web views, local and S3-compatible proof artifact storage, search, and basic attempt analytics.
+Forge currently includes the execution core, JSON-first CLI commands, Codex-oriented convenience commands, a Bubble Tea TUI, server-rendered web views, local and S3-compatible proof artifact storage, search, basic attempt analytics, and a first external observability export foundation.
 
 ## Current Status
 
@@ -22,11 +22,13 @@ Implemented:
 - Server-rendered web pages for login, workspaces, projects, ticket queues, ticket detail, attempt detail, artifact access, proposed work, and search.
 - Bubble Tea TUI for scoped queue inspection and ticket detail handoff links.
 - Basic attempt analytics by summary, model, and harness.
+- Structured observability webhook payloads for ticket events, attempt metadata, and attempt metrics.
 - Correctness regression tests across services, CLI, web, storage, runtime, and contracts.
 
 Known current limitations:
 
 - `forge server` starts the HTTP router with the OpenAPI surface and the first web inspection pages. `forge worker` opens the live runtime and validates configuration, but it does not yet run a long-lived River loop.
+- Observability export subscriptions currently use database-level configuration; CLI/API management and OpenTelemetry-native exporters are not implemented yet.
 - The TUI and web UI are usable, but still early. They are not yet at the full "beautiful, low-friction" product bar.
 
 ## Requirements
@@ -74,6 +76,8 @@ Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT
 Set `FORGE_ARTIFACT_BACKEND=s3` or `"artifact_backend": "s3"` to store filesystem proofs in an S3-compatible bucket instead. The S3 backend uses the AWS SDK credential chain by default, or explicit static credentials when `FORGE_S3_ACCESS_KEY_ID` and `FORGE_S3_SECRET_ACCESS_KEY` are set. S3-compatible providers can be configured with `FORGE_S3_ENDPOINT`, `FORGE_S3_REGION`, `FORGE_S3_BUCKET`, `FORGE_S3_PREFIX`, and `FORGE_S3_USE_PATH_STYLE=true`. Equivalent JSON keys are `s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_access_key_id`, `s3_secret_access_key`, `s3_session_token`, and `s3_use_path_style`.
 
 With either backend, `forge codex complete --proof ./go-test-output.txt` and `forge codex block --proof ./blocked.log` copy filesystem proofs into the selected artifact store before registering them. Existing URL proofs such as `local://artifacts/go-test-output.txt` or `s3://forge-bucket/proofs/go-test-output.txt` are registered directly with the matching storage backend.
+
+External observability export uses scoped webhook subscriptions in Postgres and posts `forge.observability.v1` JSON payloads through the durable webhook delivery worker. See [Observability Export Foundation](docs/observability-export.md) for subscription setup, payload shape, signing, retry behavior, and current limits.
 
 Pass it with:
 

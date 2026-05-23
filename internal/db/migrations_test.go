@@ -166,6 +166,10 @@ func TestForwardMigrationAddsWebhookDeliveryQueue(t *testing.T) {
 	}
 }
 
+func TestForwardMigrationSnapshotsWebhookObservabilityPayloads(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0007_webhook_observability_snapshots.sql"))
+	if err != nil {
+		t.Fatalf("read webhook snapshot migration: %v", err)
 func TestForwardMigrationAddsTicketEventSequence(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0006_ticket_event_sequence.sql"))
 	if err != nil {
@@ -174,6 +178,16 @@ func TestForwardMigrationAddsTicketEventSequence(t *testing.T) {
 	sql := strings.ToLower(string(data))
 
 	for _, want := range []string{
+		"create or replace function enqueue_webhook_deliveries_for_ticket_event",
+		"'attempt', case",
+		"'metrics', case",
+		"left join attempts a on a.id = new.attempt_id",
+		"left join attempt_metrics m on m.attempt_id = new.attempt_id",
+		"tokens_in",
+		"duration_seconds",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected webhook snapshot migration to contain %q", want)
 		"alter table ticket_events",
 		"add column event_sequence bigint",
 		"ticket_events_event_sequence_seq",
