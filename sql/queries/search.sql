@@ -120,12 +120,13 @@ WITH source_ticket AS (
     WHERE t.id = sqlc.arg('ticket_id')::uuid
 ),
 search_query AS (
-    SELECT COALESCE(string_agg(term, ' | ' ORDER BY term)::tsquery, ''::tsquery) AS query
+    SELECT COALESCE(string_agg(query_text, ' | ' ORDER BY query_text)::tsquery, ''::tsquery) AS query
     FROM (
-        SELECT DISTINCT lexeme AS term
+        SELECT DISTINCT plainto_tsquery('english', lexeme)::text AS query_text
         FROM source_ticket st
         CROSS JOIN LATERAL unnest(tsvector_to_array(to_tsvector('english', st.search_text))) AS lexeme
-        ORDER BY term
+        WHERE plainto_tsquery('english', lexeme) <> ''::tsquery
+        ORDER BY query_text
         LIMIT 64
     ) terms
 ),
