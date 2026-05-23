@@ -11,6 +11,231 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const searchRelatedTickets = `-- name: SearchRelatedTickets :many
+WITH source_ticket AS (
+    SELECT
+        t.id,
+        t.workspace_id,
+        t.project_id,
+        concat_ws(
+            ' ',
+            t.title,
+            t.description,
+            array_to_string(t.tags, ' '),
+            array_to_string(t.acceptance_criteria, ' '),
+            array_to_string(t.relevant_paths, ' ')
+        ) AS search_text
+    FROM tickets t
+    WHERE t.id = $3::uuid
+),
+search_query AS (
+    SELECT websearch_to_tsquery('english', st.search_text) AS query
+    FROM source_ticket st
+),
+matches AS (
+    SELECT
+        t.id AS ticket_id,
+        NULL::uuid AS attempt_id,
+        'ticket'::text AS source,
+        concat_ws(' ', t.title, t.description) AS match_text,
+        ts_rank_cd(
+            to_tsvector('english', coalesce(t.title, '') || ' ' || coalesce(t.description, '')),
+            sq.query
+        ) AS rank
+    FROM tickets t
+    JOIN source_ticket st ON st.workspace_id = t.workspace_id AND st.project_id = t.project_id
+    CROSS JOIN search_query sq
+    WHERE t.id <> st.id
+      AND to_tsvector('english', coalesce(t.title, '') || ' ' || coalesce(t.description, '')) @@ sq.query
+
+    UNION ALL
+
+    SELECT
+        a.ticket_id,
+        a.id AS attempt_id,
+        'attempt'::text AS source,
+        concat_ws(' ', a.current_summary, a.output::text) AS match_text,
+        ts_rank_cd(
+            to_tsvector('english', coalesce(a.current_summary, '') || ' ' || a.output::text),
+            sq.query
+        ) AS rank
+    FROM attempts a
+    JOIN source_ticket st ON st.workspace_id = a.workspace_id AND st.project_id = a.project_id
+    CROSS JOIN search_query sq
+    WHERE a.ticket_id <> st.id
+      AND to_tsvector('english', coalesce(a.current_summary, '') || ' ' || a.output::text) @@ sq.query
+
+    UNION ALL
+
+    SELECT
+        e.ticket_id,
+        e.attempt_id,
+        'event'::text AS source,
+        e.data::text AS match_text,
+        ts_rank_cd(to_tsvector('english', e.data::text), sq.query) AS rank
+    FROM ticket_events e
+    JOIN source_ticket st ON st.workspace_id = e.workspace_id AND st.project_id = e.project_id
+    CROSS JOIN search_query sq
+    WHERE e.ticket_id <> st.id
+      AND to_tsvector('english', e.data::text) @@ sq.query
+
+    UNION ALL
+
+    SELECT
+        ar.ticket_id,
+        ar.attempt_id,
+        'artifact'::text AS source,
+        ar.name AS match_text,
+        ts_rank_cd(to_tsvector('english', coalesce(ar.name, '')), sq.query) AS rank
+    FROM artifacts ar
+    JOIN source_ticket st ON st.workspace_id = ar.workspace_id AND st.project_id = ar.project_id
+    CROSS JOIN search_query sq
+    WHERE ar.ticket_id <> st.id
+      AND to_tsvector('english', coalesce(ar.name, '')) @@ sq.query
+)
+SELECT
+    t.id,
+    t.workspace_id,
+    t.project_id,
+    t.parent_id,
+    t.root_id,
+    t.source_attempt_id,
+    t.source_artifact_id,
+    t.title,
+    t.description,
+    t.type,
+    t.status,
+    t.priority,
+    t.tags,
+    t.acceptance_criteria,
+    t.verification_commands,
+    t.expected_artifacts,
+    t.relevant_paths,
+    t.required_tools,
+    t.required_permissions,
+    t.environment,
+    t.input,
+    t.input_schema,
+    t.required_capabilities,
+    t.allowed_harnesses,
+    t.retry_policy,
+    t.created_by,
+    t.created_by_id,
+    t.creation_reason,
+    t.created_at,
+    t.updated_at,
+    array_agg(DISTINCT m.source ORDER BY m.source)::text[] AS match_sources,
+    array_remove(array_agg(DISTINCT m.attempt_id), NULL)::uuid[] AS attempt_ids,
+    string_agg(DISTINCT left(m.match_text, 360), ' | ')::text AS snippet,
+    max(m.rank)::real AS rank
+FROM matches m
+JOIN tickets t ON t.id = m.ticket_id
+JOIN source_ticket st ON st.workspace_id = t.workspace_id AND st.project_id = t.project_id
+WHERE t.id <> st.id
+GROUP BY t.id
+ORDER BY rank DESC, t.updated_at DESC, t.id ASC
+LIMIT $2::integer
+OFFSET $1::integer
+`
+
+type SearchRelatedTicketsParams struct {
+	Offset   int32       `db:"offset" json:"offset"`
+	Limit    int32       `db:"limit" json:"limit"`
+	TicketID pgtype.UUID `db:"ticket_id" json:"ticket_id"`
+}
+
+type SearchRelatedTicketsRow struct {
+	ID                   pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID          pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID            pgtype.UUID        `db:"project_id" json:"project_id"`
+	ParentID             pgtype.UUID        `db:"parent_id" json:"parent_id"`
+	RootID               pgtype.UUID        `db:"root_id" json:"root_id"`
+	SourceAttemptID      pgtype.UUID        `db:"source_attempt_id" json:"source_attempt_id"`
+	SourceArtifactID     pgtype.UUID        `db:"source_artifact_id" json:"source_artifact_id"`
+	Title                string             `db:"title" json:"title"`
+	Description          string             `db:"description" json:"description"`
+	Type                 string             `db:"type" json:"type"`
+	Status               string             `db:"status" json:"status"`
+	Priority             int32              `db:"priority" json:"priority"`
+	Tags                 []string           `db:"tags" json:"tags"`
+	AcceptanceCriteria   []string           `db:"acceptance_criteria" json:"acceptance_criteria"`
+	VerificationCommands []byte             `db:"verification_commands" json:"verification_commands"`
+	ExpectedArtifacts    []string           `db:"expected_artifacts" json:"expected_artifacts"`
+	RelevantPaths        []string           `db:"relevant_paths" json:"relevant_paths"`
+	RequiredTools        []string           `db:"required_tools" json:"required_tools"`
+	RequiredPermissions  []string           `db:"required_permissions" json:"required_permissions"`
+	Environment          []byte             `db:"environment" json:"environment"`
+	Input                []byte             `db:"input" json:"input"`
+	InputSchema          pgtype.Text        `db:"input_schema" json:"input_schema"`
+	RequiredCapabilities []string           `db:"required_capabilities" json:"required_capabilities"`
+	AllowedHarnesses     []string           `db:"allowed_harnesses" json:"allowed_harnesses"`
+	RetryPolicy          []byte             `db:"retry_policy" json:"retry_policy"`
+	CreatedBy            string             `db:"created_by" json:"created_by"`
+	CreatedByID          pgtype.Text        `db:"created_by_id" json:"created_by_id"`
+	CreationReason       pgtype.Text        `db:"creation_reason" json:"creation_reason"`
+	CreatedAt            pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	MatchSources         []string           `db:"match_sources" json:"match_sources"`
+	AttemptIds           []pgtype.UUID      `db:"attempt_ids" json:"attempt_ids"`
+	Snippet              string             `db:"snippet" json:"snippet"`
+	Rank                 float32            `db:"rank" json:"rank"`
+}
+
+func (q *Queries) SearchRelatedTickets(ctx context.Context, arg SearchRelatedTicketsParams) ([]SearchRelatedTicketsRow, error) {
+	rows, err := q.db.Query(ctx, searchRelatedTickets, arg.Offset, arg.Limit, arg.TicketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchRelatedTicketsRow{}
+	for rows.Next() {
+		var i SearchRelatedTicketsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.ParentID,
+			&i.RootID,
+			&i.SourceAttemptID,
+			&i.SourceArtifactID,
+			&i.Title,
+			&i.Description,
+			&i.Type,
+			&i.Status,
+			&i.Priority,
+			&i.Tags,
+			&i.AcceptanceCriteria,
+			&i.VerificationCommands,
+			&i.ExpectedArtifacts,
+			&i.RelevantPaths,
+			&i.RequiredTools,
+			&i.RequiredPermissions,
+			&i.Environment,
+			&i.Input,
+			&i.InputSchema,
+			&i.RequiredCapabilities,
+			&i.AllowedHarnesses,
+			&i.RetryPolicy,
+			&i.CreatedBy,
+			&i.CreatedByID,
+			&i.CreationReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.MatchSources,
+			&i.AttemptIds,
+			&i.Snippet,
+			&i.Rank,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchTickets = `-- name: SearchTickets :many
 WITH search_query AS (
     SELECT websearch_to_tsquery('english', $5::text) AS query
