@@ -1778,6 +1778,10 @@ func (f *fakeRuntime) ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.
 	return nil, nil
 }
 
+func (f *fakeRuntime) ListArtifacts(context.Context, services.ListArtifactsRequest) ([]db.Artifact, error) {
+	return nil, nil
+}
+
 func (f *fakeRuntime) ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error) {
 	return nil, nil
 }
@@ -1788,6 +1792,10 @@ func (f *fakeRuntime) GetArtifact(context.Context, pgtype.UUID) (db.Artifact, er
 
 func (f *fakeRuntime) OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error) {
 	return storage.ArtifactContent{}, nil
+}
+
+func (f *fakeRuntime) DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
+	return db.Artifact{}, nil
 }
 
 func (f *fakeRuntime) StoreLocalArtifact(_ context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {

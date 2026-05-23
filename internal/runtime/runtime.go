@@ -258,6 +258,10 @@ func (r *Runtime) ListArtifactsByTicket(ctx context.Context, ticketID pgtype.UUI
 	return r.Artifacts.ListArtifactsByTicket(ctx, ticketID)
 }
 
+func (r *Runtime) ListArtifacts(ctx context.Context, req services.ListArtifactsRequest) ([]db.Artifact, error) {
+	return r.Artifacts.ListArtifacts(ctx, req)
+}
+
 func (r *Runtime) ListArtifactsByAttempt(ctx context.Context, attemptID pgtype.UUID) ([]db.Artifact, error) {
 	return r.Artifacts.ListArtifactsByAttempt(ctx, attemptID)
 }
@@ -299,6 +303,12 @@ func (r *Runtime) StoreLocalArtifact(ctx context.Context, sourcePath string, pre
 
 func (r *Runtime) RemoveLocalArtifact(ctx context.Context, rawURL string) error {
 	return r.LocalStore.Remove(ctx, rawURL)
+}
+
+func (r *Runtime) DeleteLocalArtifact(ctx context.Context, id pgtype.UUID) (db.Artifact, error) {
+	return r.Artifacts.DeleteLocalArtifact(ctx, id, func(rawURL string) error {
+		return r.RemoveLocalArtifact(ctx, rawURL)
+	})
 }
 
 func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.RegisterCapabilitiesRequest) (db.AgentCapability, error) {

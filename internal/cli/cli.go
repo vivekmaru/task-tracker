@@ -83,7 +83,9 @@ type RuntimeHandle interface {
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	ListArtifacts(context.Context, services.ListArtifactsRequest) ([]db.Artifact, error)
 	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
+	DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
 	StoreLocalArtifact(context.Context, string, string) (storage.StoredArtifact, error)
 	RemoveLocalArtifact(context.Context, string) error
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
