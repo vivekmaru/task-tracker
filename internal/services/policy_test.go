@@ -122,6 +122,22 @@ func TestPolicyDeniesClaimWhenHarnessOrCapabilitiesDoNotMatch(t *testing.T) {
 	}
 }
 
+func TestPolicyDefaultClaimLeaseMatchesContractLimit(t *testing.T) {
+	policy := NewPolicyService(PolicyConfig{})
+
+	decision := policy.Evaluate(PolicyInput{
+		Operation: PolicyOperationClaimNextTicket,
+		ActorType: ActorAgent,
+		ActorID:   "codex",
+		Harness:   "codex",
+		Lease:     24 * time.Hour,
+	})
+
+	if decision.Decision == PolicyDecisionDeny {
+		t.Fatalf("expected published 24h lease to be accepted, got %#v", decision)
+	}
+}
+
 func TestPolicyDeniesNonRunningAttemptTransition(t *testing.T) {
 	policy := NewPolicyService(PolicyConfig{})
 

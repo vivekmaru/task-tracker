@@ -69,7 +69,7 @@ type PolicyDecision struct {
 
 func NewPolicyService(config PolicyConfig) *PolicyService {
 	if config.MaxClaimLease == 0 {
-		config.MaxClaimLease = 2 * time.Hour
+		config.MaxClaimLease = 24 * time.Hour
 	}
 	return &PolicyService{config: config}
 }

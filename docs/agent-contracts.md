@@ -38,7 +38,7 @@ Current defaults:
 
 - Agent-created work may not be directly enqueued unless the caller has enqueue authority.
 - Thin agent-created tickets are warnings, not denials: missing source attribution, creation reason, acceptance criteria, or verification commands should be surfaced for triage.
-- Claim requests deny excessive leases; the default maximum claim lease is two hours.
+- Claim requests deny excessive leases; the default maximum claim lease is 24 hours, matching the published `claim_next` contract.
 - Ticket-aware claim checks can deny disallowed harnesses or missing required capabilities, and warn when required tools or permissions need human attention.
 - Attempt checkpoint and terminal transitions deny non-running attempts when attempt status is supplied.
 - Archived tickets deny workflow transitions until reopened; done tickets produce a warning so callers can ask for an explicit reason.

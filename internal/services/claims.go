@@ -112,19 +112,6 @@ func (s *ClaimService) ClaimNext(ctx context.Context, req ClaimNextRequest) (Cla
 	if problems := validateClaimNextRequest(req); len(problems) > 0 {
 		return ClaimNextResult{}, ValidationError{Problems: problems}
 	}
-	if s.policy != nil {
-		decision := s.policy.Evaluate(PolicyInput{
-			Operation:         PolicyOperationClaimNextTicket,
-			ActorType:         ActorAgent,
-			ActorID:           req.AgentID,
-			Harness:           req.Harness,
-			AgentCapabilities: req.Capabilities,
-			Lease:             req.Lease,
-		})
-		if err := decision.Error(); err != nil {
-			return ClaimNextResult{}, err
-		}
-	}
 
 	now := s.now().UTC()
 	requestHash, err := claimRequestHash(req)
@@ -138,6 +125,19 @@ func (s *ClaimService) ClaimNext(ctx context.Context, req ClaimNextRequest) (Cla
 		}
 		if ok {
 			return replayed, nil
+		}
+	}
+	if s.policy != nil {
+		decision := s.policy.Evaluate(PolicyInput{
+			Operation:         PolicyOperationClaimNextTicket,
+			ActorType:         ActorAgent,
+			ActorID:           req.AgentID,
+			Harness:           req.Harness,
+			AgentCapabilities: req.Capabilities,
+			Lease:             req.Lease,
+		})
+		if err := decision.Error(); err != nil {
+			return ClaimNextResult{}, err
 		}
 	}
 
