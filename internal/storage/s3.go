@@ -56,6 +56,9 @@ func (s *S3Store) Open(ctx context.Context, artifact db.Artifact) (ArtifactConte
 	if bucket != s.bucket {
 		return ArtifactContent{}, fmt.Errorf("s3 artifact bucket %q does not match configured bucket", bucket)
 	}
+	if !s.keyInScope(key) {
+		return ArtifactContent{}, fmt.Errorf("s3 artifact key %q is outside configured prefix", key)
+	}
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -144,6 +147,9 @@ func (s *S3Store) Remove(ctx context.Context, rawURL string) error {
 	if bucket != s.bucket {
 		return fmt.Errorf("s3 artifact bucket %q does not match configured bucket", bucket)
 	}
+	if !s.keyInScope(key) {
+		return fmt.Errorf("s3 artifact key %q is outside configured prefix", key)
+	}
 	if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -154,8 +160,18 @@ func (s *S3Store) Remove(ctx context.Context, rawURL string) error {
 }
 
 func (s *S3Store) CanOpenURL(rawURL string) bool {
-	bucket, _, err := S3ObjectLocation(rawURL)
-	return err == nil && bucket == s.bucket
+	bucket, key, err := S3ObjectLocation(rawURL)
+	if err != nil || bucket != s.bucket {
+		return false
+	}
+	return s.keyInScope(key)
+}
+
+func (s *S3Store) keyInScope(key string) bool {
+	if s.prefix == "" {
+		return true
+	}
+	return key == s.prefix || strings.HasPrefix(key, s.prefix+"/")
 }
 
 func S3ObjectLocation(rawURL string) (string, string, error) {

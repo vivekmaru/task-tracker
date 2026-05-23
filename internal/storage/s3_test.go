@@ -89,6 +89,34 @@ func TestS3StoreRejectsBucketMismatch(t *testing.T) {
 	}
 }
 
+func TestS3StoreRejectsKeysOutsideConfiguredPrefix(t *testing.T) {
+	client := &fakeS3Client{
+		objects: map[string][]byte{
+			"proofs/proof.log": []byte("ok\n"),
+			"other/proof.log":  []byte("no\n"),
+		},
+	}
+	store, err := NewS3Store(client, S3Options{Bucket: "forge-artifacts", Prefix: "proofs"})
+	if err != nil {
+		t.Fatalf("new s3 store: %v", err)
+	}
+
+	_, err = store.Open(context.Background(), db.Artifact{Url: "s3://forge-artifacts/other/proof.log"})
+
+	if err == nil || !strings.Contains(err.Error(), "outside configured prefix") {
+		t.Fatalf("expected prefix rejection, got %v", err)
+	}
+	if store.CanOpenURL("s3://forge-artifacts/other/proof.log") {
+		t.Fatal("outside-prefix key should not be openable")
+	}
+	if !store.CanOpenURL("s3://forge-artifacts/proofs/proof.log") {
+		t.Fatal("inside-prefix key should be openable")
+	}
+	if err := store.Remove(context.Background(), "s3://forge-artifacts/other/proof.log"); err == nil || !strings.Contains(err.Error(), "outside configured prefix") {
+		t.Fatalf("expected remove prefix rejection, got %v", err)
+	}
+}
+
 func TestS3ObjectLocationPreservesObjectKeys(t *testing.T) {
 	bucket, key, err := S3ObjectLocation("s3://forge-artifacts/proofs//./..%2Fsecret%20proof.log")
 
