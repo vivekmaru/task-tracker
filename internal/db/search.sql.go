@@ -11,6 +11,237 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const recommendTickets = `-- name: RecommendTickets :many
+WITH candidates AS (
+    SELECT
+        t.id, t.workspace_id, t.project_id, t.parent_id, t.root_id, t.source_attempt_id, t.source_artifact_id, t.title, t.description, t.type, t.status, t.priority, t.tags, t.acceptance_criteria, t.verification_commands, t.expected_artifacts, t.relevant_paths, t.required_tools, t.required_permissions, t.environment, t.input, t.input_schema, t.required_capabilities, t.allowed_harnesses, t.retry_policy, t.created_by, t.created_by_id, t.creation_reason, t.created_at, t.updated_at,
+        COALESCE(cardinality(t.acceptance_criteria), 0)::integer AS acceptance_count,
+        CASE
+            WHEN jsonb_typeof(t.verification_commands) = 'array' THEN jsonb_array_length(t.verification_commands)
+            ELSE 0
+        END::integer AS verification_count,
+        COALESCE(cardinality(t.relevant_paths), 0)::integer AS relevant_path_count,
+        (
+            SELECT count(*)::integer
+            FROM attempts a
+            WHERE a.ticket_id = t.id
+              AND a.status IN ('failed', 'expired')
+        ) AS failed_attempt_count,
+        (
+            SELECT count(*)::integer
+            FROM tickets done
+            WHERE done.workspace_id = t.workspace_id
+              AND done.project_id = t.project_id
+              AND done.id <> t.id
+              AND done.status = 'done'
+              AND (
+                  done.type = t.type
+                  OR (
+                      COALESCE(cardinality(done.tags), 0) > 0
+                      AND COALESCE(cardinality(t.tags), 0) > 0
+                      AND done.tags && t.tags
+                  )
+              )
+        ) AS related_done_count
+    FROM tickets t
+    WHERE t.workspace_id = $3::uuid
+      AND t.project_id = $4::uuid
+      AND t.status = 'todo'
+      AND ($5::text IS NULL OR t.type = $5::text)
+      AND (COALESCE(cardinality($6::text[]), 0) = 0 OR t.tags && $6::text[])
+      AND (
+          COALESCE(cardinality(t.allowed_harnesses), 0) = 0
+          OR $7::text = ANY(t.allowed_harnesses)
+      )
+      AND (
+          COALESCE(cardinality(t.required_capabilities), 0) = 0
+          OR t.required_capabilities <@ $8::text[]
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM ticket_dependencies d
+          JOIN tickets dep ON dep.id = d.depends_on_ticket_id
+          WHERE d.ticket_id = t.id
+            AND dep.status != 'done'
+      )
+      AND (
+          SELECT count(*)::integer
+          FROM attempts a
+          WHERE a.ticket_id = t.id
+            AND a.status IN ('failed', 'expired')
+      ) < COALESCE((t.retry_policy->>'max_attempts')::integer, 3)
+),
+ranked AS (
+    SELECT
+        c.id, c.workspace_id, c.project_id, c.parent_id, c.root_id, c.source_attempt_id, c.source_artifact_id, c.title, c.description, c.type, c.status, c.priority, c.tags, c.acceptance_criteria, c.verification_commands, c.expected_artifacts, c.relevant_paths, c.required_tools, c.required_permissions, c.environment, c.input, c.input_schema, c.required_capabilities, c.allowed_harnesses, c.retry_policy, c.created_by, c.created_by_id, c.creation_reason, c.created_at, c.updated_at, c.acceptance_count, c.verification_count, c.relevant_path_count, c.failed_attempt_count, c.related_done_count,
+        (
+            100
+            - (c.priority * 10)
+            + CASE WHEN c.acceptance_count > 0 THEN 8 ELSE 0 END
+            + CASE WHEN c.verification_count > 0 THEN 8 ELSE 0 END
+            + CASE WHEN c.relevant_path_count > 0 THEN 4 ELSE 0 END
+            + CASE WHEN c.related_done_count > 0 THEN 6 ELSE 0 END
+            + CASE WHEN c.created_by = 'agent' THEN 3 ELSE 0 END
+            - (c.failed_attempt_count * 5)
+        )::integer AS recommendation_score,
+        array_remove(ARRAY[
+            'priority:' || c.priority::text,
+            CASE WHEN c.acceptance_count > 0 THEN 'has_acceptance_criteria' END,
+            CASE WHEN c.verification_count > 0 THEN 'has_verification_commands' END,
+            CASE WHEN c.relevant_path_count > 0 THEN 'has_relevant_paths' END,
+            CASE WHEN c.related_done_count > 0 THEN 'has_related_done_work' END,
+            CASE WHEN c.created_by = 'agent' THEN 'agent_created' END,
+            CASE WHEN c.failed_attempt_count > 0 THEN 'retry_available_after_failure' END
+        ]::text[], NULL) AS recommendation_reasons
+    FROM candidates c
+)
+SELECT
+    id,
+    workspace_id,
+    project_id,
+    parent_id,
+    root_id,
+    source_attempt_id,
+    source_artifact_id,
+    title,
+    description,
+    type,
+    status,
+    priority,
+    tags,
+    acceptance_criteria,
+    verification_commands,
+    expected_artifacts,
+    relevant_paths,
+    required_tools,
+    required_permissions,
+    environment,
+    input,
+    input_schema,
+    required_capabilities,
+    allowed_harnesses,
+    retry_policy,
+    created_by,
+    created_by_id,
+    creation_reason,
+    created_at,
+    updated_at,
+    recommendation_score,
+    recommendation_reasons::text[] AS recommendation_reasons
+FROM ranked
+ORDER BY recommendation_score DESC, priority ASC, created_at ASC, id ASC
+LIMIT $2::integer
+OFFSET $1::integer
+`
+
+type RecommendTicketsParams struct {
+	Offset       int32       `db:"offset" json:"offset"`
+	Limit        int32       `db:"limit" json:"limit"`
+	WorkspaceID  pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID    pgtype.UUID `db:"project_id" json:"project_id"`
+	TicketType   pgtype.Text `db:"ticket_type" json:"ticket_type"`
+	Tags         []string    `db:"tags" json:"tags"`
+	Harness      string      `db:"harness" json:"harness"`
+	Capabilities []string    `db:"capabilities" json:"capabilities"`
+}
+
+type RecommendTicketsRow struct {
+	ID                    pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID           pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID             pgtype.UUID        `db:"project_id" json:"project_id"`
+	ParentID              pgtype.UUID        `db:"parent_id" json:"parent_id"`
+	RootID                pgtype.UUID        `db:"root_id" json:"root_id"`
+	SourceAttemptID       pgtype.UUID        `db:"source_attempt_id" json:"source_attempt_id"`
+	SourceArtifactID      pgtype.UUID        `db:"source_artifact_id" json:"source_artifact_id"`
+	Title                 string             `db:"title" json:"title"`
+	Description           string             `db:"description" json:"description"`
+	Type                  string             `db:"type" json:"type"`
+	Status                string             `db:"status" json:"status"`
+	Priority              int32              `db:"priority" json:"priority"`
+	Tags                  []string           `db:"tags" json:"tags"`
+	AcceptanceCriteria    []string           `db:"acceptance_criteria" json:"acceptance_criteria"`
+	VerificationCommands  []byte             `db:"verification_commands" json:"verification_commands"`
+	ExpectedArtifacts     []string           `db:"expected_artifacts" json:"expected_artifacts"`
+	RelevantPaths         []string           `db:"relevant_paths" json:"relevant_paths"`
+	RequiredTools         []string           `db:"required_tools" json:"required_tools"`
+	RequiredPermissions   []string           `db:"required_permissions" json:"required_permissions"`
+	Environment           []byte             `db:"environment" json:"environment"`
+	Input                 []byte             `db:"input" json:"input"`
+	InputSchema           pgtype.Text        `db:"input_schema" json:"input_schema"`
+	RequiredCapabilities  []string           `db:"required_capabilities" json:"required_capabilities"`
+	AllowedHarnesses      []string           `db:"allowed_harnesses" json:"allowed_harnesses"`
+	RetryPolicy           []byte             `db:"retry_policy" json:"retry_policy"`
+	CreatedBy             string             `db:"created_by" json:"created_by"`
+	CreatedByID           pgtype.Text        `db:"created_by_id" json:"created_by_id"`
+	CreationReason        pgtype.Text        `db:"creation_reason" json:"creation_reason"`
+	CreatedAt             pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	RecommendationScore   int32              `db:"recommendation_score" json:"recommendation_score"`
+	RecommendationReasons []string           `db:"recommendation_reasons" json:"recommendation_reasons"`
+}
+
+func (q *Queries) RecommendTickets(ctx context.Context, arg RecommendTicketsParams) ([]RecommendTicketsRow, error) {
+	rows, err := q.db.Query(ctx, recommendTickets,
+		arg.Offset,
+		arg.Limit,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.TicketType,
+		arg.Tags,
+		arg.Harness,
+		arg.Capabilities,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecommendTicketsRow{}
+	for rows.Next() {
+		var i RecommendTicketsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.ParentID,
+			&i.RootID,
+			&i.SourceAttemptID,
+			&i.SourceArtifactID,
+			&i.Title,
+			&i.Description,
+			&i.Type,
+			&i.Status,
+			&i.Priority,
+			&i.Tags,
+			&i.AcceptanceCriteria,
+			&i.VerificationCommands,
+			&i.ExpectedArtifacts,
+			&i.RelevantPaths,
+			&i.RequiredTools,
+			&i.RequiredPermissions,
+			&i.Environment,
+			&i.Input,
+			&i.InputSchema,
+			&i.RequiredCapabilities,
+			&i.AllowedHarnesses,
+			&i.RetryPolicy,
+			&i.CreatedBy,
+			&i.CreatedByID,
+			&i.CreationReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RecommendationScore,
+			&i.RecommendationReasons,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchRelatedTickets = `-- name: SearchRelatedTickets :many
 WITH source_ticket AS (
     SELECT

@@ -76,6 +76,82 @@ func TestSearchTicketsValidatesScopeAndQuery(t *testing.T) {
 	}
 }
 
+func TestRecommendTicketsDefaultsLimitAndMapsReasons(t *testing.T) {
+	store := &fakeSearchStore{
+		recommendationRows: []db.RecommendTicketsRow{
+			{
+				ID:                    testUUID(4),
+				WorkspaceID:           testUUID(1),
+				ProjectID:             testUUID(2),
+				Title:                 "Harden proof upload",
+				Description:           "Add retry-safe artifact proof handling.",
+				Type:                  TicketTypeBug,
+				Status:                TicketStatusTodo,
+				Priority:              1,
+				CreatedBy:             ActorAgent,
+				RecommendationScore:   119,
+				RecommendationReasons: []string{"priority:1", "has_verification_commands", "agent_created"},
+			},
+		},
+	}
+	service := NewSearchService(store)
+
+	results, err := service.RecommendTickets(context.Background(), RecommendationRequest{
+		WorkspaceID:  testUUID(1),
+		ProjectID:    testUUID(2),
+		Type:         TicketTypeBug,
+		Tags:         []string{" phase-5 ", ""},
+		Harness:      "codex",
+		Capabilities: []string{" codegen ", "testing", ""},
+	})
+	if err != nil {
+		t.Fatalf("recommend tickets: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one recommendation, got %d", len(results))
+	}
+	if store.recommendationParams.Limit != 25 {
+		t.Fatalf("expected default limit 25, got %d", store.recommendationParams.Limit)
+	}
+	if store.recommendationParams.TicketType.String != TicketTypeBug || !store.recommendationParams.TicketType.Valid {
+		t.Fatalf("expected type filter, got %#v", store.recommendationParams.TicketType)
+	}
+	if store.recommendationParams.Harness != "codex" {
+		t.Fatalf("expected harness to reach store, got %#v", store.recommendationParams)
+	}
+	if got, want := store.recommendationParams.Tags, []string{"phase-5"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("expected compacted tags %#v, got %#v", want, got)
+	}
+	if got, want := store.recommendationParams.Capabilities, []string{"codegen", "testing"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("expected compacted capabilities %#v, got %#v", want, got)
+	}
+	if results[0].Ticket.ID != testUUID(4) {
+		t.Fatalf("unexpected mapped ticket: %#v", results[0].Ticket)
+	}
+	if results[0].Score != 119 {
+		t.Fatalf("unexpected score: %#v", results[0])
+	}
+	if got := results[0].Reasons; len(got) != 3 || got[2] != "agent_created" {
+		t.Fatalf("unexpected reasons: %#v", got)
+	}
+}
+
+func TestRecommendTicketsValidatesScopeAndHarness(t *testing.T) {
+	service := NewSearchService(&fakeSearchStore{})
+
+	_, err := service.RecommendTickets(context.Background(), RecommendationRequest{
+		WorkspaceID: testUUID(1),
+		ProjectID:   testUUID(2),
+	})
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if validationErr.Error() != "validation failed: harness is required" {
+		t.Fatalf("unexpected validation error: %v", validationErr)
+	}
+}
+
 func TestRelatedWorkDefaultsLimitAndMapsMatches(t *testing.T) {
 	store := &fakeSearchStore{
 		sourceTicket: db.Ticket{ID: testUUID(3)},
@@ -153,13 +229,15 @@ func TestRelatedWorkValidatesTicketID(t *testing.T) {
 }
 
 type fakeSearchStore struct {
-	params        db.SearchTicketsParams
-	rows          []db.SearchTicketsRow
-	sourceTicket  db.Ticket
-	getTicketErr  error
-	relatedParams db.SearchRelatedTicketsParams
-	relatedRows   []db.SearchRelatedTicketsRow
-	err           error
+	params               db.SearchTicketsParams
+	rows                 []db.SearchTicketsRow
+	sourceTicket         db.Ticket
+	getTicketErr         error
+	recommendationParams db.RecommendTicketsParams
+	recommendationRows   []db.RecommendTicketsRow
+	relatedParams        db.SearchRelatedTicketsParams
+	relatedRows          []db.SearchRelatedTicketsRow
+	err                  error
 }
 
 func (s *fakeSearchStore) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
@@ -181,6 +259,14 @@ func (s *fakeSearchStore) SearchTickets(_ context.Context, params db.SearchTicke
 		return nil, s.err
 	}
 	return s.rows, nil
+}
+
+func (s *fakeSearchStore) RecommendTickets(_ context.Context, params db.RecommendTicketsParams) ([]db.RecommendTicketsRow, error) {
+	s.recommendationParams = params
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.recommendationRows, nil
 }
 
 func (s *fakeSearchStore) SearchRelatedTickets(_ context.Context, params db.SearchRelatedTicketsParams) ([]db.SearchRelatedTicketsRow, error) {

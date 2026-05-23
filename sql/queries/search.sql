@@ -102,6 +102,128 @@ ORDER BY rank DESC, t.updated_at DESC, t.id ASC
 LIMIT sqlc.arg('limit')::integer
 OFFSET sqlc.arg('offset')::integer;
 
+-- name: RecommendTickets :many
+WITH candidates AS (
+    SELECT
+        t.*,
+        COALESCE(cardinality(t.acceptance_criteria), 0)::integer AS acceptance_count,
+        CASE
+            WHEN jsonb_typeof(t.verification_commands) = 'array' THEN jsonb_array_length(t.verification_commands)
+            ELSE 0
+        END::integer AS verification_count,
+        COALESCE(cardinality(t.relevant_paths), 0)::integer AS relevant_path_count,
+        (
+            SELECT count(*)::integer
+            FROM attempts a
+            WHERE a.ticket_id = t.id
+              AND a.status IN ('failed', 'expired')
+        ) AS failed_attempt_count,
+        (
+            SELECT count(*)::integer
+            FROM tickets done
+            WHERE done.workspace_id = t.workspace_id
+              AND done.project_id = t.project_id
+              AND done.id <> t.id
+              AND done.status = 'done'
+              AND (
+                  done.type = t.type
+                  OR (
+                      COALESCE(cardinality(done.tags), 0) > 0
+                      AND COALESCE(cardinality(t.tags), 0) > 0
+                      AND done.tags && t.tags
+                  )
+              )
+        ) AS related_done_count
+    FROM tickets t
+    WHERE t.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND t.project_id = sqlc.arg('project_id')::uuid
+      AND t.status = 'todo'
+      AND (sqlc.narg('ticket_type')::text IS NULL OR t.type = sqlc.narg('ticket_type')::text)
+      AND (COALESCE(cardinality(sqlc.arg('tags')::text[]), 0) = 0 OR t.tags && sqlc.arg('tags')::text[])
+      AND (
+          COALESCE(cardinality(t.allowed_harnesses), 0) = 0
+          OR sqlc.arg('harness')::text = ANY(t.allowed_harnesses)
+      )
+      AND (
+          COALESCE(cardinality(t.required_capabilities), 0) = 0
+          OR t.required_capabilities <@ sqlc.arg('capabilities')::text[]
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM ticket_dependencies d
+          JOIN tickets dep ON dep.id = d.depends_on_ticket_id
+          WHERE d.ticket_id = t.id
+            AND dep.status != 'done'
+      )
+      AND (
+          SELECT count(*)::integer
+          FROM attempts a
+          WHERE a.ticket_id = t.id
+            AND a.status IN ('failed', 'expired')
+      ) < COALESCE((t.retry_policy->>'max_attempts')::integer, 3)
+),
+ranked AS (
+    SELECT
+        c.*,
+        (
+            100
+            - (c.priority * 10)
+            + CASE WHEN c.acceptance_count > 0 THEN 8 ELSE 0 END
+            + CASE WHEN c.verification_count > 0 THEN 8 ELSE 0 END
+            + CASE WHEN c.relevant_path_count > 0 THEN 4 ELSE 0 END
+            + CASE WHEN c.related_done_count > 0 THEN 6 ELSE 0 END
+            + CASE WHEN c.created_by = 'agent' THEN 3 ELSE 0 END
+            - (c.failed_attempt_count * 5)
+        )::integer AS recommendation_score,
+        array_remove(ARRAY[
+            'priority:' || c.priority::text,
+            CASE WHEN c.acceptance_count > 0 THEN 'has_acceptance_criteria' END,
+            CASE WHEN c.verification_count > 0 THEN 'has_verification_commands' END,
+            CASE WHEN c.relevant_path_count > 0 THEN 'has_relevant_paths' END,
+            CASE WHEN c.related_done_count > 0 THEN 'has_related_done_work' END,
+            CASE WHEN c.created_by = 'agent' THEN 'agent_created' END,
+            CASE WHEN c.failed_attempt_count > 0 THEN 'retry_available_after_failure' END
+        ]::text[], NULL) AS recommendation_reasons
+    FROM candidates c
+)
+SELECT
+    id,
+    workspace_id,
+    project_id,
+    parent_id,
+    root_id,
+    source_attempt_id,
+    source_artifact_id,
+    title,
+    description,
+    type,
+    status,
+    priority,
+    tags,
+    acceptance_criteria,
+    verification_commands,
+    expected_artifacts,
+    relevant_paths,
+    required_tools,
+    required_permissions,
+    environment,
+    input,
+    input_schema,
+    required_capabilities,
+    allowed_harnesses,
+    retry_policy,
+    created_by,
+    created_by_id,
+    creation_reason,
+    created_at,
+    updated_at,
+    recommendation_score,
+    recommendation_reasons::text[] AS recommendation_reasons
+FROM ranked
+ORDER BY recommendation_score DESC, priority ASC, created_at ASC, id ASC
+LIMIT sqlc.arg('limit')::integer
+OFFSET sqlc.arg('offset')::integer;
+
 -- name: SearchRelatedTickets :many
 WITH source_ticket AS (
     SELECT

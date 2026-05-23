@@ -15,6 +15,7 @@ const maxSearchLimit int32 = 100
 
 type SearchStore interface {
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
+	RecommendTickets(context.Context, db.RecommendTicketsParams) ([]db.RecommendTicketsRow, error)
 	SearchTickets(context.Context, db.SearchTicketsParams) ([]db.SearchTicketsRow, error)
 	SearchRelatedTickets(context.Context, db.SearchRelatedTicketsParams) ([]db.SearchRelatedTicketsRow, error)
 }
@@ -56,6 +57,65 @@ type RelatedWorkResult struct {
 	AttemptIDs   []pgtype.UUID
 	Snippet      string
 	Rank         float32
+}
+
+type RecommendationRequest struct {
+	WorkspaceID  pgtype.UUID
+	ProjectID    pgtype.UUID
+	Type         string
+	Tags         []string
+	Harness      string
+	Capabilities []string
+	Offset       int32
+	Limit        int32
+}
+
+type RecommendationResult struct {
+	Ticket  db.Ticket
+	Score   int32
+	Reasons []string
+}
+
+func (s *SearchService) RecommendTickets(ctx context.Context, req RecommendationRequest) ([]RecommendationResult, error) {
+	req.Type = strings.TrimSpace(req.Type)
+	req.Harness = strings.TrimSpace(req.Harness)
+	req.Tags = compactStrings(req.Tags)
+	req.Capabilities = compactStrings(req.Capabilities)
+	if problems := validateRecommendationRequest(req); len(problems) > 0 {
+		return nil, ValidationError{Problems: problems}
+	}
+
+	limit := req.Limit
+	if limit == 0 {
+		limit = defaultSearchLimit
+	}
+	if limit > maxSearchLimit {
+		limit = maxSearchLimit
+	}
+
+	rows, err := s.store.RecommendTickets(ctx, db.RecommendTicketsParams{
+		WorkspaceID:  req.WorkspaceID,
+		ProjectID:    req.ProjectID,
+		TicketType:   optionalText(req.Type),
+		Tags:         req.Tags,
+		Harness:      req.Harness,
+		Capabilities: req.Capabilities,
+		Offset:       req.Offset,
+		Limit:        limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]RecommendationResult, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, RecommendationResult{
+			Ticket:  recommendationRowTicket(row),
+			Score:   row.RecommendationScore,
+			Reasons: row.RecommendationReasons,
+		})
+	}
+	return results, nil
 }
 
 func (s *SearchService) SearchTickets(ctx context.Context, req SearchTicketsRequest) ([]SearchResult, error) {
@@ -136,6 +196,26 @@ func (s *SearchService) RelatedWork(ctx context.Context, req RelatedWorkRequest)
 	return results, nil
 }
 
+func validateRecommendationRequest(req RecommendationRequest) []string {
+	var problems []string
+	if !req.WorkspaceID.Valid {
+		problems = append(problems, "workspace_id is required")
+	}
+	if !req.ProjectID.Valid {
+		problems = append(problems, "project_id is required")
+	}
+	if req.Harness == "" {
+		problems = append(problems, "harness is required")
+	}
+	if req.Offset < 0 {
+		problems = append(problems, "offset must be non-negative")
+	}
+	if req.Limit < 0 {
+		problems = append(problems, "limit must be non-negative")
+	}
+	return problems
+}
+
 func validateSearchTicketsRequest(req SearchTicketsRequest) []string {
 	var problems []string
 	if !req.WorkspaceID.Valid {
@@ -171,6 +251,41 @@ func validateRelatedWorkRequest(req RelatedWorkRequest) []string {
 }
 
 func searchRowTicket(row db.SearchTicketsRow) db.Ticket {
+	return db.Ticket{
+		ID:                   row.ID,
+		WorkspaceID:          row.WorkspaceID,
+		ProjectID:            row.ProjectID,
+		ParentID:             row.ParentID,
+		RootID:               row.RootID,
+		SourceAttemptID:      row.SourceAttemptID,
+		SourceArtifactID:     row.SourceArtifactID,
+		Title:                row.Title,
+		Description:          row.Description,
+		Type:                 row.Type,
+		Status:               row.Status,
+		Priority:             row.Priority,
+		Tags:                 row.Tags,
+		AcceptanceCriteria:   row.AcceptanceCriteria,
+		VerificationCommands: row.VerificationCommands,
+		ExpectedArtifacts:    row.ExpectedArtifacts,
+		RelevantPaths:        row.RelevantPaths,
+		RequiredTools:        row.RequiredTools,
+		RequiredPermissions:  row.RequiredPermissions,
+		Environment:          row.Environment,
+		Input:                row.Input,
+		InputSchema:          row.InputSchema,
+		RequiredCapabilities: row.RequiredCapabilities,
+		AllowedHarnesses:     row.AllowedHarnesses,
+		RetryPolicy:          row.RetryPolicy,
+		CreatedBy:            row.CreatedBy,
+		CreatedByID:          row.CreatedByID,
+		CreationReason:       row.CreationReason,
+		CreatedAt:            row.CreatedAt,
+		UpdatedAt:            row.UpdatedAt,
+	}
+}
+
+func recommendationRowTicket(row db.RecommendTicketsRow) db.Ticket {
 	return db.Ticket{
 		ID:                   row.ID,
 		WorkspaceID:          row.WorkspaceID,
