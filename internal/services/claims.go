@@ -40,8 +40,9 @@ type ClaimStore interface {
 var _ ClaimStore = (*db.Queries)(nil)
 
 type ClaimService struct {
-	store ClaimStore
-	now   func() time.Time
+	store  ClaimStore
+	now    func() time.Time
+	policy *PolicyService
 }
 
 type ClaimOption func(*ClaimService)
@@ -49,6 +50,12 @@ type ClaimOption func(*ClaimService)
 func WithClaimClock(clock func() time.Time) ClaimOption {
 	return func(service *ClaimService) {
 		service.now = clock
+	}
+}
+
+func WithClaimPolicy(policy *PolicyService) ClaimOption {
+	return func(service *ClaimService) {
+		service.policy = policy
 	}
 }
 
@@ -104,6 +111,19 @@ func (s *ClaimService) ClaimNext(ctx context.Context, req ClaimNextRequest) (Cla
 	req = trimClaimNextRequest(req)
 	if problems := validateClaimNextRequest(req); len(problems) > 0 {
 		return ClaimNextResult{}, ValidationError{Problems: problems}
+	}
+	if s.policy != nil {
+		decision := s.policy.Evaluate(PolicyInput{
+			Operation:         PolicyOperationClaimNextTicket,
+			ActorType:         ActorAgent,
+			ActorID:           req.AgentID,
+			Harness:           req.Harness,
+			AgentCapabilities: req.Capabilities,
+			Lease:             req.Lease,
+		})
+		if err := decision.Error(); err != nil {
+			return ClaimNextResult{}, err
+		}
 	}
 
 	now := s.now().UTC()
