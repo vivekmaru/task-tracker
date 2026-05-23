@@ -17,6 +17,7 @@ Implemented:
 - Claim idempotency replay for stable retry keys.
 - Local and S3-compatible proof artifact upload, metadata registration, and human web access.
 - JSON-first CLI commands over the shared runtime.
+- JSON-first workspace/project setup commands for agent-friendly local bootstrapping.
 - Codex harness commands for claim, checkpoint, complete, follow-up, and block flows.
 - Huma OpenAPI route registration under `/api/v1`.
 - Server-rendered web pages for login, workspaces, projects, ticket queues, ticket detail, attempt detail, artifact access, proposed work, and search.
