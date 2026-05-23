@@ -71,6 +71,28 @@ func TestWebhookWorkerPostsPayloadAndMarksSuccess(t *testing.T) {
 	}
 }
 
+func TestWebhookWorkerClaimsDefaultBatchWithLongEnoughLock(t *testing.T) {
+	now := time.Date(2026, 5, 22, 9, 0, 0, 0, time.UTC)
+	store := &fakeWebhookStore{}
+	worker := NewWebhookWorker(store, WithWebhookClock(func() time.Time { return now }))
+
+	result, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run webhooks: %v", err)
+	}
+
+	if result.Claimed != 0 {
+		t.Fatalf("expected no claimed deliveries, got %#v", result)
+	}
+	if len(store.claimParams) != 1 {
+		t.Fatalf("expected one claim call, got %d", len(store.claimParams))
+	}
+	wantLockedUntil := now.Add(time.Duration(defaultWebhookBatchLimit)*defaultWebhookTimeout + defaultWebhookLockBuffer)
+	if !store.claimParams[0].LockedUntil.Time.Equal(wantLockedUntil) {
+		t.Fatalf("expected lock to cover full default batch until %v, got %v", wantLockedUntil, store.claimParams[0].LockedUntil.Time)
+	}
+}
+
 func TestWebhookWorkerRetriesServerFailure(t *testing.T) {
 	now := time.Date(2026, 5, 22, 9, 0, 0, 0, time.UTC)
 	store := &fakeWebhookStore{

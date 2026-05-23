@@ -13,19 +13,21 @@ import (
 
 const claimPendingWebhookDeliveries = `-- name: ClaimPendingWebhookDeliveries :many
 WITH candidates AS (
-    SELECT id
-    FROM webhook_deliveries
-    WHERE status IN ('pending', 'delivering')
-      AND attempt_count < max_attempts
-      AND next_attempt_at <= $2::timestamptz
+    SELECT d.id
+    FROM webhook_deliveries d
+    JOIN webhook_subscriptions s ON s.id = d.subscription_id
+    WHERE s.active
+      AND d.status IN ('pending', 'delivering')
+      AND d.attempt_count < d.max_attempts
+      AND d.next_attempt_at <= $2::timestamptz
       AND (
-          status <> 'delivering'
-          OR locked_until IS NULL
-          OR locked_until <= $2::timestamptz
+          d.status <> 'delivering'
+          OR d.locked_until IS NULL
+          OR d.locked_until <= $2::timestamptz
       )
-    ORDER BY created_at ASC
+    ORDER BY d.created_at ASC
     LIMIT $3::integer
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF d SKIP LOCKED
 )
 UPDATE webhook_deliveries d
 SET status = 'delivering',
@@ -33,7 +35,7 @@ SET status = 'delivering',
     updated_at = now()
 FROM candidates c
 JOIN webhook_deliveries claimed ON claimed.id = c.id
-JOIN webhook_subscriptions s ON s.id = claimed.subscription_id
+JOIN webhook_subscriptions s ON s.id = claimed.subscription_id AND s.active
 WHERE d.id = c.id
 RETURNING
     d.id,

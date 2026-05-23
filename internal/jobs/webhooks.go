@@ -22,6 +22,7 @@ const (
 	defaultWebhookBatchLimit = 25
 	defaultWebhookLockTTL    = 2 * time.Minute
 	defaultWebhookTimeout    = 10 * time.Second
+	defaultWebhookLockBuffer = defaultWebhookTimeout
 )
 
 type WebhookDeliveryStore interface {
@@ -95,7 +96,7 @@ func (w *WebhookWorker) RunOnce(ctx context.Context) (WebhookRunResult, error) {
 	now := w.now().UTC()
 	deliveries, err := w.store.ClaimPendingWebhookDeliveries(ctx, db.ClaimPendingWebhookDeliveriesParams{
 		Now:         timestamptz(now),
-		LockedUntil: timestamptz(now.Add(w.lockTTL)),
+		LockedUntil: timestamptz(now.Add(w.claimLockTTL())),
 		BatchLimit:  w.batchLimit,
 	})
 	if err != nil {
@@ -124,6 +125,14 @@ func (w *WebhookWorker) RunOnce(ctx context.Context) (WebhookRunResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func (w *WebhookWorker) claimLockTTL() time.Duration {
+	batchTTL := time.Duration(w.batchLimit)*defaultWebhookTimeout + defaultWebhookLockBuffer
+	if batchTTL > w.lockTTL {
+		return batchTTL
+	}
+	return w.lockTTL
 }
 
 type deliveryOutcome struct {
