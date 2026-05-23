@@ -80,11 +80,85 @@ func (q *Queries) CreateAttemptMetrics(ctx context.Context, arg CreateAttemptMet
 	return i, err
 }
 
+const getAnalyticsByAgent = `-- name: GetAnalyticsByAgent :many
+SELECT
+    COALESCE(NULLIF(a.agent_id, ''), '(unknown)')::text AS agent_id,
+    COUNT(a.id)::bigint AS attempt_count,
+    COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
+    COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
+    COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
+    COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
+    COALESCE(SUM(m.duration_seconds), 0)::numeric(12, 3) AS total_duration_secs,
+    COALESCE(SUM(m.retry_count), 0)::bigint AS total_retries,
+    COUNT(m.id)::bigint AS attempts_with_metrics
+FROM attempts a
+LEFT JOIN attempt_metrics m ON m.attempt_id = a.id
+WHERE ($1::uuid IS NULL OR a.workspace_id = $1)
+  AND ($2::uuid IS NULL OR a.project_id = $2)
+GROUP BY COALESCE(NULLIF(a.agent_id, ''), '(unknown)')
+ORDER BY attempt_count DESC, agent_id ASC
+`
+
+type GetAnalyticsByAgentParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
+}
+
+type GetAnalyticsByAgentRow struct {
+	AgentID             string         `db:"agent_id" json:"agent_id"`
+	AttemptCount        int64          `db:"attempt_count" json:"attempt_count"`
+	SucceededAttempts   int64          `db:"succeeded_attempts" json:"succeeded_attempts"`
+	FailedAttempts      int64          `db:"failed_attempts" json:"failed_attempts"`
+	BlockedAttempts     int64          `db:"blocked_attempts" json:"blocked_attempts"`
+	TotalTokensIn       int64          `db:"total_tokens_in" json:"total_tokens_in"`
+	TotalTokensOut      int64          `db:"total_tokens_out" json:"total_tokens_out"`
+	TotalCostUsd        pgtype.Numeric `db:"total_cost_usd" json:"total_cost_usd"`
+	TotalDurationSecs   pgtype.Numeric `db:"total_duration_secs" json:"total_duration_secs"`
+	TotalRetries        int64          `db:"total_retries" json:"total_retries"`
+	AttemptsWithMetrics int64          `db:"attempts_with_metrics" json:"attempts_with_metrics"`
+}
+
+func (q *Queries) GetAnalyticsByAgent(ctx context.Context, arg GetAnalyticsByAgentParams) ([]GetAnalyticsByAgentRow, error) {
+	rows, err := q.db.Query(ctx, getAnalyticsByAgent, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAnalyticsByAgentRow{}
+	for rows.Next() {
+		var i GetAnalyticsByAgentRow
+		if err := rows.Scan(
+			&i.AgentID,
+			&i.AttemptCount,
+			&i.SucceededAttempts,
+			&i.FailedAttempts,
+			&i.BlockedAttempts,
+			&i.TotalTokensIn,
+			&i.TotalTokensOut,
+			&i.TotalCostUsd,
+			&i.TotalDurationSecs,
+			&i.TotalRetries,
+			&i.AttemptsWithMetrics,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAnalyticsByHarness = `-- name: GetAnalyticsByHarness :many
 SELECT
     COALESCE(NULLIF(a.harness, ''), '(unknown)')::text AS harness,
     COUNT(a.id)::bigint AS attempt_count,
     COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
     COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
     COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
     COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
@@ -108,6 +182,8 @@ type GetAnalyticsByHarnessRow struct {
 	Harness             string         `db:"harness" json:"harness"`
 	AttemptCount        int64          `db:"attempt_count" json:"attempt_count"`
 	SucceededAttempts   int64          `db:"succeeded_attempts" json:"succeeded_attempts"`
+	FailedAttempts      int64          `db:"failed_attempts" json:"failed_attempts"`
+	BlockedAttempts     int64          `db:"blocked_attempts" json:"blocked_attempts"`
 	TotalTokensIn       int64          `db:"total_tokens_in" json:"total_tokens_in"`
 	TotalTokensOut      int64          `db:"total_tokens_out" json:"total_tokens_out"`
 	TotalCostUsd        pgtype.Numeric `db:"total_cost_usd" json:"total_cost_usd"`
@@ -129,6 +205,8 @@ func (q *Queries) GetAnalyticsByHarness(ctx context.Context, arg GetAnalyticsByH
 			&i.Harness,
 			&i.AttemptCount,
 			&i.SucceededAttempts,
+			&i.FailedAttempts,
+			&i.BlockedAttempts,
 			&i.TotalTokensIn,
 			&i.TotalTokensOut,
 			&i.TotalCostUsd,
@@ -151,6 +229,8 @@ SELECT
     COALESCE(NULLIF(a.model, ''), '(unknown)')::text AS model,
     COUNT(a.id)::bigint AS attempt_count,
     COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
     COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
     COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
     COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
@@ -174,6 +254,8 @@ type GetAnalyticsByModelRow struct {
 	Model               string         `db:"model" json:"model"`
 	AttemptCount        int64          `db:"attempt_count" json:"attempt_count"`
 	SucceededAttempts   int64          `db:"succeeded_attempts" json:"succeeded_attempts"`
+	FailedAttempts      int64          `db:"failed_attempts" json:"failed_attempts"`
+	BlockedAttempts     int64          `db:"blocked_attempts" json:"blocked_attempts"`
 	TotalTokensIn       int64          `db:"total_tokens_in" json:"total_tokens_in"`
 	TotalTokensOut      int64          `db:"total_tokens_out" json:"total_tokens_out"`
 	TotalCostUsd        pgtype.Numeric `db:"total_cost_usd" json:"total_cost_usd"`
@@ -195,6 +277,80 @@ func (q *Queries) GetAnalyticsByModel(ctx context.Context, arg GetAnalyticsByMod
 			&i.Model,
 			&i.AttemptCount,
 			&i.SucceededAttempts,
+			&i.FailedAttempts,
+			&i.BlockedAttempts,
+			&i.TotalTokensIn,
+			&i.TotalTokensOut,
+			&i.TotalCostUsd,
+			&i.TotalDurationSecs,
+			&i.TotalRetries,
+			&i.AttemptsWithMetrics,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAnalyticsByStatus = `-- name: GetAnalyticsByStatus :many
+SELECT
+    a.status::text AS status,
+    COUNT(a.id)::bigint AS attempt_count,
+    COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint AS succeeded_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'failed')::bigint AS failed_attempts,
+    COUNT(*) FILTER (WHERE a.status = 'blocked')::bigint AS blocked_attempts,
+    COALESCE(SUM(m.tokens_in), 0)::bigint AS total_tokens_in,
+    COALESCE(SUM(m.tokens_out), 0)::bigint AS total_tokens_out,
+    COALESCE(SUM(m.cost_usd), 0)::numeric(12, 6) AS total_cost_usd,
+    COALESCE(SUM(m.duration_seconds), 0)::numeric(12, 3) AS total_duration_secs,
+    COALESCE(SUM(m.retry_count), 0)::bigint AS total_retries,
+    COUNT(m.id)::bigint AS attempts_with_metrics
+FROM attempts a
+LEFT JOIN attempt_metrics m ON m.attempt_id = a.id
+WHERE ($1::uuid IS NULL OR a.workspace_id = $1)
+  AND ($2::uuid IS NULL OR a.project_id = $2)
+GROUP BY a.status
+ORDER BY attempt_count DESC, status ASC
+`
+
+type GetAnalyticsByStatusParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
+}
+
+type GetAnalyticsByStatusRow struct {
+	Status              string         `db:"status" json:"status"`
+	AttemptCount        int64          `db:"attempt_count" json:"attempt_count"`
+	SucceededAttempts   int64          `db:"succeeded_attempts" json:"succeeded_attempts"`
+	FailedAttempts      int64          `db:"failed_attempts" json:"failed_attempts"`
+	BlockedAttempts     int64          `db:"blocked_attempts" json:"blocked_attempts"`
+	TotalTokensIn       int64          `db:"total_tokens_in" json:"total_tokens_in"`
+	TotalTokensOut      int64          `db:"total_tokens_out" json:"total_tokens_out"`
+	TotalCostUsd        pgtype.Numeric `db:"total_cost_usd" json:"total_cost_usd"`
+	TotalDurationSecs   pgtype.Numeric `db:"total_duration_secs" json:"total_duration_secs"`
+	TotalRetries        int64          `db:"total_retries" json:"total_retries"`
+	AttemptsWithMetrics int64          `db:"attempts_with_metrics" json:"attempts_with_metrics"`
+}
+
+func (q *Queries) GetAnalyticsByStatus(ctx context.Context, arg GetAnalyticsByStatusParams) ([]GetAnalyticsByStatusRow, error) {
+	rows, err := q.db.Query(ctx, getAnalyticsByStatus, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAnalyticsByStatusRow{}
+	for rows.Next() {
+		var i GetAnalyticsByStatusRow
+		if err := rows.Scan(
+			&i.Status,
+			&i.AttemptCount,
+			&i.SucceededAttempts,
+			&i.FailedAttempts,
+			&i.BlockedAttempts,
 			&i.TotalTokensIn,
 			&i.TotalTokensOut,
 			&i.TotalCostUsd,

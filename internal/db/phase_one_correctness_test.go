@@ -147,6 +147,33 @@ func TestPhaseFourSearchQueryCoversExecutionHistory(t *testing.T) {
 	}
 }
 
+func TestPhaseFourWebhookClaimSkipsInactiveSubscriptions(t *testing.T) {
+	webhookSQL := readSQLFile(t, "../../sql/queries/webhooks.sql")
+	claimStart := strings.Index(webhookSQL, "-- name: claimpendingwebhookdeliveries")
+	if claimStart < 0 {
+		t.Fatal("missing claim pending webhook deliveries query")
+	}
+	nextQuery := strings.Index(webhookSQL[claimStart+1:], "-- name:")
+	claimSQL := webhookSQL[claimStart:]
+	if nextQuery >= 0 {
+		claimSQL = webhookSQL[claimStart : claimStart+1+nextQuery]
+	}
+
+	for _, want := range []string{
+		"join webhook_subscriptions s on s.id = d.subscription_id",
+		"where s.active",
+		"for update of d skip locked",
+		"join webhook_subscriptions s on s.id = claimed.subscription_id and s.active",
+	} {
+		if !strings.Contains(claimSQL, want) {
+			t.Fatalf("webhook claim query must contain %q", want)
+		}
+	}
+	if strings.Index(claimSQL, "where s.active") > strings.Index(claimSQL, "limit sqlc.arg(batch_limit)") {
+		t.Fatal("webhook claim query must filter inactive subscriptions before applying the batch limit")
+	}
+}
+
 func readSQLFile(t *testing.T, path string) string {
 	t.Helper()
 

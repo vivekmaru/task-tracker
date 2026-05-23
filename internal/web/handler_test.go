@@ -808,7 +808,220 @@ func TestTicketDetailLinksLocalArtifactsToWebRoute(t *testing.T) {
 	}
 }
 
-func TestArtifactRouteDownloadsLocalArtifactContent(t *testing.T) {
+func TestArtifactBrowserRendersScopedArtifacts(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	ticketID := testUUID(3)
+	artifactID := testUUID(4)
+	runtime := &fakeRuntime{
+		scopedArtifacts: []db.Artifact{{
+			ID:             artifactID,
+			WorkspaceID:    workspaceID,
+			ProjectID:      projectID,
+			TicketID:       ticketID,
+			Name:           "go-test.log",
+			Role:           services.ArtifactRoleEvidence,
+			Type:           services.ArtifactTypeTestOutput,
+			StorageBackend: services.ArtifactStorageLocal,
+			SizeBytes:      9,
+			MimeType:       "text/plain",
+		}},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact browser status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Artifacts",
+		"go-test.log",
+		services.ArtifactRoleEvidence,
+		services.ArtifactTypeTestOutput,
+		services.ArtifactStorageLocal,
+		"9 bytes",
+		"/artifacts/" + uuidString(artifactID),
+		"/tickets/" + uuidString(ticketID),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected artifact browser to contain %q, got:\n%s", want, body)
+		}
+	}
+	if runtime.artifactListReq.WorkspaceID != workspaceID || runtime.artifactListReq.ProjectID != projectID {
+		t.Fatalf("unexpected artifact list scope: %#v", runtime.artifactListReq)
+	}
+}
+
+func TestArtifactBrowserSupportsTicketScopeAndMissingScope(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	ticketID := testUUID(3)
+	runtime := &fakeRuntime{}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID)+"&ticket_id="+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected scoped browser status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.artifactListReq.TicketID != ticketID {
+		t.Fatalf("expected ticket-scoped artifact request, got %#v", runtime.artifactListReq)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/artifacts", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing scope status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{`<form method="get" action="/artifacts">`, `name="workspace_id"`, `name="project_id"`, "workspace_id and project_id are required"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("expected missing scope page to contain %q, got:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestArtifactDetailShowsMetadataAndLocalOpenBehavior(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			WorkspaceID:    workspaceID,
+			ProjectID:      projectID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "local://artifacts/go-test.log",
+			StorageBackend: services.ArtifactStorageLocal,
+			MimeType:       "text/html",
+			SizeBytes:      9,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+			Metadata:       []byte(`{"command":"go test ./..."}`),
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Artifact Detail",
+		"go-test.log",
+		"local",
+		"text/html",
+		"9 bytes",
+		"local://artifacts/go-test.log",
+		"go test ./...",
+		"/artifacts/" + uuidString(artifactID) + "/content",
+		`action="/artifacts/` + uuidString(artifactID) + `/delete"`,
+		"/artifacts?workspace_id=" + uuidString(workspaceID) + "&amp;project_id=" + uuidString(projectID),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected artifact detail to contain %q, got:\n%s", want, body)
+		}
+	}
+	if rec.Body.String() == "all good\n" {
+		t.Fatal("artifact detail should render metadata instead of streaming content")
+	}
+}
+
+func TestArtifactDetailHidesContentLinkWhenStorageBackendAndURLDisagree(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageLocal,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/artifacts/"+uuidString(artifactID)+"/content") {
+		t.Fatalf("content link should be hidden when storage backend and URL disagree:\n%s", rec.Body.String())
+	}
+}
+
+func TestArtifactDetailHidesS3ContentLinkWhenRuntimeCannotOpenBucket(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "s3://other-bucket/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/artifacts/"+uuidString(artifactID)+"/content") {
+		t.Fatalf("content link should be hidden when runtime cannot open the s3 bucket:\n%s", rec.Body.String())
+	}
+}
+
+func TestArtifactDetailShowsS3ContentLinkWhenRuntimeCanOpenBucket(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		s3ArtifactOpenable: true,
+		artifact: db.Artifact{
+			ID:             artifactID,
+			TicketID:       testUUID(3),
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			Type:           services.ArtifactTypeTestOutput,
+			Role:           services.ArtifactRoleEvidence,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "/artifacts/"+uuidString(artifactID)+"/content") {
+		t.Fatalf("content link should be shown when runtime can open the s3 bucket:\n%s", rec.Body.String())
+	}
+}
+
+func TestArtifactContentRouteDownloadsLocalArtifactContent(t *testing.T) {
 	artifactID := testUUID(15)
 	runtime := &fakeRuntime{
 		artifact: db.Artifact{
@@ -826,7 +1039,7 @@ func TestArtifactRouteDownloadsLocalArtifactContent(t *testing.T) {
 		},
 	}
 	handler := NewHandler(runtime)
-	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID), nil)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID)+"/content", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -845,6 +1058,97 @@ func TestArtifactRouteDownloadsLocalArtifactContent(t *testing.T) {
 	}
 	if rec.Body.String() != "all good\n" {
 		t.Fatalf("unexpected artifact body: %q", rec.Body.String())
+	}
+}
+
+func TestArtifactContentRouteDownloadsS3ArtifactContent(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			Name:           "go-test.log",
+			Url:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			MimeType:       "text/plain",
+		},
+		artifactContent: storage.ArtifactContent{
+			Name:     "go-test.log",
+			MimeType: "text/plain",
+			Size:     9,
+			Reader:   io.NopCloser(strings.NewReader("all good\n")),
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/artifacts/"+uuidString(artifactID)+"/content", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.artifact.Url != "s3://forge-artifacts/proofs/go-test.log" {
+		t.Fatalf("expected runtime open call for s3 artifact, got %#v", runtime.artifact)
+	}
+	if rec.Body.String() != "all good\n" {
+		t.Fatalf("unexpected artifact body: %q", rec.Body.String())
+	}
+}
+
+func TestArtifactDeleteRemovesLocalArtifactAndRedirectsToBrowser(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			WorkspaceID:    workspaceID,
+			ProjectID:      projectID,
+			Name:           "go-test.log",
+			Url:            "local://artifacts/go-test.log",
+			StorageBackend: services.ArtifactStorageLocal,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodPost, "/artifacts/"+uuidString(artifactID)+"/delete", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected delete redirect, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtime.deletedArtifactID != artifactID {
+		t.Fatalf("expected artifact delete call, got %#v", runtime.deletedArtifactID)
+	}
+	wantLocation := "/artifacts?workspace_id=" + uuidString(workspaceID) + "&project_id=" + uuidString(projectID)
+	if got := rec.Header().Get("Location"); got != wantLocation {
+		t.Fatalf("expected redirect %q, got %q", wantLocation, got)
+	}
+}
+
+func TestArtifactDeleteRejectsRemoteArtifacts(t *testing.T) {
+	artifactID := testUUID(15)
+	runtime := &fakeRuntime{
+		artifact: db.Artifact{
+			ID:             artifactID,
+			Name:           "remote.log",
+			Url:            "https://example.test/remote.log",
+			StorageBackend: services.ArtifactStorageS3,
+		},
+		deleteArtifactErr: services.ErrArtifactDeleteUnsupported,
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodPost, "/artifacts/"+uuidString(artifactID)+"/delete", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected unsupported delete status 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Only local artifacts can be deleted") {
+		t.Fatalf("expected local-only delete guidance, got:\n%s", rec.Body.String())
 	}
 }
 
@@ -880,6 +1184,7 @@ type fakeRuntime struct {
 	detailTicketID            pgtype.UUID
 	tickets                   []db.Ticket
 	searchResults             []services.SearchResult
+	artifactListReq           services.ListArtifactsRequest
 	listErr                   error
 	searchErr                 error
 	ticket                    db.Ticket
@@ -889,9 +1194,13 @@ type fakeRuntime struct {
 	checkpointsErr            error
 	events                    []db.TicketEvent
 	artifacts                 []db.Artifact
+	scopedArtifacts           []db.Artifact
 	attemptArtifacts          []db.Artifact
 	artifact                  db.Artifact
 	artifactContent           storage.ArtifactContent
+	s3ArtifactOpenable        bool
+	deletedArtifactID         pgtype.UUID
+	deleteArtifactErr         error
 	workspaces                []db.Workspace
 	projects                  []db.Project
 	createdWorkspace          db.Workspace
@@ -947,6 +1256,11 @@ func (f *fakeRuntime) ListArtifactsByTicket(_ context.Context, id pgtype.UUID) (
 	return f.artifacts, nil
 }
 
+func (f *fakeRuntime) ListArtifacts(_ context.Context, req services.ListArtifactsRequest) ([]db.Artifact, error) {
+	f.artifactListReq = req
+	return f.scopedArtifacts, nil
+}
+
 func (f *fakeRuntime) GetAttempt(_ context.Context, id pgtype.UUID) (db.Attempt, error) {
 	f.detailTicketID = id
 	return f.attempt, nil
@@ -965,6 +1279,25 @@ func (f *fakeRuntime) GetArtifact(_ context.Context, id pgtype.UUID) (db.Artifac
 func (f *fakeRuntime) OpenArtifact(_ context.Context, artifact db.Artifact) (storage.ArtifactContent, error) {
 	f.artifact = artifact
 	return f.artifactContent, nil
+}
+
+func (f *fakeRuntime) ArtifactContentOpenable(artifact db.Artifact) bool {
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return storage.IsLocalArtifactURL(artifact.Url)
+	case services.ArtifactStorageS3:
+		return f.s3ArtifactOpenable && storage.IsS3ArtifactURL(artifact.Url)
+	default:
+		return false
+	}
+}
+
+func (f *fakeRuntime) DeleteLocalArtifact(_ context.Context, id pgtype.UUID) (db.Artifact, error) {
+	f.deletedArtifactID = id
+	if f.deleteArtifactErr != nil {
+		return db.Artifact{}, f.deleteArtifactErr
+	}
+	return f.artifact, nil
 }
 
 func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {

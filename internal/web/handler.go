@@ -39,8 +39,11 @@ type Runtime interface {
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	ListArtifacts(context.Context, services.ListArtifactsRequest) ([]db.Artifact, error)
 	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
 	OpenArtifact(context.Context, db.Artifact) (storage.ArtifactContent, error)
+	ArtifactContentOpenable(db.Artifact) bool
+	DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
 	ListWorkspaces(context.Context) ([]db.Workspace, error)
 	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
 	CreateWorkspace(context.Context, string) (db.Workspace, error)
@@ -89,6 +92,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.renderTicketList(w, r)
 	case r.URL.Path == "/search":
 		h.renderSearch(w, r)
+	case r.URL.Path == "/artifacts":
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderArtifactList(w, r)
 	case strings.HasPrefix(r.URL.Path, "/tickets/"):
 		if !requireMethod(w, r, http.MethodGet) {
 			return
@@ -100,10 +108,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.renderAttemptDetail(w, r)
 	case strings.HasPrefix(r.URL.Path, "/artifacts/"):
-		if !requireMethod(w, r, http.MethodGet) {
-			return
-		}
-		h.renderArtifactDetail(w, r)
+		h.renderArtifactRoute(w, r)
 	case strings.HasPrefix(r.URL.Path, "/proposed/"):
 		if !requireMethod(w, r, http.MethodGet) {
 			return
@@ -347,6 +352,45 @@ func (h Handler) renderSearch(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
+func (h Handler) renderArtifactList(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	req, err := listArtifactsRequestFromQuery(r)
+	if err != nil {
+		query := r.URL.Query()
+		renderComponent(r.Context(), w, http.StatusBadRequest, artifactListPage(artifactListView{
+			WorkspaceIDText: strings.TrimSpace(query.Get("workspace_id")),
+			ProjectIDText:   strings.TrimSpace(query.Get("project_id")),
+			TicketIDText:    strings.TrimSpace(query.Get("ticket_id")),
+			Message:         err.Error(),
+		}))
+		return
+	}
+	artifacts, err := h.runtime.ListArtifacts(r.Context(), req)
+	if err != nil {
+		var validationErr services.ValidationError
+		if errors.As(err, &validationErr) {
+			renderComponent(r.Context(), w, http.StatusBadRequest, artifactListPage(artifactListView{
+				WorkspaceIDText: uuidText(req.WorkspaceID),
+				ProjectIDText:   uuidText(req.ProjectID),
+				TicketIDText:    uuidText(req.TicketID),
+				Message:         validationErr.Error(),
+			}))
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifacts", err.Error())
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, artifactListPage(artifactListView{
+		Artifacts:       artifacts,
+		WorkspaceIDText: uuidText(req.WorkspaceID),
+		ProjectIDText:   uuidText(req.ProjectID),
+		TicketIDText:    uuidText(req.TicketID),
+	}))
+}
+
 func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request) {
 	if h.runtime == nil {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
@@ -373,9 +417,10 @@ func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	timeline, timelineErr := loadTimeline(r.Context(), h.runtime, ticketID)
 	renderComponent(r.Context(), w, http.StatusOK, ticketDetailPage(ticketDetailView{
-		Ticket:      ticket,
-		Timeline:    timeline,
-		TimelineErr: timelineErr,
+		Ticket:                  ticket,
+		Timeline:                timeline,
+		TimelineErr:             timelineErr,
+		ArtifactContentOpenable: artifactContentOpenability(h.runtime, timeline.Artifacts),
 	}))
 }
 
@@ -406,12 +451,39 @@ func (h Handler) renderAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	renderComponent(r.Context(), w, http.StatusOK, attemptDetailPage(attempt, artifacts))
 }
 
-func (h Handler) renderArtifactDetail(w http.ResponseWriter, r *http.Request) {
+func (h Handler) renderArtifactRoute(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/artifacts/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 2 && parts[1] == "content" {
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderArtifactContent(w, r, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "delete" {
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		h.deleteArtifact(w, r, parts[0])
+		return
+	}
+	if len(parts) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	h.renderArtifactDetail(w, r, parts[0])
+}
+
+func (h Handler) renderArtifactDetail(w http.ResponseWriter, r *http.Request, idText string) {
 	if h.runtime == nil {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
-	artifactID, err := parseIDFromPath(r.URL.Path, "/artifacts/")
+	artifactID, err := parseUUID(idText)
 	if err != nil {
 		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid artifact id", "artifact id must be a UUID")
 		return
@@ -425,24 +497,68 @@ func (h Handler) renderArtifactDetail(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifact", err.Error())
 		return
 	}
-	if storage.IsLocalArtifactURL(artifact.Url) {
-		content, err := h.runtime.OpenArtifact(r.Context(), artifact)
-		if err != nil {
-			renderStatus(r.Context(), w, http.StatusNotFound, "Artifact content unavailable", err.Error())
-			return
-		}
-		defer content.Reader.Close()
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, headerFilename(content.Name)))
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if content.Size >= 0 {
-			w.Header().Set("Content-Length", strconv.FormatInt(content.Size, 10))
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, content.Reader)
+	renderComponent(r.Context(), w, http.StatusOK, artifactDetailPage(artifact, h.runtime.ArtifactContentOpenable(artifact)))
+}
+
+func (h Handler) renderArtifactContent(w http.ResponseWriter, r *http.Request, idText string) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
-	renderComponent(r.Context(), w, http.StatusOK, artifactDetailPage(artifact))
+	artifactID, err := parseUUID(idText)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid artifact id", "artifact id must be a UUID")
+		return
+	}
+	artifact, err := h.runtime.GetArtifact(r.Context(), artifactID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusNotFound, "Artifact not found", "No artifact exists for that id.")
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load artifact", err.Error())
+		return
+	}
+	content, err := h.runtime.OpenArtifact(r.Context(), artifact)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusNotFound, "Artifact content unavailable", err.Error())
+		return
+	}
+	defer content.Reader.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, headerFilename(content.Name)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if content.Size >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(content.Size, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, content.Reader)
+}
+
+func (h Handler) deleteArtifact(w http.ResponseWriter, r *http.Request, idText string) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	artifactID, err := parseUUID(idText)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid artifact id", "artifact id must be a UUID")
+		return
+	}
+	artifact, err := h.runtime.DeleteLocalArtifact(r.Context(), artifactID)
+	if err != nil {
+		if errors.Is(err, services.ErrArtifactDeleteUnsupported) {
+			renderStatus(r.Context(), w, http.StatusConflict, "Only local artifacts can be deleted", "Remote artifact metadata is retained because Forge cannot safely clean up the backing object yet.")
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusNotFound, "Artifact not found", "No artifact exists for that id.")
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to delete artifact", err.Error())
+		return
+	}
+	http.Redirect(w, r, artifactListPath(artifact), http.StatusSeeOther)
 }
 
 func (h Handler) renderProposedDetail(w http.ResponseWriter, r *http.Request) {
@@ -601,9 +717,10 @@ type ticketListView struct {
 }
 
 type ticketDetailView struct {
-	Ticket      db.Ticket
-	Timeline    ticketTimeline
-	TimelineErr error
+	Ticket                  db.Ticket
+	Timeline                ticketTimeline
+	TimelineErr             error
+	ArtifactContentOpenable map[string]bool
 }
 
 type searchView struct {
@@ -611,6 +728,14 @@ type searchView struct {
 	WorkspaceIDText string
 	ProjectIDText   string
 	Query           string
+	Message         string
+}
+
+type artifactListView struct {
+	Artifacts       []db.Artifact
+	WorkspaceIDText string
+	ProjectIDText   string
+	TicketIDText    string
 	Message         string
 }
 
@@ -687,6 +812,48 @@ func searchTicketsRequestFromQuery(r *http.Request) (services.SearchTicketsReque
 		Query:       searchQuery,
 		Offset:      offset,
 		Limit:       limit,
+	}, nil
+}
+
+func listArtifactsRequestFromQuery(r *http.Request) (services.ListArtifactsRequest, error) {
+	query := r.URL.Query()
+	workspaceID, err := parseUUID(query.Get("workspace_id"))
+	if err != nil {
+		return services.ListArtifactsRequest{}, errors.New("workspace_id and project_id are required")
+	}
+	projectID, err := parseUUID(query.Get("project_id"))
+	if err != nil {
+		return services.ListArtifactsRequest{}, errors.New("workspace_id and project_id are required")
+	}
+	var ticketID pgtype.UUID
+	if value := strings.TrimSpace(query.Get("ticket_id")); value != "" {
+		ticketID, err = parseUUID(value)
+		if err != nil {
+			return services.ListArtifactsRequest{}, errors.New("ticket_id must be a UUID")
+		}
+	}
+	limit := int32(0)
+	if value := strings.TrimSpace(query.Get("limit")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || parsed < 0 {
+			return services.ListArtifactsRequest{}, errors.New("limit must be a non-negative integer")
+		}
+		limit = int32(parsed)
+	}
+	offset := int32(0)
+	if value := strings.TrimSpace(query.Get("offset")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || parsed < 0 {
+			return services.ListArtifactsRequest{}, errors.New("offset must be a non-negative integer")
+		}
+		offset = int32(parsed)
+	}
+	return services.ListArtifactsRequest{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		TicketID:    ticketID,
+		Limit:       limit,
+		Offset:      offset,
 	}, nil
 }
 
@@ -828,6 +995,31 @@ func searchPage(view searchView) templ.Component {
 	})
 }
 
+func artifactListPage(view artifactListView) templ.Component {
+	return layout("Forge Artifacts", func(w io.Writer) {
+		fmt.Fprint(w, `<section class="page-head"><div><h1>Artifacts</h1><p>Browse proof files and handoff outputs by workspace, project, or ticket.</p></div>`)
+		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
+		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/artifacts">`)
+		input(w, "workspace_id", view.WorkspaceIDText)
+		input(w, "project_id", view.ProjectIDText)
+		input(w, "ticket_id", view.TicketIDText)
+		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
+		if view.Message != "" {
+			fmt.Fprintf(w, `<section class="panel empty"><h2>Artifact browser needs a scope</h2><p>%s</p></section>`, esc(view.Message))
+			return
+		}
+		if len(view.Artifacts) == 0 {
+			fmt.Fprint(w, `<section class="panel empty"><h2>No artifacts match</h2><p>Change the scope to inspect a different workspace, project, or ticket.</p></section>`)
+			return
+		}
+		fmt.Fprint(w, `<section class="ticket-list" aria-label="Artifacts">`)
+		for _, artifact := range view.Artifacts {
+			writeArtifactCard(w, artifact)
+		}
+		fmt.Fprint(w, `</section>`)
+	})
+}
+
 func ticketDetailPage(view ticketDetailView) templ.Component {
 	ticket := view.Ticket
 	return layout(ticket.Title, func(w io.Writer) {
@@ -888,28 +1080,47 @@ func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Compon
 	})
 }
 
-func artifactDetailPage(artifact db.Artifact) templ.Component {
+func artifactDetailPage(artifact db.Artifact, contentOpenable bool) templ.Component {
 	return layout("Artifact Detail", func(w io.Writer) {
-		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Artifact Detail</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Artifact Detail</h1><p>%s</p></div><div class="actions"><a class="button" href="%s">Artifacts</a><a class="button" href="/tickets/%s">Ticket</a></div></section>`,
 			esc(artifact.Role),
 			esc(artifact.Type),
 			esc(artifact.Name),
+			esc(artifactListPath(artifact)),
 			esc(uuidText(artifact.TicketID)),
 		)
-		fmt.Fprint(w, `<section class="panel"><h2>Links</h2>`)
+		fmt.Fprint(w, `<section class="detail-grid"><article class="panel"><h2>Metadata</h2>`)
 		writeMeta(w, "Artifact", "/artifacts/"+uuidText(artifact.ID))
+		writeMeta(w, "Name", artifact.Name)
+		writeMeta(w, "Type", artifact.Type)
+		writeMeta(w, "Role", artifact.Role)
+		writeMeta(w, "Storage", artifact.StorageBackend)
+		writeMeta(w, "Size", byteCount(artifact.SizeBytes))
+		writeMeta(w, "MIME", artifact.MimeType)
+		writeMeta(w, "URL", artifact.Url)
 		writeMeta(w, "Ticket", "/tickets/"+uuidText(artifact.TicketID))
 		if artifact.AttemptID.Valid {
 			writeMeta(w, "Attempt", "/attempts/"+uuidText(artifact.AttemptID))
 		}
+		if metadata := formattedMetadata(artifact.Metadata); metadata != "" {
+			fmt.Fprintf(w, `<div class="list"><h3>Metadata JSON</h3><pre>%s</pre></div>`, esc(metadata))
+		}
+		fmt.Fprint(w, `</article><article class="panel"><h2>Actions</h2>`)
+		if contentOpenable {
+			fmt.Fprintf(w, `<p><a href="/artifacts/%s/content">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
+		}
 		if storage.IsLocalArtifactURL(artifact.Url) {
-			fmt.Fprintf(w, `<p><a href="/artifacts/%s">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
+			fmt.Fprintf(w, `<form method="post" action="/artifacts/%s/delete" hx-boost="false"><button type="submit">Delete local artifact</button></form>`, esc(uuidText(artifact.ID)))
+		} else if storage.IsS3ArtifactURL(artifact.Url) {
+			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
+			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
 		} else if artifact.Url != "" {
 			fmt.Fprint(w, `<p class="empty-text">Artifact link hidden because its URL scheme is not supported.</p>`)
+			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts.</p>`)
 		}
-		fmt.Fprint(w, `</section>`)
+		fmt.Fprint(w, `</article></section>`)
 	})
 }
 
@@ -1032,6 +1243,23 @@ func writeSearchResult(w io.Writer, result services.SearchResult) {
 	fmt.Fprint(w, `</article>`)
 }
 
+func writeArtifactCard(w io.Writer, artifact db.Artifact) {
+	fmt.Fprintf(w, `<article class="ticket-card"><a href="/artifacts/%s"><span class="title">%s</span><span class="summary">%s %s %s</span></a>`,
+		esc(uuidText(artifact.ID)),
+		esc(artifact.Name),
+		esc(artifact.Role),
+		esc(artifact.Type),
+		esc(artifact.StorageBackend),
+	)
+	writeMeta(w, "Size", byteCount(artifact.SizeBytes))
+	writeMeta(w, "MIME", artifact.MimeType)
+	writeMeta(w, "Ticket", "/tickets/"+uuidText(artifact.TicketID))
+	if artifact.AttemptID.Valid {
+		writeMeta(w, "Attempt", "/attempts/"+uuidText(artifact.AttemptID))
+	}
+	fmt.Fprint(w, `</article>`)
+}
+
 func writeShareLinks(w io.Writer, view ticketDetailView) {
 	ticket := view.Ticket
 	fmt.Fprint(w, `<div class="list"><h3>Share links</h3><ul>`)
@@ -1085,7 +1313,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 	}
 	for _, artifact := range view.Timeline.Artifacts {
 		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s %s</span>`, esc(artifact.Name), esc(artifact.Role), esc(artifact.Type))
-		if storage.IsLocalArtifactURL(artifact.Url) {
+		if view.ArtifactContentOpenable[uuidText(artifact.ID)] {
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
 			fmt.Fprintf(w, `<p><a href="%s">%s</a></p>`, esc(artifactURL), esc(artifactURL))
@@ -1159,6 +1387,17 @@ func safeArtifactURL(value string) (string, bool) {
 	}
 }
 
+func artifactContentOpenability(runtime Runtime, artifacts []db.Artifact) map[string]bool {
+	openable := make(map[string]bool, len(artifacts))
+	if runtime == nil {
+		return openable
+	}
+	for _, artifact := range artifacts {
+		openable[uuidText(artifact.ID)] = runtime.ArtifactContentOpenable(artifact)
+	}
+	return openable
+}
+
 func headerFilename(value string) string {
 	value = strings.ReplaceAll(value, `"`, "")
 	value = strings.ReplaceAll(value, "\r", "")
@@ -1167,6 +1406,35 @@ func headerFilename(value string) string {
 		return "artifact"
 	}
 	return value
+}
+
+func byteCount(size int64) string {
+	if size < 0 {
+		return ""
+	}
+	if size == 1 {
+		return "1 byte"
+	}
+	return fmt.Sprintf("%d bytes", size)
+}
+
+func formattedMetadata(raw []byte) string {
+	if len(raw) == 0 || string(raw) == "{}" {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return string(raw)
+	}
+	formatted, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return string(raw)
+	}
+	return string(formatted)
+}
+
+func artifactListPath(artifact db.Artifact) string {
+	return fmt.Sprintf("/artifacts?workspace_id=%s&project_id=%s", url.QueryEscape(uuidText(artifact.WorkspaceID)), url.QueryEscape(uuidText(artifact.ProjectID)))
 }
 
 func textValue(value pgtype.Text) string {

@@ -1192,7 +1192,7 @@ func TestRunAnalyticsByModelWritesJSONWhenRequested(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		analyticsGroups: []services.AnalyticsGroup{
-			{Group: "gpt-5.4", AttemptCount: 2, SucceededAttempts: 1, TotalCostUSD: 0.12},
+			{Group: "gpt-5.4", AttemptCount: 2, SucceededAttempts: 1, FailedAttempts: 1, TotalCostUSD: 0.12},
 		},
 	}
 
@@ -1206,6 +1206,51 @@ func TestRunAnalyticsByModelWritesJSONWhenRequested(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"groups":[{"group":"gpt-5.4"`) {
 		t.Fatalf("expected analytics JSON groups, got %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"failed_attempts":1`) {
+		t.Fatalf("expected analytics JSON failed totals, got %s", stdout.String())
+	}
+}
+
+func TestRunAnalyticsByStatusAndAgentUseScopedFilters(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsGroups: []services.AnalyticsGroup{
+			{Group: "blocked", AttemptCount: 2, BlockedAttempts: 2, TotalDurationSeconds: 45.5},
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "by-status",
+		"--workspace-id", uuidString(t, testUUID(2)),
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsCall != "status" || fake.analyticsFilter.WorkspaceID != testUUID(2) {
+		t.Fatalf("expected by-status workspace filter, got call=%q filter=%#v", fake.analyticsCall, fake.analyticsFilter)
+	}
+	if !strings.Contains(stdout.String(), "Status\tAttempts\tSucceeded\tFailed\tBlocked\tCost\tTokens\tDuration\tRetries") {
+		t.Fatalf("expected expanded analytics header, got %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = RunWithDependencies([]string{
+		"analytics", "by-agent",
+		"--project-id", uuidString(t, testUUID(3)),
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsCall != "agent" || fake.analyticsFilter.ProjectID != testUUID(3) {
+		t.Fatalf("expected by-agent project filter, got call=%q filter=%#v", fake.analyticsCall, fake.analyticsFilter)
+	}
+	if !strings.Contains(stdout.String(), `"blocked_attempts":2`) {
+		t.Fatalf("expected by-agent JSON blocked totals, got %s", stdout.String())
 	}
 }
 
@@ -1347,6 +1392,46 @@ func TestRunCodexCompleteUploadsFilesystemProofs(t *testing.T) {
 	}
 	if len(fake.artifactReqs) != 1 || fake.artifactReqs[0].URL != "local://artifacts/go-test.log" || fake.artifactReqs[0].SizeBytes != 3 {
 		t.Fatalf("expected uploaded proof registration, got %#v", fake.artifactReqs)
+	}
+}
+
+func TestRunCodexCompleteRegistersConfiguredS3ProofUploads(t *testing.T) {
+	proofPath := filepath.Join(t.TempDir(), "go-test.log")
+	if err := os.WriteFile(proofPath, []byte("ok\n"), 0o600); err != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt: db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+		completeResult: services.AttemptTransitionResult{
+			AttemptID:     testUUID(5),
+			TicketID:      testUUID(4),
+			AttemptStatus: services.AttemptStatusSucceeded,
+			TicketStatus:  services.TicketStatusDone,
+		},
+		storedArtifact: storage.StoredArtifact{
+			Name:           "go-test.log",
+			URL:            "s3://forge-artifacts/proofs/go-test.log",
+			StorageBackend: services.ArtifactStorageS3,
+			MimeType:       "text/plain",
+			Size:           3,
+		},
+		artifact: db.Artifact{ID: testUUID(7), Type: services.ArtifactTypeTestOutput, Role: services.ArtifactRoleEvidence, Name: "go-test.log", Url: "s3://forge-artifacts/proofs/go-test.log", StorageBackend: services.ArtifactStorageS3},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "complete",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--summary", "Done",
+		"--proof", proofPath,
+		"--proof-type", services.ArtifactTypeTestOutput,
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if len(fake.artifactReqs) != 1 || fake.artifactReqs[0].StorageBackend != services.ArtifactStorageS3 || fake.artifactReqs[0].URL != "s3://forge-artifacts/proofs/go-test.log" {
+		t.Fatalf("expected s3 proof artifact registration, got %#v", fake.artifactReqs)
 	}
 }
 
@@ -1575,6 +1660,7 @@ type fakeRuntime struct {
 	removedLocalArtifactURL string
 	removeLocalArtifactErr  error
 	analyticsFilter         services.AnalyticsFilter
+	analyticsCall           string
 	analyticsSummary        services.AnalyticsSummary
 	analyticsGroups         []services.AnalyticsGroup
 }
@@ -1732,6 +1818,10 @@ func (f *fakeRuntime) ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.
 	return nil, nil
 }
 
+func (f *fakeRuntime) ListArtifacts(context.Context, services.ListArtifactsRequest) ([]db.Artifact, error) {
+	return nil, nil
+}
+
 func (f *fakeRuntime) ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error) {
 	return nil, nil
 }
@@ -1744,10 +1834,33 @@ func (f *fakeRuntime) OpenArtifact(context.Context, db.Artifact) (storage.Artifa
 	return storage.ArtifactContent{}, nil
 }
 
+func (f *fakeRuntime) ArtifactContentOpenable(artifact db.Artifact) bool {
+	switch artifact.StorageBackend {
+	case services.ArtifactStorageLocal:
+		return storage.IsLocalArtifactURL(artifact.Url)
+	case services.ArtifactStorageS3:
+		return storage.IsS3ArtifactURL(artifact.Url)
+	default:
+		return false
+	}
+}
+
+func (f *fakeRuntime) DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error) {
+	return db.Artifact{}, nil
+}
+
+func (f *fakeRuntime) StoreArtifact(ctx context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
+	return f.StoreLocalArtifact(ctx, sourcePath, preferredName)
+}
+
 func (f *fakeRuntime) StoreLocalArtifact(_ context.Context, sourcePath string, preferredName string) (storage.StoredArtifact, error) {
 	f.storeLocalArtifactPath = sourcePath
 	f.storeLocalArtifactName = preferredName
 	return f.storedArtifact, f.storeLocalArtifactErr
+}
+
+func (f *fakeRuntime) RemoveArtifact(ctx context.Context, rawURL string) error {
+	return f.RemoveLocalArtifact(ctx, rawURL)
 }
 
 func (f *fakeRuntime) RemoveLocalArtifact(_ context.Context, rawURL string) error {
@@ -1796,11 +1909,25 @@ func (f *fakeRuntime) AnalyticsSummary(_ context.Context, filter services.Analyt
 
 func (f *fakeRuntime) AnalyticsByModel(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
 	f.analyticsFilter = filter
+	f.analyticsCall = "model"
 	return f.analyticsGroups, nil
 }
 
 func (f *fakeRuntime) AnalyticsByHarness(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
 	f.analyticsFilter = filter
+	f.analyticsCall = "harness"
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByStatus(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	f.analyticsCall = "status"
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByAgent(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	f.analyticsCall = "agent"
 	return f.analyticsGroups, nil
 }
 

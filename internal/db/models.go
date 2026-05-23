@@ -184,6 +184,43 @@ type TicketEvent struct {
 	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
+type WebhookDelivery struct {
+	ID             pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	EventID        pgtype.UUID        `db:"event_id" json:"event_id"`
+	WorkspaceID    pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID      pgtype.UUID        `db:"project_id" json:"project_id"`
+	TicketID       pgtype.UUID        `db:"ticket_id" json:"ticket_id"`
+	AttemptID      pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	Status         string             `db:"status" json:"status"`
+	Payload        []byte             `db:"payload" json:"payload"`
+	AttemptCount   int32              `db:"attempt_count" json:"attempt_count"`
+	MaxAttempts    int32              `db:"max_attempts" json:"max_attempts"`
+	NextAttemptAt  pgtype.Timestamptz `db:"next_attempt_at" json:"next_attempt_at"`
+	LockedUntil    pgtype.Timestamptz `db:"locked_until" json:"locked_until"`
+	LastAttemptAt  pgtype.Timestamptz `db:"last_attempt_at" json:"last_attempt_at"`
+	DeliveredAt    pgtype.Timestamptz `db:"delivered_at" json:"delivered_at"`
+	ResponseStatus pgtype.Int4        `db:"response_status" json:"response_status"`
+	ResponseBody   pgtype.Text        `db:"response_body" json:"response_body"`
+	Error          pgtype.Text        `db:"error" json:"error"`
+	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+type WebhookSubscription struct {
+	ID          pgtype.UUID        `db:"id" json:"id"`
+	WorkspaceID pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID        `db:"project_id" json:"project_id"`
+	EndpointUrl string             `db:"endpoint_url" json:"endpoint_url"`
+	Secret      pgtype.Text        `db:"secret" json:"secret"`
+	EventTypes  []string           `db:"event_types" json:"event_types"`
+	Active      bool               `db:"active" json:"active"`
+	MaxAttempts int32              `db:"max_attempts" json:"max_attempts"`
+	Description string             `db:"description" json:"description"`
+	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type Workspace struct {
 	ID        pgtype.UUID        `db:"id" json:"id"`
 	Name      string             `db:"name" json:"name"`

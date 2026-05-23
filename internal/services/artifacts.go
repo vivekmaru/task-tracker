@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -40,7 +41,9 @@ type ArtifactStore interface {
 	CreateArtifact(context.Context, db.CreateArtifactParams) (db.Artifact, error)
 	ListArtifactsByTicket(context.Context, pgtype.UUID) ([]db.Artifact, error)
 	ListArtifactsByAttempt(context.Context, pgtype.UUID) ([]db.Artifact, error)
+	ListArtifactsByScope(context.Context, db.ListArtifactsByScopeParams) ([]db.Artifact, error)
 	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
+	DeleteArtifact(context.Context, pgtype.UUID) error
 }
 
 var _ ArtifactStore = (*db.Queries)(nil)
@@ -67,6 +70,16 @@ type RegisterArtifactRequest struct {
 	MimeType       string
 	Metadata       map[string]any
 }
+
+type ListArtifactsRequest struct {
+	WorkspaceID pgtype.UUID
+	ProjectID   pgtype.UUID
+	TicketID    pgtype.UUID
+	Limit       int32
+	Offset      int32
+}
+
+var ErrArtifactDeleteUnsupported = errors.New("artifact delete is only supported for local artifacts")
 
 func (s *ArtifactService) RegisterArtifact(ctx context.Context, req RegisterArtifactRequest) (db.Artifact, error) {
 	req = trimRegisterArtifactRequest(req)
@@ -105,8 +118,44 @@ func (s *ArtifactService) ListArtifactsByAttempt(ctx context.Context, attemptID 
 	return s.store.ListArtifactsByAttempt(ctx, attemptID)
 }
 
+func (s *ArtifactService) ListArtifacts(ctx context.Context, req ListArtifactsRequest) ([]db.Artifact, error) {
+	if problems := validateListArtifactsRequest(req); len(problems) > 0 {
+		return nil, ValidationError{Problems: problems}
+	}
+	if req.Limit == 0 {
+		req.Limit = 100
+	}
+	return s.store.ListArtifactsByScope(ctx, db.ListArtifactsByScopeParams{
+		WorkspaceID: req.WorkspaceID,
+		ProjectID:   req.ProjectID,
+		TicketID:    req.TicketID,
+		LimitCount:  req.Limit,
+		OffsetCount: req.Offset,
+	})
+}
+
 func (s *ArtifactService) GetArtifact(ctx context.Context, id pgtype.UUID) (db.Artifact, error) {
 	return s.store.GetArtifact(ctx, id)
+}
+
+func (s *ArtifactService) DeleteLocalArtifact(ctx context.Context, id pgtype.UUID, removeLocal func(string) error) (db.Artifact, error) {
+	artifact, err := s.store.GetArtifact(ctx, id)
+	if err != nil {
+		return db.Artifact{}, err
+	}
+	if artifact.StorageBackend != ArtifactStorageLocal {
+		return db.Artifact{}, ErrArtifactDeleteUnsupported
+	}
+	if removeLocal == nil {
+		return db.Artifact{}, errors.New("local artifact cleanup is not configured")
+	}
+	if err := removeLocal(artifact.Url); err != nil {
+		return db.Artifact{}, fmt.Errorf("remove local artifact: %w", err)
+	}
+	if err := s.store.DeleteArtifact(ctx, id); err != nil {
+		return db.Artifact{}, fmt.Errorf("delete artifact metadata: %w", err)
+	}
+	return artifact, nil
 }
 
 func trimRegisterArtifactRequest(req RegisterArtifactRequest) RegisterArtifactRequest {
@@ -154,6 +203,23 @@ func validateRegisterArtifactRequest(req RegisterArtifactRequest) []string {
 	}
 	if req.SizeBytes < 0 {
 		problems = append(problems, "size_bytes must be non-negative")
+	}
+	return problems
+}
+
+func validateListArtifactsRequest(req ListArtifactsRequest) []string {
+	var problems []string
+	if !req.WorkspaceID.Valid {
+		problems = append(problems, "workspace_id is required")
+	}
+	if !req.ProjectID.Valid {
+		problems = append(problems, "project_id is required")
+	}
+	if req.Limit < 0 {
+		problems = append(problems, "limit must be non-negative")
+	}
+	if req.Offset < 0 {
+		problems = append(problems, "offset must be non-negative")
 	}
 	return problems
 }

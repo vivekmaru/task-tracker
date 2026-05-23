@@ -80,6 +80,16 @@ func (q *Queries) CreateArtifact(ctx context.Context, arg CreateArtifactParams) 
 	return i, err
 }
 
+const deleteArtifact = `-- name: DeleteArtifact :exec
+DELETE FROM artifacts
+WHERE id = $1
+`
+
+func (q *Queries) DeleteArtifact(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteArtifact, id)
+	return err
+}
+
 const getArtifact = `-- name: GetArtifact :one
 SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, role, name, url, storage_backend, size_bytes, mime_type, metadata, created_at
 FROM artifacts
@@ -117,6 +127,66 @@ ORDER BY created_at ASC
 
 func (q *Queries) ListArtifactsByAttempt(ctx context.Context, attemptID pgtype.UUID) ([]Artifact, error) {
 	rows, err := q.db.Query(ctx, listArtifactsByAttempt, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Artifact{}
+	for rows.Next() {
+		var i Artifact
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.TicketID,
+			&i.AttemptID,
+			&i.Type,
+			&i.Role,
+			&i.Name,
+			&i.Url,
+			&i.StorageBackend,
+			&i.SizeBytes,
+			&i.MimeType,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listArtifactsByScope = `-- name: ListArtifactsByScope :many
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, role, name, url, storage_backend, size_bytes, mime_type, metadata, created_at
+FROM artifacts
+WHERE workspace_id = $1
+  AND project_id = $2
+  AND ($3::uuid IS NULL OR ticket_id = $3::uuid)
+ORDER BY created_at DESC
+LIMIT $5
+OFFSET $4
+`
+
+type ListArtifactsByScopeParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
+	TicketID    pgtype.UUID `db:"ticket_id" json:"ticket_id"`
+	OffsetCount int32       `db:"offset_count" json:"offset_count"`
+	LimitCount  int32       `db:"limit_count" json:"limit_count"`
+}
+
+func (q *Queries) ListArtifactsByScope(ctx context.Context, arg ListArtifactsByScopeParams) ([]Artifact, error) {
+	rows, err := q.db.Query(ctx, listArtifactsByScope,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.TicketID,
+		arg.OffsetCount,
+		arg.LimitCount,
+	)
 	if err != nil {
 		return nil, err
 	}
