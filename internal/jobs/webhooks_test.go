@@ -33,35 +33,10 @@ func TestWebhookWorkerPostsPayloadAndMarksSuccess(t *testing.T) {
 			AttemptID:    attemptID,
 			EndpointUrl:  "https://example.test/hooks/forge",
 			Secret:       pgtype.Text{String: "secret", Valid: true},
-			Payload:      []byte(`{"event_id":"00000000-0000-0000-0000-000000000033","event_type":"completed","actor_type":"agent","actor_id":"codex-worker","data":{"output_schema":"summary.v1"},"created_at":"2026-05-22T08:59:30Z"}`),
+			Payload:      []byte(`{"event_id":"00000000-0000-0000-0000-000000000033","event_type":"completed","actor_type":"agent","actor_id":"codex-worker","data":{"output_schema":"summary.v1"},"created_at":"2026-05-22T08:59:30Z","attempt":{"id":"00000000-0000-0000-0000-000000000035","agent_id":"codex-worker","harness":"codex","model":"gpt-5","status":"succeeded","progress_percent":100,"started_at":"2026-05-22T08:58:00Z","completed_at":"2026-05-22T08:59:30Z"},"metrics":{"tokens_in":100,"tokens_out":25,"total_tokens":125,"cost_usd":0.42,"duration_seconds":90.5,"retry_count":1}}`),
 			AttemptCount: 0,
 			MaxAttempts:  3,
 		}},
-		attempts: map[pgtype.UUID]db.Attempt{
-			attemptID: {
-				ID:              attemptID,
-				WorkspaceID:     testUUID(1),
-				ProjectID:       testUUID(2),
-				TicketID:        testUUID(3),
-				AgentID:         "codex-worker",
-				Harness:         "codex",
-				Model:           "gpt-5",
-				Status:          services.AttemptStatusSucceeded,
-				ProgressPercent: 100,
-				StartedAt:       pgtype.Timestamptz{Time: now.Add(-2 * time.Minute), Valid: true},
-				CompletedAt:     pgtype.Timestamptz{Time: now.Add(-30 * time.Second), Valid: true},
-			},
-		},
-		metrics: map[pgtype.UUID]db.AttemptMetric{
-			attemptID: {
-				AttemptID:       attemptID,
-				TokensIn:        100,
-				TokensOut:       25,
-				CostUsd:         numericForWebhookTest(t, 0.42),
-				DurationSeconds: numericForWebhookTest(t, 90.5),
-				RetryCount:      1,
-			},
-		},
 	}
 	client := &fakeHTTPClient{response: &http.Response{
 		StatusCode: http.StatusAccepted,

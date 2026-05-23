@@ -1,6 +1,6 @@
 # Observability Export Foundation
 
-Forge can export execution ledger events through the durable webhook delivery path. This is the first observability foundation: it emits structured JSON for ticket events and enriches attempt-scoped events with attempt metadata and metrics when those rows exist.
+Forge can export execution ledger events through the durable webhook delivery path. This is the first observability foundation: it emits structured JSON for ticket events and snapshots attempt-scoped metadata and metrics when deliveries are enqueued.
 
 ## Configuration
 
@@ -33,7 +33,7 @@ VALUES (
 
 An empty `event_types` array subscribes to all ticket events in that scope. The endpoint must be `http://` or `https://`. If `secret` is set, deliveries include `X-Forge-Signature-SHA256`, an HMAC-SHA256 over the exact JSON request body.
 
-Ticket event inserts enqueue `webhook_deliveries` automatically. The webhook worker claims pending deliveries, posts the observability payload, records response metadata, and retries failures with exponential backoff up to `max_attempts`.
+Ticket event inserts enqueue `webhook_deliveries` automatically. The enqueue trigger snapshots attempt metadata and attempt metrics into the delivery payload when those rows exist, so retries preserve the event-time view instead of reading mutable attempt state later. The webhook worker claims pending deliveries, posts the observability payload, records response metadata, and retries failures with exponential backoff up to `max_attempts`.
 
 ## Payload
 
@@ -86,5 +86,5 @@ The `attempt` section is omitted for ticket-only events. The `metrics` section i
 - This is an export foundation, not a full observability platform. Forge does not yet provide sink management UI, OpenTelemetry exporters, dashboards, or aggregation.
 - Subscription creation is currently database-level; a CLI/API management surface can be added later without changing the payload contract.
 - Delivery is at least once. Consumers should deduplicate by `event.id` or the `X-Forge-Event-ID` header.
-- Payload data comes from ticket events, attempts, and attempt metrics only. Search analytics, policy decisions, claims comparisons, artifacts, and UI state are intentionally out of scope.
+- Payload data comes from ticket events plus event-time snapshots of attempts and attempt metrics. Search analytics, policy decisions, claims comparisons, artifacts, and UI state are intentionally out of scope.
 - The current worker type supports the durable claim/post/retry path. A long-lived scheduler around it is a separate operations concern.

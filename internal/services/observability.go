@@ -110,13 +110,15 @@ func BuildObservabilityPayload(input ObservabilityPayloadInput) (ObservabilityPa
 	return payload, nil
 }
 
-func BuildObservabilityPayloadFromWebhookDelivery(delivery db.ClaimPendingWebhookDeliveriesRow, attempt *db.Attempt, metrics *db.AttemptMetric) (ObservabilityPayload, error) {
+func BuildObservabilityPayloadFromWebhookDelivery(delivery db.ClaimPendingWebhookDeliveriesRow) (ObservabilityPayload, error) {
 	var raw struct {
 		EventType  string          `json:"event_type"`
 		ActorType  string          `json:"actor_type"`
 		ActorID    *string         `json:"actor_id"`
 		Data       json.RawMessage `json:"data"`
 		OccurredAt time.Time       `json:"created_at"`
+		Attempt    *ObservabilityAttempt        `json:"attempt"`
+		Metrics    *ObservabilityAttemptMetrics `json:"metrics"`
 	}
 	if len(delivery.Payload) > 0 {
 		if err := json.Unmarshal(delivery.Payload, &raw); err != nil {
@@ -128,7 +130,7 @@ func BuildObservabilityPayloadFromWebhookDelivery(delivery db.ClaimPendingWebhoo
 	if raw.ActorID != nil {
 		actorID = *raw.ActorID
 	}
-	return BuildObservabilityPayload(ObservabilityPayloadInput{
+	payload, err := BuildObservabilityPayload(ObservabilityPayloadInput{
 		EventID:     delivery.EventID,
 		WorkspaceID: delivery.WorkspaceID,
 		ProjectID:   delivery.ProjectID,
@@ -139,9 +141,13 @@ func BuildObservabilityPayloadFromWebhookDelivery(delivery db.ClaimPendingWebhoo
 		ActorID:     actorID,
 		EventData:   raw.Data,
 		OccurredAt:  raw.OccurredAt,
-		Attempt:     attempt,
-		Metrics:     metrics,
 	})
+	if err != nil {
+		return ObservabilityPayload{}, err
+	}
+	payload.Attempt = raw.Attempt
+	payload.Metrics = raw.Metrics
+	return payload, nil
 }
 
 func observabilityAttempt(attempt db.Attempt) *ObservabilityAttempt {

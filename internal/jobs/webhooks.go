@@ -7,14 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
@@ -33,8 +31,6 @@ type WebhookDeliveryStore interface {
 	ClaimPendingWebhookDeliveries(context.Context, db.ClaimPendingWebhookDeliveriesParams) ([]db.ClaimPendingWebhookDeliveriesRow, error)
 	MarkWebhookDeliverySucceeded(context.Context, db.MarkWebhookDeliverySucceededParams) (db.WebhookDelivery, error)
 	MarkWebhookDeliveryFailed(context.Context, db.MarkWebhookDeliveryFailedParams) (db.WebhookDelivery, error)
-	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
-	GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error)
 }
 
 var _ WebhookDeliveryStore = (*db.Queries)(nil)
@@ -188,27 +184,7 @@ func (w *WebhookWorker) deliver(ctx context.Context, delivery db.ClaimPendingWeb
 }
 
 func (w *WebhookWorker) deliveryPayload(ctx context.Context, delivery db.ClaimPendingWebhookDeliveriesRow) ([]byte, error) {
-	var attempt *db.Attempt
-	var metrics *db.AttemptMetric
-	if delivery.AttemptID.Valid {
-		attemptRow, err := w.store.GetAttempt(ctx, delivery.AttemptID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("load attempt for webhook delivery: %w", err)
-		}
-		if err == nil {
-			attempt = &attemptRow
-		}
-
-		metricsRow, err := w.store.GetAttemptMetrics(ctx, delivery.AttemptID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("load attempt metrics for webhook delivery: %w", err)
-		}
-		if err == nil {
-			metrics = &metricsRow
-		}
-	}
-
-	payload, err := services.BuildObservabilityPayloadFromWebhookDelivery(delivery, attempt, metrics)
+	payload, err := services.BuildObservabilityPayloadFromWebhookDelivery(delivery)
 	if err != nil {
 		return nil, err
 	}
