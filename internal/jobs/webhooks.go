@@ -6,14 +6,18 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
+	"github.com/vivek/agent-task-tracker/internal/services"
 )
 
 const (
@@ -29,6 +33,8 @@ type WebhookDeliveryStore interface {
 	ClaimPendingWebhookDeliveries(context.Context, db.ClaimPendingWebhookDeliveriesParams) ([]db.ClaimPendingWebhookDeliveriesRow, error)
 	MarkWebhookDeliverySucceeded(context.Context, db.MarkWebhookDeliverySucceededParams) (db.WebhookDelivery, error)
 	MarkWebhookDeliveryFailed(context.Context, db.MarkWebhookDeliveryFailedParams) (db.WebhookDelivery, error)
+	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error)
 }
 
 var _ WebhookDeliveryStore = (*db.Queries)(nil)
@@ -151,16 +157,21 @@ type deliveryOutcome struct {
 }
 
 func (w *WebhookWorker) deliver(ctx context.Context, delivery db.ClaimPendingWebhookDeliveriesRow) deliveryOutcome {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, delivery.EndpointUrl, bytes.NewReader(delivery.Payload))
+	payload, err := w.deliveryPayload(ctx, delivery)
+	if err != nil {
+		return deliveryOutcome{err: err}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, delivery.EndpointUrl, bytes.NewReader(payload))
 	if err != nil {
 		return deliveryOutcome{err: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "forge-webhooks/1")
+	req.Header.Set("X-Forge-Payload-Schema", services.ObservabilitySchemaVersion)
 	req.Header.Set("X-Forge-Event-ID", uuidString(delivery.EventID))
 	req.Header.Set("X-Forge-Delivery-ID", uuidString(delivery.ID))
 	if delivery.Secret.Valid && strings.TrimSpace(delivery.Secret.String) != "" {
-		req.Header.Set("X-Forge-Signature-SHA256", webhookSignature(delivery.Secret.String, delivery.Payload))
+		req.Header.Set("X-Forge-Signature-SHA256", webhookSignature(delivery.Secret.String, payload))
 	}
 
 	resp, err := w.client.Do(req)
@@ -174,6 +185,38 @@ func (w *WebhookWorker) deliver(ctx context.Context, delivery db.ClaimPendingWeb
 		outcome.err = readErr
 	}
 	return outcome
+}
+
+func (w *WebhookWorker) deliveryPayload(ctx context.Context, delivery db.ClaimPendingWebhookDeliveriesRow) ([]byte, error) {
+	var attempt *db.Attempt
+	var metrics *db.AttemptMetric
+	if delivery.AttemptID.Valid {
+		attemptRow, err := w.store.GetAttempt(ctx, delivery.AttemptID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("load attempt for webhook delivery: %w", err)
+		}
+		if err == nil {
+			attempt = &attemptRow
+		}
+
+		metricsRow, err := w.store.GetAttemptMetrics(ctx, delivery.AttemptID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("load attempt metrics for webhook delivery: %w", err)
+		}
+		if err == nil {
+			metrics = &metricsRow
+		}
+	}
+
+	payload, err := services.BuildObservabilityPayloadFromWebhookDelivery(delivery, attempt, metrics)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode observability webhook payload: %w", err)
+	}
+	return encoded, nil
 }
 
 func (w *WebhookWorker) markSucceeded(ctx context.Context, delivery db.ClaimPendingWebhookDeliveriesRow, outcome deliveryOutcome) error {

@@ -2,32 +2,66 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
+	"github.com/vivek/agent-task-tracker/internal/services"
 )
 
 func TestWebhookWorkerPostsPayloadAndMarksSuccess(t *testing.T) {
 	now := time.Date(2026, 5, 22, 9, 0, 0, 0, time.UTC)
 	eventID := testUUID(51)
 	deliveryID := testUUID(52)
+	attemptID := testUUID(53)
 	store := &fakeWebhookStore{
 		claimed: []db.ClaimPendingWebhookDeliveriesRow{{
 			ID:           deliveryID,
 			EventID:      eventID,
+			WorkspaceID:  testUUID(1),
+			ProjectID:    testUUID(2),
+			TicketID:     testUUID(3),
+			AttemptID:    attemptID,
 			EndpointUrl:  "https://example.test/hooks/forge",
 			Secret:       pgtype.Text{String: "secret", Valid: true},
-			Payload:      []byte(`{"event_type":"completed","ticket_id":"ticket-1"}`),
+			Payload:      []byte(`{"event_id":"00000000-0000-0000-0000-000000000033","event_type":"completed","actor_type":"agent","actor_id":"codex-worker","data":{"output_schema":"summary.v1"},"created_at":"2026-05-22T08:59:30Z"}`),
 			AttemptCount: 0,
 			MaxAttempts:  3,
 		}},
+		attempts: map[pgtype.UUID]db.Attempt{
+			attemptID: {
+				ID:              attemptID,
+				WorkspaceID:     testUUID(1),
+				ProjectID:       testUUID(2),
+				TicketID:        testUUID(3),
+				AgentID:         "codex-worker",
+				Harness:         "codex",
+				Model:           "gpt-5",
+				Status:          services.AttemptStatusSucceeded,
+				ProgressPercent: 100,
+				StartedAt:       pgtype.Timestamptz{Time: now.Add(-2 * time.Minute), Valid: true},
+				CompletedAt:     pgtype.Timestamptz{Time: now.Add(-30 * time.Second), Valid: true},
+			},
+		},
+		metrics: map[pgtype.UUID]db.AttemptMetric{
+			attemptID: {
+				AttemptID:       attemptID,
+				TokensIn:        100,
+				TokensOut:       25,
+				CostUsd:         numericForWebhookTest(t, 0.42),
+				DurationSeconds: numericForWebhookTest(t, 90.5),
+				RetryCount:      1,
+			},
+		},
 	}
 	client := &fakeHTTPClient{response: &http.Response{
 		StatusCode: http.StatusAccepted,
@@ -53,15 +87,28 @@ func TestWebhookWorkerPostsPayloadAndMarksSuccess(t *testing.T) {
 	if got := req.Header.Get("X-Forge-Event-ID"); got != "00000000-0000-0000-0000-000000000033" {
 		t.Fatalf("unexpected event header: %q", got)
 	}
-	if got := req.Header.Get("X-Forge-Signature-SHA256"); got != webhookSignature("secret", store.claimed[0].Payload) {
-		t.Fatalf("unexpected signature: %q", got)
-	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatalf("read request body: %v", err)
 	}
-	if string(body) != string(store.claimed[0].Payload) {
-		t.Fatalf("expected raw delivery payload, got %s", string(body))
+	if got := req.Header.Get("X-Forge-Signature-SHA256"); got != webhookSignature("secret", body) {
+		t.Fatalf("unexpected signature: %q", got)
+	}
+	if got := req.Header.Get("X-Forge-Payload-Schema"); got != services.ObservabilitySchemaVersion {
+		t.Fatalf("unexpected payload schema header: %q", got)
+	}
+	var payload services.ObservabilityPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal observability payload: %v\n%s", err, string(body))
+	}
+	if payload.SchemaVersion != "forge.observability.v1" || payload.Event.Type != services.EventAttemptCompleted {
+		t.Fatalf("expected observability event envelope, got %#v", payload)
+	}
+	if payload.Attempt == nil || payload.Attempt.AgentID != "codex-worker" || payload.Attempt.Status != services.AttemptStatusSucceeded {
+		t.Fatalf("expected attempt enrichment, got %#v", payload.Attempt)
+	}
+	if payload.Metrics == nil || payload.Metrics.TokensIn != 100 || payload.Metrics.TotalTokens != 125 || payload.Metrics.CostUSD != 0.42 {
+		t.Fatalf("expected metrics enrichment, got %#v", payload.Metrics)
 	}
 	if len(store.succeeded) != 1 {
 		t.Fatalf("expected success update, got %d", len(store.succeeded))
@@ -244,6 +291,8 @@ type fakeWebhookStore struct {
 	claimed     []db.ClaimPendingWebhookDeliveriesRow
 	succeeded   []db.MarkWebhookDeliverySucceededParams
 	failed      []db.MarkWebhookDeliveryFailedParams
+	attempts    map[pgtype.UUID]db.Attempt
+	metrics     map[pgtype.UUID]db.AttemptMetric
 }
 
 func (s *fakeWebhookStore) ClaimPendingWebhookDeliveries(_ context.Context, params db.ClaimPendingWebhookDeliveriesParams) ([]db.ClaimPendingWebhookDeliveriesRow, error) {
@@ -259,6 +308,22 @@ func (s *fakeWebhookStore) MarkWebhookDeliverySucceeded(_ context.Context, param
 func (s *fakeWebhookStore) MarkWebhookDeliveryFailed(_ context.Context, params db.MarkWebhookDeliveryFailedParams) (db.WebhookDelivery, error) {
 	s.failed = append(s.failed, params)
 	return db.WebhookDelivery{ID: params.ID, Status: "pending", AttemptCount: params.AttemptCount}, nil
+}
+
+func (s *fakeWebhookStore) GetAttempt(_ context.Context, id pgtype.UUID) (db.Attempt, error) {
+	attempt, ok := s.attempts[id]
+	if !ok {
+		return db.Attempt{}, pgx.ErrNoRows
+	}
+	return attempt, nil
+}
+
+func (s *fakeWebhookStore) GetAttemptMetrics(_ context.Context, attemptID pgtype.UUID) (db.AttemptMetric, error) {
+	metrics, ok := s.metrics[attemptID]
+	if !ok {
+		return db.AttemptMetric{}, pgx.ErrNoRows
+	}
+	return metrics, nil
 }
 
 type fakeHTTPClient struct {
@@ -279,4 +344,14 @@ func (c *fakeHTTPClient) Do(req *http.Request) (*http.Response, error) {
 		return nil, c.err
 	}
 	return c.response, nil
+}
+
+func numericForWebhookTest(t *testing.T, value float64) pgtype.Numeric {
+	t.Helper()
+
+	var numeric pgtype.Numeric
+	if err := numeric.Scan(strconv.FormatFloat(value, 'f', -1, 64)); err != nil {
+		t.Fatalf("scan numeric: %v", err)
+	}
+	return numeric
 }
