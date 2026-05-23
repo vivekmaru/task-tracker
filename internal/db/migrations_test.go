@@ -34,6 +34,30 @@ func TestInitialMigrationDefinesCoreTables(t *testing.T) {
 	}
 }
 
+func TestForwardMigrationAddsWorkspaceMembers(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0005_workspace_members.sql"))
+	if err != nil {
+		t.Fatalf("read workspace members migration: %v", err)
+	}
+	sql := strings.ToLower(string(data))
+
+	for _, want := range []string{
+		"create table workspace_members",
+		"workspace_id uuid not null references workspaces(id) on delete cascade",
+		"actor_type text not null",
+		"actor_id text not null",
+		"role text not null",
+		"primary key (workspace_id, actor_type, actor_id)",
+		"check (actor_type in ('human', 'agent', 'system'))",
+		"check (role in ('owner', 'admin', 'member', 'viewer'))",
+		"idx_workspace_members_actor",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected workspace members migration to contain %q", want)
+		}
+	}
+}
+
 func TestInitialMigrationDefinesTicketAndAttemptFields(t *testing.T) {
 	sql := readInitialMigration(t)
 

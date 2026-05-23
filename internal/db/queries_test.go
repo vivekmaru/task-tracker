@@ -43,4 +43,8 @@ func TestSQLCGeneratedQueriesExposePhaseOneCore(t *testing.T) {
 	_ = q.GetArtifact
 	_ = q.DeleteArtifact
 	_ = q.SearchTickets
+	_ = q.UpsertWorkspaceMember
+	_ = q.ListWorkspaceMembers
+	_ = q.UpdateWorkspaceMemberRole
+	_ = q.DeleteWorkspaceMember
 }

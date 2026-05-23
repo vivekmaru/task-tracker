@@ -227,3 +227,12 @@ type Workspace struct {
 	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
+
+type WorkspaceMember struct {
+	WorkspaceID pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ActorType   string             `db:"actor_type" json:"actor_type"`
+	ActorID     string             `db:"actor_id" json:"actor_id"`
+	Role        string             `db:"role" json:"role"`
+	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
