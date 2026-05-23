@@ -17,6 +17,7 @@ Implemented:
 - Claim idempotency replay for stable retry keys.
 - Local and S3-compatible proof artifact upload, metadata registration, and human web access.
 - JSON-first CLI commands over the shared runtime.
+- JSON-first workspace/project setup commands for agent-friendly local bootstrapping.
 - Codex harness commands for claim, checkpoint, complete, follow-up, and block flows.
 - Huma OpenAPI route registration under `/api/v1`.
 - Server-rendered web pages for login, workspaces, projects, ticket queues, ticket detail, attempt detail, artifact access, proposed work, and search.
@@ -159,8 +160,11 @@ JSON
 Create a workspace and project:
 
 ```bash
-WORKSPACE_ID=$(psql -X -At "$FORGE_DATABASE_URL" -c "insert into workspaces (name) values ('Smoke Workspace') returning id")
-PROJECT_ID=$(psql -X -At "$FORGE_DATABASE_URL" -c "insert into projects (workspace_id, name) values ('$WORKSPACE_ID', 'Smoke Project') returning id")
+WORKSPACE_ID=$(go run ./cmd/forge workspaces create --config forge.local.json --json \
+  --name "Smoke Workspace" | jq -r '.id')
+PROJECT_ID=$(go run ./cmd/forge projects create --config forge.local.json --json \
+  --workspace-id "$WORKSPACE_ID" \
+  --name "Smoke Project" | jq -r '.id')
 ```
 
 Start the web server in one terminal:

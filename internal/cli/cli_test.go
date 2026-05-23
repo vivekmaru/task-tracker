@@ -490,6 +490,106 @@ func TestRunCreateTicketJSON(t *testing.T) {
 	}
 }
 
+func TestRunWorkspacesCreateAndListJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		workspace:  db.Workspace{ID: testUUID(2), Name: "Forge Dogfood"},
+		workspaces: []db.Workspace{{ID: testUUID(2), Name: "Forge Dogfood"}},
+	}
+
+	code := RunWithDependencies([]string{
+		"workspaces", "create",
+		"--name", " Forge Dogfood ",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.workspaceName != "Forge Dogfood" {
+		t.Fatalf("expected trimmed workspace name, got %q", fake.workspaceName)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &created); err != nil {
+		t.Fatalf("decode workspace JSON: %v; stdout=%s", err, stdout.String())
+	}
+	if created["id"] != uuidString(t, testUUID(2)) || created["name"] != "Forge Dogfood" {
+		t.Fatalf("unexpected workspace JSON: %#v", created)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = RunWithDependencies([]string{
+		"workspaces", "list",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"workspaces":[{"id":"`+uuidString(t, testUUID(2))+`","name":"Forge Dogfood"}]`) {
+		t.Fatalf("expected workspace list JSON, got %s", stdout.String())
+	}
+}
+
+func TestRunProjectsCreateAndListJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		project:  db.Project{ID: testUUID(3), WorkspaceID: testUUID(2), Name: "Forge"},
+		projects: []db.Project{{ID: testUUID(3), WorkspaceID: testUUID(2), Name: "Forge"}},
+	}
+
+	code := RunWithDependencies([]string{
+		"projects", "create",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--name", " Forge ",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.projectWorkspaceID != testUUID(2) || fake.projectName != "Forge" {
+		t.Fatalf("unexpected project create request: workspace=%#v name=%q", fake.projectWorkspaceID, fake.projectName)
+	}
+	if !strings.Contains(stdout.String(), `"workspace_id":"`+uuidString(t, testUUID(2))+`"`) {
+		t.Fatalf("expected project JSON, got %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = RunWithDependencies([]string{
+		"projects", "list",
+		"--workspace-id", uuidString(t, testUUID(2)),
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.projectListWorkspaceID != testUUID(2) {
+		t.Fatalf("expected project list workspace id, got %#v", fake.projectListWorkspaceID)
+	}
+	if !strings.Contains(stdout.String(), `"projects":[{"id":"`+uuidString(t, testUUID(3))+`"`) {
+		t.Fatalf("expected project list JSON, got %s", stdout.String())
+	}
+}
+
+func TestRunProjectsRequiresWorkspaceID(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"projects", "list",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(&fakeRuntime{})})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "projects list argument error: --workspace-id is required") {
+		t.Fatalf("expected workspace-id error, got %q", stderr.String())
+	}
+}
+
 func TestRunClaimNextJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -1826,6 +1926,14 @@ type fakeRuntime struct {
 	analyticsGroups         []services.AnalyticsGroup
 	analyticsTrendFilter    services.AnalyticsTrendFilter
 	analyticsTrends         []services.AnalyticsTrend
+	workspace               db.Workspace
+	workspaces              []db.Workspace
+	workspaceName           string
+	project                 db.Project
+	projects                []db.Project
+	projectWorkspaceID      pgtype.UUID
+	projectListWorkspaceID  pgtype.UUID
+	projectName             string
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -2037,23 +2145,27 @@ func (f *fakeRuntime) RemoveLocalArtifact(_ context.Context, rawURL string) erro
 }
 
 func (f *fakeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {
-	return nil, nil
+	return f.workspaces, nil
 }
 
 func (f *fakeRuntime) GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error) {
 	return db.Workspace{}, nil
 }
 
-func (f *fakeRuntime) CreateWorkspace(context.Context, string) (db.Workspace, error) {
-	return db.Workspace{}, nil
+func (f *fakeRuntime) CreateWorkspace(_ context.Context, name string) (db.Workspace, error) {
+	f.workspaceName = name
+	return f.workspace, nil
 }
 
-func (f *fakeRuntime) ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error) {
-	return nil, nil
+func (f *fakeRuntime) ListProjectsByWorkspace(_ context.Context, workspaceID pgtype.UUID) ([]db.Project, error) {
+	f.projectListWorkspaceID = workspaceID
+	return f.projects, nil
 }
 
-func (f *fakeRuntime) CreateProject(context.Context, pgtype.UUID, string) (db.Project, error) {
-	return db.Project{}, nil
+func (f *fakeRuntime) CreateProject(_ context.Context, workspaceID pgtype.UUID, name string) (db.Project, error) {
+	f.projectWorkspaceID = workspaceID
+	f.projectName = name
+	return f.project, nil
 }
 
 func (f *fakeRuntime) RegisterArtifact(_ context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {

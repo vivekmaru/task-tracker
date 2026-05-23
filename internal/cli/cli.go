@@ -50,6 +50,8 @@ var commands = []command{
 	{"attach", "Attach or register proof artifacts."},
 	{"list", "List tickets."},
 	{"get", "Show a ticket or attempt."},
+	{"workspaces", "List or create workspaces."},
+	{"projects", "List or create projects."},
 	{"related", "Find historical tickets related to a ticket."},
 	{"analytics", "Show basic attempt metrics and analytics."},
 	{"codex", "Codex harness convenience commands."},
@@ -173,6 +175,10 @@ func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, dep
 		return runListCommand(ctx, args, stdout, stderr, deps)
 	case "get":
 		return runGetCommand(ctx, args, stdout, stderr, deps)
+	case "workspaces":
+		return runWorkspacesCommand(ctx, args, stdout, stderr, deps)
+	case "projects":
+		return runProjectsCommand(ctx, args, stdout, stderr, deps)
 	case "related":
 		return runRelatedCommand(ctx, args, stdout, stderr, deps)
 	case "heartbeat":
@@ -547,6 +553,104 @@ func runRelatedCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 		return 1
 	}
 	return writeJSON(stdout, stderr, map[string]any{"related_work": relatedWorkPayloads(results)})
+}
+
+func runWorkspacesCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printWorkspacesHelp(stdout)
+		return 0
+	}
+	subcommand := args[0]
+	flags := newFlagSet("workspaces "+subcommand, stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var name string
+	flags.StringVar(&name, "name", "", "workspace name")
+	if !parseFlags(flags, args[1:]) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	switch subcommand {
+	case "list":
+		workspaces, err := rt.ListWorkspaces(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "workspaces list error: %v\n", err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, map[string]any{"workspaces": workspacePayloads(workspaces)})
+	case "create":
+		name = strings.TrimSpace(name)
+		if name == "" {
+			fmt.Fprintln(stderr, "workspaces create argument error: --name is required")
+			return 2
+		}
+		workspace, err := rt.CreateWorkspace(ctx, name)
+		if err != nil {
+			fmt.Fprintf(stderr, "workspaces create error: %v\n", err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, workspacePayload(workspace))
+	default:
+		fmt.Fprintf(stderr, "unknown workspaces command %q\n\n", subcommand)
+		printWorkspacesHelp(stderr)
+		return 2
+	}
+}
+
+func runProjectsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printProjectsHelp(stdout)
+		return 0
+	}
+	subcommand := args[0]
+	flags := newFlagSet("projects "+subcommand, stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, name string
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&name, "name", "", "project name")
+	if !parseFlags(flags, args[1:]) {
+		return 2
+	}
+	workspaceUUID, err := requiredUUIDFlag("--workspace-id", workspaceID)
+	if err != nil {
+		fmt.Fprintf(stderr, "projects %s argument error: %v\n", subcommand, err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	switch subcommand {
+	case "list":
+		projects, err := rt.ListProjectsByWorkspace(ctx, workspaceUUID)
+		if err != nil {
+			fmt.Fprintf(stderr, "projects list error: %v\n", err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, map[string]any{"projects": projectPayloads(projects)})
+	case "create":
+		name = strings.TrimSpace(name)
+		if name == "" {
+			fmt.Fprintln(stderr, "projects create argument error: --name is required")
+			return 2
+		}
+		project, err := rt.CreateProject(ctx, workspaceUUID, name)
+		if err != nil {
+			fmt.Fprintf(stderr, "projects create error: %v\n", err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, projectPayload(project))
+	default:
+		fmt.Fprintf(stderr, "unknown projects command %q\n\n", subcommand)
+		printProjectsHelp(stderr)
+		return 2
+	}
 }
 
 func runHeartbeatCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -1819,6 +1923,37 @@ func ticketPayload(ticket db.Ticket) map[string]any {
 	}
 }
 
+func workspacePayload(workspace db.Workspace) map[string]any {
+	return map[string]any{
+		"id":   uuidText(workspace.ID),
+		"name": workspace.Name,
+	}
+}
+
+func workspacePayloads(workspaces []db.Workspace) []map[string]any {
+	payloads := make([]map[string]any, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		payloads = append(payloads, workspacePayload(workspace))
+	}
+	return payloads
+}
+
+func projectPayload(project db.Project) map[string]any {
+	return map[string]any{
+		"id":           uuidText(project.ID),
+		"workspace_id": uuidText(project.WorkspaceID),
+		"name":         project.Name,
+	}
+}
+
+func projectPayloads(projects []db.Project) []map[string]any {
+	payloads := make([]map[string]any, 0, len(projects))
+	for _, project := range projects {
+		payloads = append(payloads, projectPayload(project))
+	}
+	return payloads
+}
+
 func attemptPayload(attempt db.Attempt) map[string]any {
 	return map[string]any{
 		"id":        uuidText(attempt.ID),
@@ -2001,7 +2136,7 @@ func isKnownCommand(name string) bool {
 
 func isRuntimeCommand(name string) bool {
 	switch name {
-	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "related", "analytics":
+	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "workspaces", "projects", "related", "analytics":
 		return true
 	default:
 		return false
@@ -2050,6 +2185,16 @@ func printCodexHelp(w io.Writer) {
 func printAnalyticsHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  forge analytics <summary|by-model|by-harness|by-status|by-agent|trends> [flags]")
+}
+
+func printWorkspacesHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge workspaces <list|create> [flags]")
+}
+
+func printProjectsHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge projects <list|create> [flags]")
 }
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {
