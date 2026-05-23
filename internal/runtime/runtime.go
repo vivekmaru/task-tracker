@@ -203,6 +203,10 @@ func (r *Runtime) SearchTickets(ctx context.Context, req services.SearchTicketsR
 	return r.Search.SearchTickets(ctx, req)
 }
 
+func (r *Runtime) RelatedWork(ctx context.Context, req services.RelatedWorkRequest) ([]services.RelatedWorkResult, error) {
+	return r.Search.RelatedWork(ctx, req)
+}
+
 func (r *Runtime) ReadyProposedTicket(ctx context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
 	return r.Tickets.ReadyProposedTicket(ctx, req)
 }
