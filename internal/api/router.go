@@ -118,6 +118,8 @@ type analyticsRuntime interface {
 	AnalyticsSummary(context.Context, services.AnalyticsFilter) (services.AnalyticsSummary, error)
 	AnalyticsByModel(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByHarness(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByStatus(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByAgent(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 }
 
 type analyticsInput struct {
@@ -200,6 +202,50 @@ func registerAnalyticsRoutes(api huma.API, rt web.Runtime) {
 		groups, err := analytics.AnalyticsByHarness(ctx, filter)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("analytics by harness failed", err)
+		}
+		out := &analyticsGroupsOutput{}
+		out.Body.Groups = groups
+		return out, nil
+	})
+	huma.Register[analyticsInput, analyticsGroupsOutput](api, huma.Operation{
+		OperationID: contracts.RESTAnalyticsByStatus,
+		Method:      http.MethodGet,
+		Path:        "/analytics/by-status",
+		Summary:     "Analytics by status",
+		Tags:        []string{"Phase 4"},
+	}, func(ctx context.Context, input *analyticsInput) (*analyticsGroupsOutput, error) {
+		if analytics == nil {
+			return nil, huma.Error501NotImplemented("route is registered; handler wiring is not implemented yet")
+		}
+		filter, err := analyticsFilter(input.WorkspaceID, input.ProjectID)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		groups, err := analytics.AnalyticsByStatus(ctx, filter)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("analytics by status failed", err)
+		}
+		out := &analyticsGroupsOutput{}
+		out.Body.Groups = groups
+		return out, nil
+	})
+	huma.Register[analyticsInput, analyticsGroupsOutput](api, huma.Operation{
+		OperationID: contracts.RESTAnalyticsByAgent,
+		Method:      http.MethodGet,
+		Path:        "/analytics/by-agent",
+		Summary:     "Analytics by agent",
+		Tags:        []string{"Phase 4"},
+	}, func(ctx context.Context, input *analyticsInput) (*analyticsGroupsOutput, error) {
+		if analytics == nil {
+			return nil, huma.Error501NotImplemented("route is registered; handler wiring is not implemented yet")
+		}
+		filter, err := analyticsFilter(input.WorkspaceID, input.ProjectID)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		groups, err := analytics.AnalyticsByAgent(ctx, filter)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("analytics by agent failed", err)
 		}
 		out := &analyticsGroupsOutput{}
 		out.Body.Groups = groups

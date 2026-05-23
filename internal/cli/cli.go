@@ -99,6 +99,8 @@ type RuntimeHandle interface {
 	AnalyticsSummary(context.Context, services.AnalyticsFilter) (services.AnalyticsSummary, error)
 	AnalyticsByModel(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByHarness(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByStatus(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByAgent(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 }
 
 type Dependencies struct {
@@ -796,6 +798,28 @@ func runAnalyticsCommand(ctx context.Context, args []string, stdout, stderr io.W
 			return writeJSON(stdout, stderr, map[string]any{"groups": groups})
 		}
 		writeAnalyticsGroups(stdout, "Harness", groups)
+		return 0
+	case "by-status":
+		groups, err := rt.AnalyticsByStatus(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(stderr, "analytics by-status error: %v\n", err)
+			return 1
+		}
+		if opts.JSON {
+			return writeJSON(stdout, stderr, map[string]any{"groups": groups})
+		}
+		writeAnalyticsGroups(stdout, "Status", groups)
+		return 0
+	case "by-agent":
+		groups, err := rt.AnalyticsByAgent(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(stderr, "analytics by-agent error: %v\n", err)
+			return 1
+		}
+		if opts.JSON {
+			return writeJSON(stdout, stderr, map[string]any{"groups": groups})
+		}
+		writeAnalyticsGroups(stdout, "Agent", groups)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown analytics command %q\n\n", subcommand)
@@ -1791,16 +1815,19 @@ func writeAnalyticsSummary(stdout io.Writer, summary services.AnalyticsSummary) 
 }
 
 func writeAnalyticsGroups(stdout io.Writer, label string, groups []services.AnalyticsGroup) {
-	fmt.Fprintf(stdout, "%s\tAttempts\tSucceeded\tCost\tTokens\tRetries\n", label)
+	fmt.Fprintf(stdout, "%s\tAttempts\tSucceeded\tFailed\tBlocked\tCost\tTokens\tDuration\tRetries\n", label)
 	for _, group := range groups {
 		fmt.Fprintf(
 			stdout,
-			"%s\t%d\t%d\t$%.6f\t%d\t%d\n",
+			"%s\t%d\t%d\t%d\t%d\t$%.6f\t%d\t%.3fs\t%d\n",
 			group.Group,
 			group.AttemptCount,
 			group.SucceededAttempts,
+			group.FailedAttempts,
+			group.BlockedAttempts,
 			group.TotalCostUSD,
 			group.TotalTokensIn+group.TotalTokensOut,
+			group.TotalDurationSeconds,
 			group.TotalRetries,
 		)
 	}
@@ -1896,7 +1923,7 @@ func printCodexHelp(w io.Writer) {
 
 func printAnalyticsHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  forge analytics <summary|by-model|by-harness> [flags]")
+	fmt.Fprintln(w, "  forge analytics <summary|by-model|by-harness|by-status|by-agent> [flags]")
 }
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {

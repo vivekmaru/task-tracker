@@ -30,6 +30,8 @@ const (
 	OperationAnalyticsSummary          = "analytics_summary"
 	OperationAnalyticsByModel          = "analytics_by_model"
 	OperationAnalyticsByHarness        = "analytics_by_harness"
+	OperationAnalyticsByStatus         = "analytics_by_status"
+	OperationAnalyticsByAgent          = "analytics_by_agent"
 
 	RESTCreateTicket       = "create-ticket"
 	RESTProposeTicket      = "propose-ticket"
@@ -53,6 +55,8 @@ const (
 	RESTAnalyticsSummary   = "analytics-summary"
 	RESTAnalyticsByModel   = "analytics-by-model"
 	RESTAnalyticsByHarness = "analytics-by-harness"
+	RESTAnalyticsByStatus  = "analytics-by-status"
+	RESTAnalyticsByAgent   = "analytics-by-agent"
 
 	CLICreateTicket    = "create"
 	CLIProposeTicket   = "propose"
@@ -537,7 +541,7 @@ var operations = []Operation{
 	{
 		Name:        OperationAnalyticsByHarness,
 		Summary:     "Analytics by harness",
-		Description: "Aggregate attempt counts, success counts, tokens, cost, duration, and retries by harness.",
+		Description: "Aggregate attempt counts, outcome counts, tokens, cost, duration, and retries by harness.",
 		Bindings: SurfaceBinding{
 			RESTOperationID: RESTAnalyticsByHarness,
 			CLICommand:      CLIAnalytics,
@@ -545,6 +549,30 @@ var operations = []Operation{
 		},
 		InputSchema:  analyticsFilterSchema("Analytics by harness input"),
 		OutputSchema: analyticsGroupSchema("Analytics by harness output"),
+	},
+	{
+		Name:        OperationAnalyticsByStatus,
+		Summary:     "Analytics by status",
+		Description: "Aggregate attempt counts, outcome counts, tokens, cost, duration, and retries by status.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTAnalyticsByStatus,
+			CLICommand:      CLIAnalytics,
+			MCPTool:         OperationAnalyticsByStatus,
+		},
+		InputSchema:  analyticsFilterSchema("Analytics by status input"),
+		OutputSchema: analyticsGroupSchema("Analytics by status output"),
+	},
+	{
+		Name:        OperationAnalyticsByAgent,
+		Summary:     "Analytics by agent",
+		Description: "Aggregate attempt counts, outcome counts, tokens, cost, duration, and retries by agent.",
+		Bindings: SurfaceBinding{
+			RESTOperationID: RESTAnalyticsByAgent,
+			CLICommand:      CLIAnalytics,
+			MCPTool:         OperationAnalyticsByAgent,
+		},
+		InputSchema:  analyticsFilterSchema("Analytics by agent input"),
+		OutputSchema: analyticsGroupSchema("Analytics by agent output"),
 	},
 }
 
@@ -694,9 +722,11 @@ func analyticsSummarySchema(title string) Schema {
 func analyticsGroupSchema(title string) Schema {
 	return objectSchema(title, []string{"groups"}, map[string]any{
 		"groups": arraySchema("Grouped analytics rows", objectSchema("Group", []string{"group", "attempt_count"}, map[string]any{
-			"group":                  stringSchema("Model or harness group"),
+			"group":                  stringSchema("Analytics group value"),
 			"attempt_count":          integerSchema("Total attempts", 0, 1<<62),
 			"succeeded_attempts":     integerSchema("Succeeded attempts", 0, 1<<62),
+			"failed_attempts":        integerSchema("Failed attempts", 0, 1<<62),
+			"blocked_attempts":       integerSchema("Blocked attempts", 0, 1<<62),
 			"total_tokens_in":        integerSchema("Input tokens", 0, 1<<62),
 			"total_tokens_out":       integerSchema("Output tokens", 0, 1<<62),
 			"total_cost_usd":         numberSchema("Total cost in USD", 0),

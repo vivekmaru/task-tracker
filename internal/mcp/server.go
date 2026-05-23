@@ -49,6 +49,8 @@ type Runtime interface {
 	AnalyticsSummary(context.Context, services.AnalyticsFilter) (services.AnalyticsSummary, error)
 	AnalyticsByModel(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByHarness(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByStatus(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
+	AnalyticsByAgent(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 }
 
 type Tool struct {
@@ -191,6 +193,8 @@ func (s *Server) registerHandlers() {
 	s.handlers[contracts.OperationAnalyticsSummary] = s.callAnalyticsSummary
 	s.handlers[contracts.OperationAnalyticsByModel] = s.callAnalyticsByModel
 	s.handlers[contracts.OperationAnalyticsByHarness] = s.callAnalyticsByHarness
+	s.handlers[contracts.OperationAnalyticsByStatus] = s.callAnalyticsByStatus
+	s.handlers[contracts.OperationAnalyticsByAgent] = s.callAnalyticsByAgent
 }
 
 func (s *Server) callCreateTicket(ctx context.Context, input json.RawMessage) (any, error) {
@@ -599,6 +603,38 @@ func (s *Server) callAnalyticsByHarness(ctx context.Context, input json.RawMessa
 		return nil, err
 	}
 	groups, err := s.runtime.AnalyticsByHarness(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"groups": groups}, nil
+}
+
+func (s *Server) callAnalyticsByStatus(ctx context.Context, input json.RawMessage) (any, error) {
+	var payload analyticsInput
+	if err := decodeInput(input, &payload); err != nil {
+		return nil, err
+	}
+	filter, err := payload.filter()
+	if err != nil {
+		return nil, err
+	}
+	groups, err := s.runtime.AnalyticsByStatus(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"groups": groups}, nil
+}
+
+func (s *Server) callAnalyticsByAgent(ctx context.Context, input json.RawMessage) (any, error) {
+	var payload analyticsInput
+	if err := decodeInput(input, &payload); err != nil {
+		return nil, err
+	}
+	filter, err := payload.filter()
+	if err != nil {
+		return nil, err
+	}
+	groups, err := s.runtime.AnalyticsByAgent(ctx, filter)
 	if err != nil {
 		return nil, err
 	}

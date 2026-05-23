@@ -1192,7 +1192,7 @@ func TestRunAnalyticsByModelWritesJSONWhenRequested(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
 		analyticsGroups: []services.AnalyticsGroup{
-			{Group: "gpt-5.4", AttemptCount: 2, SucceededAttempts: 1, TotalCostUSD: 0.12},
+			{Group: "gpt-5.4", AttemptCount: 2, SucceededAttempts: 1, FailedAttempts: 1, TotalCostUSD: 0.12},
 		},
 	}
 
@@ -1206,6 +1206,51 @@ func TestRunAnalyticsByModelWritesJSONWhenRequested(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"groups":[{"group":"gpt-5.4"`) {
 		t.Fatalf("expected analytics JSON groups, got %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"failed_attempts":1`) {
+		t.Fatalf("expected analytics JSON failed totals, got %s", stdout.String())
+	}
+}
+
+func TestRunAnalyticsByStatusAndAgentUseScopedFilters(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		analyticsGroups: []services.AnalyticsGroup{
+			{Group: "blocked", AttemptCount: 2, BlockedAttempts: 2, TotalDurationSeconds: 45.5},
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"analytics", "by-status",
+		"--workspace-id", uuidString(t, testUUID(2)),
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsCall != "status" || fake.analyticsFilter.WorkspaceID != testUUID(2) {
+		t.Fatalf("expected by-status workspace filter, got call=%q filter=%#v", fake.analyticsCall, fake.analyticsFilter)
+	}
+	if !strings.Contains(stdout.String(), "Status\tAttempts\tSucceeded\tFailed\tBlocked\tCost\tTokens\tDuration\tRetries") {
+		t.Fatalf("expected expanded analytics header, got %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = RunWithDependencies([]string{
+		"analytics", "by-agent",
+		"--project-id", uuidString(t, testUUID(3)),
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.analyticsCall != "agent" || fake.analyticsFilter.ProjectID != testUUID(3) {
+		t.Fatalf("expected by-agent project filter, got call=%q filter=%#v", fake.analyticsCall, fake.analyticsFilter)
+	}
+	if !strings.Contains(stdout.String(), `"blocked_attempts":2`) {
+		t.Fatalf("expected by-agent JSON blocked totals, got %s", stdout.String())
 	}
 }
 
@@ -1575,6 +1620,7 @@ type fakeRuntime struct {
 	removedLocalArtifactURL string
 	removeLocalArtifactErr  error
 	analyticsFilter         services.AnalyticsFilter
+	analyticsCall           string
 	analyticsSummary        services.AnalyticsSummary
 	analyticsGroups         []services.AnalyticsGroup
 }
@@ -1796,11 +1842,25 @@ func (f *fakeRuntime) AnalyticsSummary(_ context.Context, filter services.Analyt
 
 func (f *fakeRuntime) AnalyticsByModel(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
 	f.analyticsFilter = filter
+	f.analyticsCall = "model"
 	return f.analyticsGroups, nil
 }
 
 func (f *fakeRuntime) AnalyticsByHarness(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
 	f.analyticsFilter = filter
+	f.analyticsCall = "harness"
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByStatus(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	f.analyticsCall = "status"
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByAgent(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	f.analyticsCall = "agent"
 	return f.analyticsGroups, nil
 }
 

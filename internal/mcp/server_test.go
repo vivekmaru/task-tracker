@@ -621,6 +621,39 @@ func TestCallAnalyticsByModelUsesScopedFilter(t *testing.T) {
 	}
 }
 
+func TestCallAnalyticsByStatusAndAgentUseScopedFilters(t *testing.T) {
+	rt := &fakeRuntime{
+		analyticsGroups: []services.AnalyticsGroup{{Group: "blocked", AttemptCount: 2, BlockedAttempts: 2}},
+	}
+	server, err := NewServer(rt, contracts.AllOperations())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	out, err := server.Call(context.Background(), contracts.OperationAnalyticsByStatus, json.RawMessage(`{
+		"workspace_id":"00000000-0000-0000-0000-000000000001"
+	}`))
+	if err != nil {
+		t.Fatalf("call analytics_by_status: %v", err)
+	}
+	if rt.analyticsCall != "status" || rt.analyticsFilter.WorkspaceID != testUUID(1) {
+		t.Fatalf("expected status workspace filter, got call=%q filter=%#v", rt.analyticsCall, rt.analyticsFilter)
+	}
+	if !strings.Contains(string(out), `"blocked_attempts":2`) {
+		t.Fatalf("expected status group output, got %s", string(out))
+	}
+
+	_, err = server.Call(context.Background(), contracts.OperationAnalyticsByAgent, json.RawMessage(`{
+		"project_id":"00000000-0000-0000-0000-000000000002"
+	}`))
+	if err != nil {
+		t.Fatalf("call analytics_by_agent: %v", err)
+	}
+	if rt.analyticsCall != "agent" || rt.analyticsFilter.ProjectID != testUUID(2) {
+		t.Fatalf("expected agent project filter, got call=%q filter=%#v", rt.analyticsCall, rt.analyticsFilter)
+	}
+}
+
 func TestEveryContractOperationHasMCPHandler(t *testing.T) {
 	server, err := NewServer(&fakeRuntime{}, contracts.AllOperations())
 	if err != nil {
@@ -656,6 +689,7 @@ type fakeRuntime struct {
 	createFromAttemptReq    services.CreateTicketFromAttemptRequest
 	registerCapabilitiesReq services.RegisterCapabilitiesRequest
 	analyticsFilter         services.AnalyticsFilter
+	analyticsCall           string
 	analyticsSummary        services.AnalyticsSummary
 	analyticsGroups         []services.AnalyticsGroup
 }
@@ -804,11 +838,25 @@ func (f *fakeRuntime) AnalyticsSummary(_ context.Context, filter services.Analyt
 
 func (f *fakeRuntime) AnalyticsByModel(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
 	f.analyticsFilter = filter
+	f.analyticsCall = "model"
 	return f.analyticsGroups, nil
 }
 
 func (f *fakeRuntime) AnalyticsByHarness(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
 	f.analyticsFilter = filter
+	f.analyticsCall = "harness"
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByStatus(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	f.analyticsCall = "status"
+	return f.analyticsGroups, nil
+}
+
+func (f *fakeRuntime) AnalyticsByAgent(_ context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	f.analyticsFilter = filter
+	f.analyticsCall = "agent"
 	return f.analyticsGroups, nil
 }
 

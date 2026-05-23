@@ -106,6 +106,8 @@ func TestPhaseTwoOperationsExposeSurfaceParityMatrix(t *testing.T) {
 		{OperationAnalyticsSummary, RESTAnalyticsSummary, CLIAnalytics, OperationAnalyticsSummary},
 		{OperationAnalyticsByModel, RESTAnalyticsByModel, CLIAnalytics, OperationAnalyticsByModel},
 		{OperationAnalyticsByHarness, RESTAnalyticsByHarness, CLIAnalytics, OperationAnalyticsByHarness},
+		{OperationAnalyticsByStatus, RESTAnalyticsByStatus, CLIAnalytics, OperationAnalyticsByStatus},
+		{OperationAnalyticsByAgent, RESTAnalyticsByAgent, CLIAnalytics, OperationAnalyticsByAgent},
 	}
 
 	if len(cases) != len(AllOperations()) {

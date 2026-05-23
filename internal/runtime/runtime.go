@@ -325,6 +325,14 @@ func (r *Runtime) AnalyticsByHarness(ctx context.Context, filter services.Analyt
 	return r.Analytics.ByHarness(ctx, filter)
 }
 
+func (r *Runtime) AnalyticsByStatus(ctx context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	return r.Analytics.ByStatus(ctx, filter)
+}
+
+func (r *Runtime) AnalyticsByAgent(ctx context.Context, filter services.AnalyticsFilter) ([]services.AnalyticsGroup, error) {
+	return r.Analytics.ByAgent(ctx, filter)
+}
+
 func (r *Runtime) ListCapabilities(ctx context.Context, req services.ListCapabilitiesRequest) ([]db.AgentCapability, error) {
 	return r.Capabilities.List(ctx, req)
 }
