@@ -64,11 +64,138 @@ func (q *Queries) CreateTicketEvent(ctx context.Context, arg CreateTicketEventPa
 	return i, err
 }
 
+const listRecentTicketEvents = `-- name: ListRecentTicketEvents :many
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, actor_type, actor_id, data, created_at
+FROM (
+    SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, actor_type, actor_id, data, created_at
+    FROM ticket_events
+    WHERE ($1::uuid IS NULL OR workspace_id = $1::uuid)
+      AND ($2::uuid IS NULL OR project_id = $2::uuid)
+      AND ($3::uuid IS NULL OR ticket_id = $3::uuid)
+      AND ($4::uuid IS NULL OR attempt_id = $4::uuid)
+    ORDER BY created_at DESC, id DESC
+    LIMIT $5::integer
+) recent
+ORDER BY created_at ASC, id ASC
+`
+
+type ListRecentTicketEventsParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
+	TicketID    pgtype.UUID `db:"ticket_id" json:"ticket_id"`
+	AttemptID   pgtype.UUID `db:"attempt_id" json:"attempt_id"`
+	LimitCount  int32       `db:"limit_count" json:"limit_count"`
+}
+
+func (q *Queries) ListRecentTicketEvents(ctx context.Context, arg ListRecentTicketEventsParams) ([]TicketEvent, error) {
+	rows, err := q.db.Query(ctx, listRecentTicketEvents,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.TicketID,
+		arg.AttemptID,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TicketEvent{}
+	for rows.Next() {
+		var i TicketEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.TicketID,
+			&i.AttemptID,
+			&i.Type,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Data,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTicketEventsAfterCursor = `-- name: ListTicketEventsAfterCursor :many
+SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, actor_type, actor_id, data, created_at
+FROM ticket_events
+WHERE ($1::uuid IS NULL OR workspace_id = $1::uuid)
+  AND ($2::uuid IS NULL OR project_id = $2::uuid)
+  AND ($3::uuid IS NULL OR ticket_id = $3::uuid)
+  AND ($4::uuid IS NULL OR attempt_id = $4::uuid)
+  AND (
+      created_at > $5::timestamptz
+      OR (
+          created_at = $5::timestamptz
+          AND id > $6::uuid
+      )
+  )
+ORDER BY created_at ASC, id ASC
+LIMIT $7::integer
+`
+
+type ListTicketEventsAfterCursorParams struct {
+	WorkspaceID    pgtype.UUID        `db:"workspace_id" json:"workspace_id"`
+	ProjectID      pgtype.UUID        `db:"project_id" json:"project_id"`
+	TicketID       pgtype.UUID        `db:"ticket_id" json:"ticket_id"`
+	AttemptID      pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	AfterCreatedAt pgtype.Timestamptz `db:"after_created_at" json:"after_created_at"`
+	AfterID        pgtype.UUID        `db:"after_id" json:"after_id"`
+	LimitCount     int32              `db:"limit_count" json:"limit_count"`
+}
+
+func (q *Queries) ListTicketEventsAfterCursor(ctx context.Context, arg ListTicketEventsAfterCursorParams) ([]TicketEvent, error) {
+	rows, err := q.db.Query(ctx, listTicketEventsAfterCursor,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.TicketID,
+		arg.AttemptID,
+		arg.AfterCreatedAt,
+		arg.AfterID,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TicketEvent{}
+	for rows.Next() {
+		var i TicketEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.TicketID,
+			&i.AttemptID,
+			&i.Type,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Data,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTicketEventsByTicket = `-- name: ListTicketEventsByTicket :many
 SELECT id, workspace_id, project_id, ticket_id, attempt_id, type, actor_type, actor_id, data, created_at
 FROM ticket_events
 WHERE ticket_id = $1
-ORDER BY created_at ASC
+ORDER BY created_at ASC, id ASC
 `
 
 func (q *Queries) ListTicketEventsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]TicketEvent, error) {

@@ -30,6 +30,7 @@ type Runtime struct {
 	LocalStore    *storage.LocalStore
 	S3Store       *storage.S3Store
 	ArtifactStore storage.Store
+	Events        *services.EventService
 	Search        *services.SearchService
 	Capabilities  *services.CapabilityService
 	Analytics     *services.AnalyticsService
@@ -97,6 +98,7 @@ func NewWithConfig(ctx context.Context, queries *db.Queries, cfg config.Config) 
 		LocalStore:    localStore,
 		S3Store:       s3Store,
 		ArtifactStore: artifactStore,
+		Events:        services.NewEventService(queries),
 		Search:        services.NewSearchService(queries),
 		Capabilities:  services.NewCapabilityService(queries),
 		Analytics:     services.NewAnalyticsService(queries),
@@ -245,6 +247,10 @@ func (r *Runtime) ListAttemptCheckpointsByTicket(ctx context.Context, ticketID p
 
 func (r *Runtime) ListTicketEventsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.TicketEvent, error) {
 	return r.Queries.ListTicketEventsByTicket(ctx, ticketID)
+}
+
+func (r *Runtime) ListEvents(ctx context.Context, req services.ListEventsRequest) (services.ListEventsResult, error) {
+	return r.Events.ListEvents(ctx, req)
 }
 
 func (r *Runtime) RegisterArtifact(ctx context.Context, req services.RegisterArtifactRequest) (db.Artifact, error) {
