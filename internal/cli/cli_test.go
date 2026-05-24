@@ -550,6 +550,92 @@ func TestRunListAcceptsWorkspaceProjectAliases(t *testing.T) {
 	}
 }
 
+func TestRunProposedListReturnsSourceContext(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		proposedItems: []services.ProposedTicketTriageItem{{
+			Ticket: db.Ticket{
+				ID:          testUUID(8),
+				WorkspaceID: testUUID(2),
+				ProjectID:   testUUID(3),
+				Title:       "Handle empty checkpoint command lists",
+				Type:        services.TicketTypeBug,
+				Status:      services.TicketStatusBacklog,
+				Priority:    2,
+				CreatedBy:   services.ActorAgent,
+			},
+			SourceAttemptID:      testUUID(5),
+			CreatedByID:          "codex",
+			CreationReason:       "Discovered during dogfood",
+			AcceptanceCriteria:   []string{"Regression is covered"},
+			VerificationCommands: []string{"go test ./internal/services"},
+			RelevantPaths:        []string{"internal/services/attempts.go"},
+		}},
+	}
+
+	code := RunWithDependencies([]string{
+		"proposed", "list",
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
+		"--type", services.TicketTypeBug,
+		"--limit", "25",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.listProposedReq.WorkspaceID != testUUID(2) || fake.listProposedReq.ProjectID != testUUID(3) {
+		t.Fatalf("expected proposed list scope, got %#v", fake.listProposedReq)
+	}
+	if fake.listProposedReq.Type != services.TicketTypeBug || fake.listProposedReq.Limit != 25 {
+		t.Fatalf("expected proposed list filters, got %#v", fake.listProposedReq)
+	}
+	if !strings.Contains(stdout.String(), `"source_attempt_id":"`+uuidString(t, testUUID(5))+`"`) {
+		t.Fatalf("expected source attempt in proposed JSON, got %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"creation_reason":"Discovered during dogfood"`) {
+		t.Fatalf("expected creation reason in proposed JSON, got %s", stdout.String())
+	}
+}
+
+func TestRunProposedReadyMarksTicketReady(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		readyProposedTicket: db.Ticket{
+			ID:          testUUID(8),
+			WorkspaceID: testUUID(2),
+			ProjectID:   testUUID(3),
+			Title:       "Handle empty checkpoint command lists",
+			Type:        services.TicketTypeBug,
+			Status:      services.TicketStatusTodo,
+			CreatedBy:   services.ActorAgent,
+		},
+	}
+
+	code := RunWithDependencies([]string{
+		"proposed", "ready",
+		uuidString(t, testUUID(8)),
+		"--actor-type", services.ActorAgent,
+		"--actor-id", "codex",
+		"--reason", "verified and ready to claim",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.readyProposedReq.TicketID != testUUID(8) {
+		t.Fatalf("expected ready proposed ticket id, got %#v", fake.readyProposedReq)
+	}
+	if fake.readyProposedReq.ActorType != services.ActorAgent || fake.readyProposedReq.ActorID != "codex" {
+		t.Fatalf("expected ready proposed actor context, got %#v", fake.readyProposedReq)
+	}
+	if !strings.Contains(stdout.String(), `"status":"todo"`) {
+		t.Fatalf("expected ready ticket JSON, got %s", stdout.String())
+	}
+}
+
 func TestRunWorkspacesCreateAndListJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -2194,6 +2280,10 @@ type fakeRuntime struct {
 	removedLocalArtifactURL string
 	removeLocalArtifactErr  error
 	listReq                 services.ListTicketsRequest
+	listProposedReq         services.ListProposedTicketsRequest
+	proposedItems           []services.ProposedTicketTriageItem
+	readyProposedReq        services.ProposedTicketTriageRequest
+	readyProposedTicket     db.Ticket
 	recommendationReq       services.RecommendationRequest
 	recommendationResults   []services.RecommendationResult
 	relatedReq              services.RelatedWorkRequest
@@ -2338,6 +2428,16 @@ func (f *fakeRuntime) Cancel(context.Context, services.CancelAttemptRequest) (se
 func (f *fakeRuntime) ListTickets(_ context.Context, req services.ListTicketsRequest) ([]db.Ticket, error) {
 	f.listReq = req
 	return nil, nil
+}
+
+func (f *fakeRuntime) ListProposedTickets(_ context.Context, req services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error) {
+	f.listProposedReq = req
+	return f.proposedItems, nil
+}
+
+func (f *fakeRuntime) ReadyProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.readyProposedReq = req
+	return f.readyProposedTicket, nil
 }
 
 func (f *fakeRuntime) SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error) {
