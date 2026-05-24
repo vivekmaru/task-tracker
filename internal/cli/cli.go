@@ -529,10 +529,15 @@ func runGetCommand(ctx context.Context, args []string, stdout, stderr io.Writer,
 }
 
 func runRecommendationsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	return runRecommendationsCommandWithDefaultHarness(ctx, args, stdout, stderr, deps, "")
+}
+
+func runRecommendationsCommandWithDefaultHarness(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies, defaultHarness string) int {
 	flags := newFlagSet("recommendations", stderr)
 	var opts commandOptions
 	opts.bind(flags)
-	var workspaceID, projectID, ticketType, harness string
+	var workspaceID, projectID, ticketType string
+	harness := defaultHarness
 	var tags, capabilities stringList
 	var offset, limit int
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
@@ -541,7 +546,7 @@ func runRecommendationsCommand(ctx context.Context, args []string, stdout, stder
 	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&ticketType, "type", "", "ticket type filter")
 	flags.Var(&tags, "tag", "ticket tag filter")
-	flags.StringVar(&harness, "harness", "", "agent harness")
+	flags.StringVar(&harness, "harness", defaultHarness, "agent harness")
 	flags.Var(&capabilities, "capability", "agent capability")
 	flags.IntVar(&offset, "offset", 0, "offset")
 	flags.IntVar(&limit, "limit", 25, "limit")
@@ -1212,6 +1217,8 @@ func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return runCodexCompleteCommand(ctx, args[1:], stdout, stderr, deps)
 	case "follow-up", "propose":
 		return runCodexFollowUpCommand(ctx, subcommand, args[1:], stdout, stderr, deps)
+	case "recommendations":
+		return runRecommendationsCommandWithDefaultHarness(ctx, args[1:], stdout, stderr, deps, "codex")
 	case "block":
 		return runCodexBlockCommand(ctx, args[1:], stdout, stderr, deps)
 	default:
@@ -2520,6 +2527,7 @@ func printCodexHelp(w io.Writer) {
 	fmt.Fprintln(w, "  complete    Complete an attempt and attach proof artifacts")
 	fmt.Fprintln(w, "  follow-up   Create structured follow-up from an attempt")
 	fmt.Fprintln(w, "  propose     Alias for follow-up using attempt-derived scope")
+	fmt.Fprintln(w, "  recommendations Recommend Codex-ready tickets to pick next")
 	fmt.Fprintln(w, "  block       Mark an attempt blocked with captured context")
 }
 
@@ -2545,7 +2553,7 @@ func printProposedHelp(w io.Writer) {
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {
 	switch name {
-	case "claim", "checkpoint", "complete", "follow-up", "propose", "block":
+	case "claim", "checkpoint", "complete", "follow-up", "propose", "recommendations", "block":
 		fmt.Fprintf(w, "Usage:\n  forge codex %s [flags]\n", name)
 		return true
 	default:
