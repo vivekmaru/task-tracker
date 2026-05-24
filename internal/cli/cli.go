@@ -686,6 +686,7 @@ func runProjectsCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	opts.bind(flags)
 	var workspaceID, name string
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&name, "name", "", "project name")
 	if !parseFlags(flags, args[1:]) {
 		return 2
@@ -941,7 +942,9 @@ func runAttachCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	var workspaceID, projectID, ticketID, attemptID, artifactType, role, name, url, storageBackend, mimeType string
 	var sizeBytes int64
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&ticketID, "ticket-id", "", "ticket id")
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&artifactType, "type", "", "artifact type")
@@ -1301,7 +1304,9 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 	var workspaceID, projectID, attemptID, artifactID, kind, title, description, reason string
 	var acceptance, verify, paths, tags stringList
 	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
 	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
 	flags.StringVar(&attemptID, "attempt-id", "", "source attempt id")
 	flags.StringVar(&artifactID, "artifact-id", "", "source artifact id")
 	flags.StringVar(&kind, "type", services.TemplateFollowUp, "ticket template/type")
@@ -1450,7 +1455,9 @@ type codexProofArtifactBundle struct {
 
 func (f *codexProofFlags) bind(flags *flag.FlagSet) {
 	flags.StringVar(&f.WorkspaceID, "workspace-id", "", "workspace id for proof artifacts")
+	flags.StringVar(&f.WorkspaceID, "workspace", "", "workspace id for proof artifacts")
 	flags.StringVar(&f.ProjectID, "project-id", "", "project id for proof artifacts")
+	flags.StringVar(&f.ProjectID, "project", "", "project id for proof artifacts")
 	flags.Var(&f.Proofs, "proof", "proof artifact URL or local reference")
 	flags.StringVar(&f.ProofType, "proof-type", services.ArtifactTypeOther, "proof artifact type")
 	flags.StringVar(&f.ProofRole, "proof-role", services.ArtifactRoleEvidence, "proof artifact role")
@@ -1639,12 +1646,12 @@ func parseProcessOptions(name string, args []string, stderr io.Writer) (processO
 				fmt.Fprintln(stderr, "--config requires a path")
 				return processOptions{}, false
 			}
-		case arg == "--workspace-id":
+		case arg == "--workspace-id", arg == "--workspace":
 			if name != "tui" {
 				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
 				return processOptions{}, false
 			}
-			value, ok := nextProcessFlagValue(args, &i, stderr, "--workspace-id")
+			value, ok := nextProcessFlagValue(args, &i, stderr, arg)
 			if !ok {
 				return processOptions{}, false
 			}
@@ -1655,12 +1662,18 @@ func parseProcessOptions(name string, args []string, stderr io.Writer) (processO
 				return processOptions{}, false
 			}
 			opts.TUIWorkspaceID = strings.TrimPrefix(arg, "--workspace-id=")
-		case arg == "--project-id":
+		case strings.HasPrefix(arg, "--workspace="):
 			if name != "tui" {
 				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
 				return processOptions{}, false
 			}
-			value, ok := nextProcessFlagValue(args, &i, stderr, "--project-id")
+			opts.TUIWorkspaceID = strings.TrimPrefix(arg, "--workspace=")
+		case arg == "--project-id", arg == "--project":
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
+			value, ok := nextProcessFlagValue(args, &i, stderr, arg)
 			if !ok {
 				return processOptions{}, false
 			}
@@ -1671,6 +1684,12 @@ func parseProcessOptions(name string, args []string, stderr io.Writer) (processO
 				return processOptions{}, false
 			}
 			opts.TUIProjectID = strings.TrimPrefix(arg, "--project-id=")
+		case strings.HasPrefix(arg, "--project="):
+			if name != "tui" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
+			opts.TUIProjectID = strings.TrimPrefix(arg, "--project=")
 		case arg == "--status":
 			if name != "tui" {
 				fmt.Fprintf(stderr, "unknown flag %q\n", arg)

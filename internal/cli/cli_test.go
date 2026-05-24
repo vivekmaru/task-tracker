@@ -307,8 +307,8 @@ func TestRunTUILoadsRuntimeAndDelegatesQueueOptions(t *testing.T) {
 	code := RunWithDependencies([]string{
 		"tui",
 		"--config", path,
-		"--workspace-id", uuidString(t, testUUID(2)),
-		"--project-id", uuidString(t, testUUID(3)),
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
 		"--status", services.TicketStatusTodo,
 		"--type", services.TicketTypeBug,
 		"--limit", "25",
@@ -601,7 +601,7 @@ func TestRunProjectsCreateAndListJSON(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"projects", "create",
-		"--workspace-id", uuidString(t, testUUID(2)),
+		"--workspace", uuidString(t, testUUID(2)),
 		"--name", " Forge ",
 		"--json",
 	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
@@ -620,7 +620,7 @@ func TestRunProjectsCreateAndListJSON(t *testing.T) {
 	stderr.Reset()
 	code = RunWithDependencies([]string{
 		"projects", "list",
-		"--workspace-id", uuidString(t, testUUID(2)),
+		"--workspace", uuidString(t, testUUID(2)),
 		"--json",
 	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
 
@@ -792,8 +792,8 @@ func TestRunAttachRegistersArtifactJSON(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"attach",
-		"--workspace-id", uuidString(t, testUUID(2)),
-		"--project-id", uuidString(t, testUUID(3)),
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
 		"--ticket-id", uuidString(t, testUUID(4)),
 		"--attempt-id", uuidString(t, testUUID(5)),
 		"--type", services.ArtifactTypeTestOutput,
@@ -982,8 +982,8 @@ func TestRunCodexCompleteRegistersProofArtifacts(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"codex", "complete",
-		"--workspace-id", uuidString(t, testUUID(2)),
-		"--project-id", uuidString(t, testUUID(3)),
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
 		"--attempt-id", uuidString(t, testUUID(5)),
 		"--summary", "Implemented and verified",
 		"--proof", "local://cli-test.log",
@@ -1081,8 +1081,8 @@ func TestRunCodexFollowUpRejectsSourceAttemptScopeMismatch(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"codex", "follow-up",
-		"--workspace-id", uuidString(t, testUUID(2)),
-		"--project-id", uuidString(t, testUUID(10)),
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(10)),
 		"--attempt-id", uuidString(t, testUUID(5)),
 		"--title", "Fix follow-up",
 		"--description", "Observed while completing another task",
@@ -1257,8 +1257,8 @@ func TestRunCodexBlockCapturesProofs(t *testing.T) {
 
 	code := RunWithDependencies([]string{
 		"codex", "block",
-		"--workspace-id", uuidString(t, testUUID(2)),
-		"--project-id", uuidString(t, testUUID(3)),
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
 		"--attempt-id", uuidString(t, testUUID(5)),
 		"--reason", "Waiting for API credentials",
 		"--category", "external_dependency",
