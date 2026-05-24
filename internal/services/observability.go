@@ -112,11 +112,11 @@ func BuildObservabilityPayload(input ObservabilityPayloadInput) (ObservabilityPa
 
 func BuildObservabilityPayloadFromWebhookDelivery(delivery db.ClaimPendingWebhookDeliveriesRow) (ObservabilityPayload, error) {
 	var raw struct {
-		EventType  string          `json:"event_type"`
-		ActorType  string          `json:"actor_type"`
-		ActorID    *string         `json:"actor_id"`
-		Data       json.RawMessage `json:"data"`
-		OccurredAt time.Time       `json:"created_at"`
+		EventType  string                       `json:"event_type"`
+		ActorType  string                       `json:"actor_type"`
+		ActorID    *string                      `json:"actor_id"`
+		Data       json.RawMessage              `json:"data"`
+		OccurredAt time.Time                    `json:"created_at"`
 		Attempt    *ObservabilityAttempt        `json:"attempt"`
 		Metrics    *ObservabilityAttemptMetrics `json:"metrics"`
 	}
