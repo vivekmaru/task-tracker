@@ -1106,8 +1106,8 @@ func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return runCodexCheckpointCommand(ctx, args[1:], stdout, stderr, deps)
 	case "complete":
 		return runCodexCompleteCommand(ctx, args[1:], stdout, stderr, deps)
-	case "follow-up":
-		return runCodexFollowUpCommand(ctx, args[1:], stdout, stderr, deps)
+	case "follow-up", "propose":
+		return runCodexFollowUpCommand(ctx, subcommand, args[1:], stdout, stderr, deps)
 	case "block":
 		return runCodexBlockCommand(ctx, args[1:], stdout, stderr, deps)
 	default:
@@ -1297,8 +1297,9 @@ func runCodexCompleteCommand(ctx context.Context, args []string, stdout, stderr 
 	})
 }
 
-func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
-	flags := newFlagSet("codex follow-up", stderr)
+func runCodexFollowUpCommand(ctx context.Context, commandName string, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	label := "codex " + commandName
+	flags := newFlagSet(label, stderr)
 	var opts commandOptions
 	opts.bind(flags)
 	var workspaceID, projectID, attemptID, artifactID, kind, title, description, reason string
@@ -1322,12 +1323,12 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 	}
 	sourceAttemptID, err := requiredUUIDFlag("--attempt-id", attemptID)
 	if err != nil {
-		fmt.Fprintf(stderr, "codex follow-up argument error: %v\n", err)
+		fmt.Fprintf(stderr, "%s argument error: %v\n", label, err)
 		return 2
 	}
 	sourceArtifactID, err := optionalUUID(artifactID)
 	if err != nil {
-		fmt.Fprintf(stderr, "codex follow-up argument error: --artifact-id must be a UUID: %v\n", err)
+		fmt.Fprintf(stderr, "%s argument error: --artifact-id must be a UUID: %v\n", label, err)
 		return 2
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
@@ -1337,11 +1338,11 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 	defer rt.Close()
 	sourceAttempt, err := rt.GetAttempt(ctx, sourceAttemptID)
 	if err != nil {
-		fmt.Fprintf(stderr, "codex follow-up source attempt error: %v\n", err)
+		fmt.Fprintf(stderr, "%s source attempt error: %v\n", label, err)
 		return 1
 	}
 	if err := validateOptionalScopeFlags(workspaceID, projectID, sourceAttempt.WorkspaceID, sourceAttempt.ProjectID); err != nil {
-		fmt.Fprintf(stderr, "codex follow-up argument error: %v\n", err)
+		fmt.Fprintf(stderr, "%s argument error: %v\n", label, err)
 		return 2
 	}
 	ticket, err := rt.CreateTicketFromAttempt(ctx, services.CreateTicketFromAttemptRequest{
@@ -1360,7 +1361,7 @@ func runCodexFollowUpCommand(ctx context.Context, args []string, stdout, stderr 
 		CreationReason:       reason,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "codex follow-up error: %v\n", err)
+		fmt.Fprintf(stderr, "%s error: %v\n", label, err)
 		return 1
 	}
 	return writeJSON(stdout, stderr, map[string]any{"ticket": ticketPayload(ticket)})
@@ -2398,6 +2399,7 @@ func printCodexHelp(w io.Writer) {
 	fmt.Fprintln(w, "  checkpoint  Record resumable progress")
 	fmt.Fprintln(w, "  complete    Complete an attempt and attach proof artifacts")
 	fmt.Fprintln(w, "  follow-up   Create structured follow-up from an attempt")
+	fmt.Fprintln(w, "  propose     Alias for follow-up using attempt-derived scope")
 	fmt.Fprintln(w, "  block       Mark an attempt blocked with captured context")
 }
 
@@ -2418,7 +2420,7 @@ func printProjectsHelp(w io.Writer) {
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {
 	switch name {
-	case "claim", "checkpoint", "complete", "follow-up", "block":
+	case "claim", "checkpoint", "complete", "follow-up", "propose", "block":
 		fmt.Fprintf(w, "Usage:\n  forge codex %s [flags]\n", name)
 		return true
 	default:
