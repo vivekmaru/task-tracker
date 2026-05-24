@@ -91,6 +91,37 @@ func TestCheckpointAttemptRecordsProgress(t *testing.T) {
 	}
 }
 
+func TestCheckpointAttemptPreservesEmptyCommandLists(t *testing.T) {
+	attemptID := testUUID(22)
+	store := &fakeAttemptStore{
+		checkpoint: db.CheckpointAttemptRow{
+			ID:        testUUID(23),
+			AttemptID: attemptID,
+			Summary:   "Progress without commands",
+		},
+	}
+	service := NewAttemptService(store)
+
+	if _, err := service.Checkpoint(context.Background(), CheckpointRequest{
+		AttemptID:       attemptID,
+		Summary:         "Progress without commands",
+		ProgressPercent: 40,
+	}); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+
+	params := store.checkpointParams[0]
+	if params.FilesTouched == nil {
+		t.Fatalf("expected empty files_touched slice instead of nil")
+	}
+	if params.CommandsRun == nil {
+		t.Fatalf("expected empty commands_run slice instead of nil")
+	}
+	if len(params.FilesTouched) != 0 || len(params.CommandsRun) != 0 {
+		t.Fatalf("expected compacted empty slices, got files=%#v commands=%#v", params.FilesTouched, params.CommandsRun)
+	}
+}
+
 func TestCompleteAttemptRecordsMetricsWhenProvided(t *testing.T) {
 	attemptID := testUUID(25)
 	workspaceID := testUUID(1)

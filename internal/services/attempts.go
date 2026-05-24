@@ -356,8 +356,8 @@ func trimCheckpointRequest(req CheckpointRequest) CheckpointRequest {
 	req.Summary = strings.TrimSpace(req.Summary)
 	req.NextStep = strings.TrimSpace(req.NextStep)
 	req.Risk = strings.TrimSpace(req.Risk)
-	req.FilesTouched = compactStrings(req.FilesTouched)
-	req.CommandsRun = compactStrings(req.CommandsRun)
+	req.FilesTouched = compactStringsPreserveEmpty(req.FilesTouched)
+	req.CommandsRun = compactStringsPreserveEmpty(req.CommandsRun)
 	return req
 }
 
