@@ -111,7 +111,7 @@ forge codex block "$attempt_id" \
 Create a proposed follow-up from the current attempt:
 
 ```bash
-forge codex follow-up \
+forge codex propose \
   --attempt-id "$attempt_id" \
   --type bug \
   --title "Handle empty webhook retry payload" \

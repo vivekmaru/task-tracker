@@ -1073,6 +1073,38 @@ func TestRunCodexFollowUpCreatesTicketFromAttempt(t *testing.T) {
 	}
 }
 
+func TestRunCodexProposeAliasesFollowUp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		attempt:                 db.Attempt{ID: testUUID(5), WorkspaceID: testUUID(9), ProjectID: testUUID(10), TicketID: testUUID(4)},
+		createFromAttemptTicket: db.Ticket{ID: testUUID(8), Title: "Fix follow-up", Type: services.TicketTypeBug, Status: services.TicketStatusBacklog},
+	}
+
+	code := RunWithDependencies([]string{
+		"codex", "propose",
+		"--attempt-id", uuidString(t, testUUID(5)),
+		"--title", "Fix follow-up",
+		"--description", "Observed while completing another task",
+		"--type", services.TemplateBug,
+		"--acceptance", "Regression is covered",
+		"--verify", "go test ./...",
+		"--reason", "Codex discovered this while testing",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.createFromAttemptReq.TemplateKind != services.TemplateBug {
+		t.Fatalf("unexpected proposed follow-up request: %#v", fake.createFromAttemptReq)
+	}
+	if fake.createFromAttemptReq.WorkspaceID != fake.attempt.WorkspaceID || fake.createFromAttemptReq.ProjectID != fake.attempt.ProjectID {
+		t.Fatalf("expected proposed follow-up scope to come from source attempt, got %#v", fake.createFromAttemptReq)
+	}
+	if !strings.Contains(stdout.String(), `"title":"Fix follow-up"`) {
+		t.Fatalf("expected ticket JSON, got %s", stdout.String())
+	}
+}
+
 func TestRunCodexFollowUpRejectsSourceAttemptScopeMismatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -1889,7 +1921,7 @@ func TestRunCodexSubcommandHelpSucceeds(t *testing.T) {
 }
 
 func TestDocumentedCodexHarnessCommandsExposeHelp(t *testing.T) {
-	for _, command := range []string{"claim", "checkpoint", "complete", "follow-up", "block"} {
+	for _, command := range []string{"claim", "checkpoint", "complete", "follow-up", "propose", "block"} {
 		t.Run(command, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			opened := false
