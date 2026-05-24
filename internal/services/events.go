@@ -82,10 +82,10 @@ func (s *EventService) ListEvents(ctx context.Context, req ListEventsRequest) (L
 			return ListEventsResult{}, ValidationError{Problems: []string{"cursor is invalid"}}
 		}
 		events, err = s.store.ListTicketEventsAfterCursor(ctx, db.ListTicketEventsAfterCursorParams{
-			WorkspaceID:    req.WorkspaceID,
-			ProjectID:      req.ProjectID,
-			TicketID:       req.TicketID,
-			AttemptID:      req.AttemptID,
+			WorkspaceID:        req.WorkspaceID,
+			ProjectID:          req.ProjectID,
+			TicketID:           req.TicketID,
+			AttemptID:          req.AttemptID,
 			AfterEventSequence: cursor.EventSequence,
 			LimitCount:         limit,
 		})
