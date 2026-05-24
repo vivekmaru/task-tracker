@@ -41,6 +41,18 @@ forge recommendations \
   --limit 5
 ```
 
+Codex can use the scoped shortcut, which defaults the harness filter to
+`codex`:
+
+```bash
+forge codex recommendations \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID" \
+  --capability codegen \
+  --capability tests \
+  --limit 5
+```
+
 ## Codex
 
 Codex has thin convenience commands that set `harness=codex` and use attempt-derived scope for proof and follow-up work.

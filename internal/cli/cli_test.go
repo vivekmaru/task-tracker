@@ -2007,7 +2007,7 @@ func TestRunCodexSubcommandHelpSucceeds(t *testing.T) {
 }
 
 func TestDocumentedCodexHarnessCommandsExposeHelp(t *testing.T) {
-	for _, command := range []string{"claim", "checkpoint", "complete", "follow-up", "propose", "block"} {
+	for _, command := range []string{"claim", "checkpoint", "complete", "follow-up", "propose", "recommendations", "block"} {
 		t.Run(command, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			opened := false
@@ -2220,6 +2220,52 @@ func TestRunRecommendationsReturnsRankedTickets(t *testing.T) {
 	}
 	if got := payload.Recommendations[0].Reasons; len(got) != 3 || got[2] != "agent_created" {
 		t.Fatalf("unexpected reasons: %#v", got)
+	}
+}
+
+func TestRunCodexRecommendationsDefaultsHarness(t *testing.T) {
+	fake := &fakeRuntime{
+		recommendationResults: []services.RecommendationResult{
+			{
+				Ticket: db.Ticket{
+					ID:          testUUID(6),
+					WorkspaceID: testUUID(2),
+					ProjectID:   testUUID(3),
+					Title:       "Harden proof upload",
+					Type:        services.TicketTypeBug,
+					Status:      services.TicketStatusTodo,
+					Priority:    1,
+					CreatedBy:   services.ActorAgent,
+				},
+				Score:   119,
+				Reasons: []string{"priority:1", "has_verification_commands", "agent_created"},
+			},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"codex", "recommendations",
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
+		"--capability", "codegen",
+		"--limit", "5",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.recommendationReq.Harness != "codex" {
+		t.Fatalf("expected codex harness default, got %#v", fake.recommendationReq)
+	}
+	if fake.recommendationReq.WorkspaceID != testUUID(2) || fake.recommendationReq.ProjectID != testUUID(3) {
+		t.Fatalf("unexpected recommendation scope: %#v", fake.recommendationReq)
+	}
+	if fake.recommendationReq.Limit != 5 {
+		t.Fatalf("expected limit to be forwarded, got %#v", fake.recommendationReq)
+	}
+	if !strings.Contains(stdout.String(), `"recommendations":[`) {
+		t.Fatalf("expected recommendations JSON, got %s", stdout.String())
 	}
 }
 
