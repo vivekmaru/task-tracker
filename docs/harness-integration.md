@@ -122,6 +122,13 @@ forge codex propose \
   --reason "Codex discovered adjacent failing input while completing another ticket"
 ```
 
+Inspect and approve proposed work for a later claim:
+
+```bash
+forge proposed list --workspace "$workspace_id" --project "$project_id" --json
+forge proposed ready "$ticket_id" --actor-type agent --actor-id codex --reason "Verified scope is worth a follow-up"
+```
+
 ## Claude Code
 
 Claude Code can use the generic JSON CLI surface directly. Use `harness=claude-code` so eligibility, metrics, and later history can distinguish it from Codex.

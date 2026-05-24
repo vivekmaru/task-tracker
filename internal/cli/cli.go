@@ -54,6 +54,7 @@ var commands = []command{
 	{"get", "Show a ticket or attempt."},
 	{"workspaces", "List or create workspaces."},
 	{"projects", "List or create projects."},
+	{"proposed", "List and triage proposed work."},
 	{"recommendations", "Recommend the best claimable tickets to pick next."},
 	{"related", "Find historical tickets related to a ticket."},
 	{"analytics", "Show basic attempt metrics and analytics."},
@@ -82,6 +83,8 @@ type RuntimeHandle interface {
 	BlockWithArtifacts(context.Context, services.BlockAttemptRequest, []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error)
 	Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error)
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
+	ListProposedTickets(context.Context, services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error)
+	ReadyProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
 	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
 	RecommendTickets(context.Context, services.RecommendationRequest) ([]services.RecommendationResult, error)
 	RelatedWork(context.Context, services.RelatedWorkRequest) ([]services.RelatedWorkResult, error)
@@ -190,6 +193,8 @@ func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, dep
 		return runWorkspacesCommand(ctx, args, stdout, stderr, deps)
 	case "projects":
 		return runProjectsCommand(ctx, args, stdout, stderr, deps)
+	case "proposed":
+		return runProposedCommand(ctx, args, stdout, stderr, deps)
 	case "recommendations":
 		return runRecommendationsCommand(ctx, args, stdout, stderr, deps)
 	case "related":
@@ -728,6 +733,105 @@ func runProjectsCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		return writeJSON(stdout, stderr, projectPayload(project))
 	}
 	return 1
+}
+
+func runProposedCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printProposedHelp(stdout)
+		return 0
+	}
+	subcommand := args[0]
+	switch subcommand {
+	case "list":
+		return runProposedListCommand(ctx, args[1:], stdout, stderr, deps)
+	case "ready":
+		return runProposedReadyCommand(ctx, args[1:], stdout, stderr, deps)
+	default:
+		fmt.Fprintf(stderr, "unknown proposed command %q\n\n", subcommand)
+		printProposedHelp(stderr)
+		return 2
+	}
+}
+
+func runProposedListCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("proposed list", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, ticketType string
+	var offset, limit int
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
+	flags.StringVar(&ticketType, "type", "", "type filter")
+	flags.IntVar(&offset, "offset", 0, "offset")
+	flags.IntVar(&limit, "limit", 50, "limit")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	items, err := rt.ListProposedTickets(ctx, services.ListProposedTicketsRequest{
+		WorkspaceID: mustUUID(workspaceID),
+		ProjectID:   mustUUID(projectID),
+		Type:        ticketType,
+		Offset:      int32(offset),
+		Limit:       int32(limit),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "proposed list error: %v\n", err)
+		return 1
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, proposedTicketPayload(item))
+	}
+	return writeJSON(stdout, stderr, map[string]any{"proposed": out})
+}
+
+func runProposedReadyCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("proposed ready", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var ticketID, actorType, actorID, reason string
+	flags.StringVar(&ticketID, "ticket-id", "", "proposed ticket id")
+	flags.StringVar(&actorType, "actor-type", services.ActorHuman, "actor type")
+	flags.StringVar(&actorID, "actor-id", "", "actor id")
+	flags.StringVar(&reason, "reason", "", "triage reason")
+	positionalTicketID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
+		return 2
+	}
+	if ticketID == "" && flags.NArg() > 0 {
+		ticketID = flags.Arg(0)
+	}
+	if ticketID == "" && positionalTicketID != "" {
+		ticketID = positionalTicketID
+	}
+	parsedTicketID, err := requiredUUIDFlag("--ticket-id", ticketID)
+	if err != nil {
+		fmt.Fprintf(stderr, "proposed ready argument error: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	ticket, err := rt.ReadyProposedTicket(ctx, services.ProposedTicketTriageRequest{
+		TicketID:  parsedTicketID,
+		ActorType: actorType,
+		ActorID:   actorID,
+		Reason:    reason,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "proposed ready error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, ticketPayload(ticket))
 }
 
 func runHeartbeatCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
@@ -2025,6 +2129,18 @@ func ticketPayload(ticket db.Ticket) map[string]any {
 	}
 }
 
+func proposedTicketPayload(item services.ProposedTicketTriageItem) map[string]any {
+	payload := ticketPayload(item.Ticket)
+	payload["source_attempt_id"] = uuidText(item.SourceAttemptID)
+	payload["source_artifact_id"] = uuidText(item.SourceArtifactID)
+	payload["created_by_id"] = item.CreatedByID
+	payload["creation_reason"] = item.CreationReason
+	payload["acceptance_criteria"] = item.AcceptanceCriteria
+	payload["verification_commands"] = item.VerificationCommands
+	payload["relevant_paths"] = item.RelevantPaths
+	return payload
+}
+
 func workspacePayload(workspace db.Workspace) map[string]any {
 	return map[string]any{
 		"id":   uuidText(workspace.ID),
@@ -2338,7 +2454,7 @@ func isKnownCommand(name string) bool {
 
 func isRuntimeCommand(name string) bool {
 	switch name {
-	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "workspaces", "projects", "recommendations", "related", "analytics":
+	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "workspaces", "projects", "proposed", "recommendations", "related", "analytics":
 		return true
 	default:
 		return false
@@ -2382,6 +2498,10 @@ func printCommandHelp(w io.Writer, name string) {
 		printCodexHelp(w)
 		return
 	}
+	if name == "proposed" {
+		printProposedHelp(w)
+		return
+	}
 	for _, cmd := range commands {
 		if cmd.name == name {
 			fmt.Fprintf(w, "Usage:\n  forge %s [flags]\n\n%s\n", cmd.name, strings.TrimSuffix(cmd.description, "."))
@@ -2416,6 +2536,11 @@ func printWorkspacesHelp(w io.Writer) {
 func printProjectsHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  forge projects <list|create> [flags]")
+}
+
+func printProposedHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge proposed <list|ready> [flags]")
 }
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {
