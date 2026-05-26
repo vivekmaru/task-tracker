@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -320,7 +321,7 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		}
 		fmt.Fprintf(stdout, "mcp runtime configuration ok; registered %d tools; protocol serving not implemented yet\n", len(server.Tools()))
 	case "worker":
-		workerOpts, err := workerOptionsFromProcess(opts)
+		workerOpts, err := workerOptionsFromProcess(opts, cfg.WorkerConcurrency)
 		if err != nil {
 			fmt.Fprintf(stderr, "worker argument error: %v\n", err)
 			return 2
@@ -353,12 +354,16 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 }
 
 type WorkerOptions struct {
-	Once     bool
-	Interval time.Duration
+	Once        bool
+	Interval    time.Duration
+	Concurrency int
 }
 
-func workerOptionsFromProcess(opts processOptions) (WorkerOptions, error) {
-	workerOpts := WorkerOptions{Once: opts.WorkerOnce}
+func workerOptionsFromProcess(opts processOptions, concurrency int) (WorkerOptions, error) {
+	workerOpts := WorkerOptions{Once: opts.WorkerOnce, Concurrency: concurrency}
+	if workerOpts.Concurrency <= 0 {
+		workerOpts.Concurrency = 1
+	}
 	interval := opts.WorkerInterval
 	if interval == "" {
 		interval = "30s"
@@ -375,9 +380,12 @@ func workerOptionsFromProcess(opts processOptions) (WorkerOptions, error) {
 }
 
 func runWorkerLoop(ctx context.Context, output io.Writer, rt RuntimeHandle, opts WorkerOptions) error {
-	fmt.Fprintf(output, "worker runtime ready; interval=%s once=%t\n", opts.Interval, opts.Once)
+	fmt.Fprintf(output, "worker runtime ready; interval=%s once=%t concurrency=%d\n", opts.Interval, opts.Once, opts.Concurrency)
 	for {
-		if err := runWorkerPass(ctx, output, rt); err != nil {
+		if err := runWorkerPass(ctx, output, rt, opts.Concurrency); err != nil {
+			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		if opts.Once {
@@ -393,18 +401,60 @@ func runWorkerLoop(ctx context.Context, output io.Writer, rt RuntimeHandle, opts
 	}
 }
 
-func runWorkerPass(ctx context.Context, output io.Writer, rt RuntimeHandle) error {
+func runWorkerPass(ctx context.Context, output io.Writer, rt RuntimeHandle, concurrency int) error {
+	if concurrency <= 0 {
+		concurrency = 1
+	}
 	maintenance, err := rt.RunMaintenance(ctx)
 	if err != nil {
 		return fmt.Errorf("maintenance: %w", err)
 	}
 	fmt.Fprintf(output, "maintenance expired_attempts=%d deleted_idempotency_keys=%d\n", maintenance.ExpiredAttempts, maintenance.DeletedIdempotencyKeys)
-	webhooks, err := rt.RunWebhooks(ctx)
+
+	webhooks, err := runWebhookWorkers(ctx, rt, concurrency)
 	if err != nil {
 		return fmt.Errorf("webhooks: %w", err)
 	}
 	fmt.Fprintf(output, "webhooks claimed=%d succeeded=%d failed=%d retried=%d\n", webhooks.Claimed, webhooks.Succeeded, webhooks.Failed, webhooks.Retried)
 	return nil
+}
+
+func runWebhookWorkers(ctx context.Context, rt RuntimeHandle, concurrency int) (jobs.WebhookRunResult, error) {
+	if concurrency <= 1 {
+		return rt.RunWebhooks(ctx)
+	}
+
+	results := make(chan jobs.WebhookRunResult, concurrency)
+	errs := make(chan error, concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := rt.RunWebhooks(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- result
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	var combined jobs.WebhookRunResult
+	for result := range results {
+		combined.Claimed += result.Claimed
+		combined.Succeeded += result.Succeeded
+		combined.Failed += result.Failed
+		combined.Retried += result.Retried
+	}
+	var combinedErr error
+	for err := range errs {
+		combinedErr = errors.Join(combinedErr, err)
+	}
+	return combined, combinedErr
 }
 
 func webAuthOptions(cfg config.Config) web.AuthOptions {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -188,13 +189,14 @@ func TestRunWorkerOnceLoadsConfigFileAndRunsWorkers(t *testing.T) {
 	if opened.WorkerConcurrency != 3 {
 		t.Fatalf("expected runtime opener to receive worker concurrency, got %#v", opened)
 	}
-	if fake.maintenanceRuns != 1 || fake.webhookRuns != 1 {
-		t.Fatalf("expected one maintenance and webhook run, got maintenance=%d webhooks=%d", fake.maintenanceRuns, fake.webhookRuns)
+	if fake.maintenanceRuns != 1 || fake.webhookRuns != 3 {
+		t.Fatalf("expected one maintenance run and three webhook workers, got maintenance=%d webhooks=%d", fake.maintenanceRuns, fake.webhookRuns)
 	}
 	for _, want := range []string{
 		"worker runtime ready",
+		"concurrency=3",
 		"maintenance expired_attempts=2 deleted_idempotency_keys=3",
-		"webhooks claimed=4 succeeded=3 failed=0 retried=1",
+		"webhooks claimed=12 succeeded=9 failed=0 retried=3",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("expected worker output to contain %q, got %q", want, stdout.String())
@@ -217,6 +219,22 @@ func TestRunWorkerRejectsInvalidInterval(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "worker argument error: --interval must be greater than zero") {
 		t.Fatalf("expected interval validation error, got %q", stderr.String())
+	}
+}
+
+func TestRunWorkerLoopTreatsCanceledContextAsGracefulShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout bytes.Buffer
+	fake := &fakeRuntime{maintenanceErr: context.Canceled}
+
+	err := runWorkerLoop(ctx, &stdout, fake, WorkerOptions{Interval: time.Minute, Concurrency: 1})
+
+	if err != nil {
+		t.Fatalf("expected graceful shutdown, got %v", err)
+	}
+	if fake.maintenanceRuns != 1 {
+		t.Fatalf("expected one maintenance attempt before shutdown, got %d", fake.maintenanceRuns)
 	}
 }
 
@@ -2406,6 +2424,7 @@ type noopRuntime struct {
 func (noopRuntime) Close() {}
 
 type fakeRuntime struct {
+	mu                      sync.Mutex
 	createReq               services.CreateTicketRequest
 	createTicket            db.Ticket
 	proposeReq              services.CreateTicketRequest
@@ -2790,11 +2809,15 @@ func (f *fakeRuntime) AnalyticsTrends(_ context.Context, filter services.Analyti
 }
 
 func (f *fakeRuntime) RunMaintenance(context.Context) (jobs.MaintenanceResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.maintenanceRuns++
 	return f.maintenanceResult, f.maintenanceErr
 }
 
 func (f *fakeRuntime) RunWebhooks(context.Context) (jobs.WebhookRunResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.webhookRuns++
 	return f.webhookResult, f.webhookErr
 }
