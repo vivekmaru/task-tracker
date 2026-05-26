@@ -498,6 +498,10 @@ func (h Handler) renderTicketRoute(w http.ResponseWriter, r *http.Request) {
 		h.renderTicketDetail(w, r, ticketID)
 		return
 	}
+	if !isTicketAction(action) {
+		http.NotFound(w, r)
+		return
+	}
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
@@ -538,8 +542,8 @@ func (h Handler) transitionTicket(w http.ResponseWriter, r *http.Request, ticket
 	}
 	req := services.TicketTransitionRequest{
 		TicketID:  ticketID,
-		ActorType: defaultString(r.FormValue("actor_type"), services.ActorHuman),
-		ActorID:   strings.TrimSpace(r.FormValue("actor_id")),
+		ActorType: services.ActorHuman,
+		ActorID:   "web",
 		Reason:    strings.TrimSpace(r.FormValue("reason")),
 	}
 	var (
@@ -909,8 +913,10 @@ func renderTicketServiceError(ctx context.Context, w http.ResponseWriter, err er
 	switch {
 	case errors.As(err, &validationErr):
 		renderStatus(ctx, w, http.StatusBadRequest, title, validationErr.Error())
-	case errors.Is(err, services.ErrTicketIsNotProposed), errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, services.ErrTicketIsNotProposed), errors.Is(err, services.ErrTicketNotFound), errors.Is(err, pgx.ErrNoRows):
 		renderStatus(ctx, w, http.StatusNotFound, title, err.Error())
+	case errors.Is(err, services.ErrTicketTransitionNotAllowed):
+		renderStatus(ctx, w, http.StatusConflict, title, err.Error())
 	case errors.Is(err, services.ErrEnqueuePermissionRequired):
 		renderStatus(ctx, w, http.StatusForbidden, title, err.Error())
 	default:
@@ -1696,23 +1702,61 @@ func writeProposedCard(w io.Writer, item services.ProposedTicketTriageItem) {
 }
 
 func writeTicketActions(w io.Writer, ticket db.Ticket) {
+	actions := ticketActionsForStatus(ticket.Status)
+	if len(actions) == 0 {
+		fmt.Fprint(w, `<article class="panel ticket-actions"><h2>Ticket actions</h2><p class="empty-text">No direct lifecycle actions are available for this ticket status.</p></article>`)
+		return
+	}
 	fmt.Fprint(w, `<article class="panel ticket-actions"><h2>Ticket actions</h2><p class="empty-text">Use the same runtime transitions as CLI and API callers; each action writes normal ticket events.</p><div class="action-grid compact">`)
-	writeTicketActionForm(w, ticket.ID, "ready", "Mark ready", "Ready for an agent to claim")
-	writeTicketActionForm(w, ticket.ID, "reopen", "Reopen", "Return to todo for another attempt")
-	writeTicketActionForm(w, ticket.ID, "unblock", "Unblock", "Blocker cleared")
-	writeTicketActionForm(w, ticket.ID, "request-review", "Request review", "Ready for human review")
-	writeTicketActionForm(w, ticket.ID, "archive", "Archive", "No longer needed")
+	for _, action := range actions {
+		writeTicketActionForm(w, ticket.ID, action.Action, action.Label, action.Placeholder)
+	}
 	fmt.Fprint(w, `</div></article>`)
 }
 
 func writeTicketActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
-	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
+	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
 		esc(uuidText(ticketID)),
 		esc(action),
-		esc(services.ActorHuman),
 		esc(placeholder),
 		esc(label),
 	)
+}
+
+type ticketActionSpec struct {
+	Action      string
+	Label       string
+	Placeholder string
+}
+
+func ticketActionsForStatus(status string) []ticketActionSpec {
+	var actions []ticketActionSpec
+	switch status {
+	case services.TicketStatusBacklog:
+		actions = append(actions, ticketActionSpec{"ready", "Mark ready", "Ready for an agent to claim"})
+	case services.TicketStatusDone, services.TicketStatusFailed:
+		actions = append(actions, ticketActionSpec{"reopen", "Reopen", "Return to todo for another attempt"})
+	case services.TicketStatusBlocked:
+		actions = append(actions, ticketActionSpec{"unblock", "Unblock", "Blocker cleared"})
+	}
+	switch status {
+	case services.TicketStatusBlocked, services.TicketStatusTodo, services.TicketStatusFailed, services.TicketStatusDone:
+		actions = append(actions, ticketActionSpec{"request-review", "Request review", "Ready for human review"})
+	}
+	switch status {
+	case services.TicketStatusBacklog, services.TicketStatusTodo, services.TicketStatusBlocked, services.TicketStatusNeedsReview, services.TicketStatusDone, services.TicketStatusFailed:
+		actions = append(actions, ticketActionSpec{"archive", "Archive", "No longer needed"})
+	}
+	return actions
+}
+
+func isTicketAction(action string) bool {
+	switch action {
+	case "ready", "reopen", "unblock", "request-review", "archive":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeEventCard(w io.Writer, event db.TicketEvent) {
