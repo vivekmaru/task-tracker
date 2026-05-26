@@ -10,9 +10,12 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -20,6 +23,7 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/config"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
+	"github.com/vivek/agent-task-tracker/internal/jobs"
 	forgemcp "github.com/vivek/agent-task-tracker/internal/mcp"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
 	"github.com/vivek/agent-task-tracker/internal/services"
@@ -122,6 +126,8 @@ type RuntimeHandle interface {
 	AnalyticsByStatus(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsByAgent(context.Context, services.AnalyticsFilter) ([]services.AnalyticsGroup, error)
 	AnalyticsTrends(context.Context, services.AnalyticsTrendFilter) ([]services.AnalyticsTrend, error)
+	RunMaintenance(context.Context) (jobs.MaintenanceResult, error)
+	RunWebhooks(context.Context) (jobs.WebhookRunResult, error)
 }
 
 type Dependencies struct {
@@ -129,6 +135,7 @@ type Dependencies struct {
 	RunMigrate  func(context.Context, config.Config, string, MigrationOptions) (MigrationResult, error)
 	RunTUI      func(context.Context, io.Writer, RuntimeHandle, forgetui.Options) error
 	ServeHTTP   func(context.Context, string, http.Handler) error
+	RunWorker   func(context.Context, io.Writer, RuntimeHandle, WorkerOptions) error
 }
 
 // Run executes the Forge CLI and returns a process-style exit code.
@@ -314,19 +321,154 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		}
 		fmt.Fprintf(stdout, "mcp runtime configuration ok; registered %d tools; protocol serving not implemented yet\n", len(server.Tools()))
 	case "worker":
+		workerOpts, err := workerOptionsFromProcess(opts, cfg.WorkerConcurrency)
+		if err != nil {
+			fmt.Fprintf(stderr, "worker argument error: %v\n", err)
+			return 2
+		}
 		if err := cfg.ValidateWorker(); err != nil {
 			fmt.Fprintf(stderr, "worker configuration error: %v\n", err)
 			return 2
 		}
-		rt, err := deps.OpenRuntime(context.Background(), cfg)
+		ctx := context.Background()
+		if !workerOpts.Once {
+			var stop context.CancelFunc
+			ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			done := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					stop()
+				case <-done:
+				}
+			}()
+			defer func() {
+				close(done)
+				stop()
+			}()
+		}
+		rt, err := deps.OpenRuntime(ctx, cfg)
 		if err != nil {
+			if !workerOpts.Once && errors.Is(err, context.Canceled) {
+				return 0
+			}
 			fmt.Fprintf(stderr, "worker runtime error: %v\n", err)
 			return 1
 		}
 		defer rt.Close()
-		fmt.Fprintln(stdout, "worker runtime configuration ok; River worker loop not implemented yet")
+		if deps.RunWorker == nil {
+			deps.RunWorker = runWorkerLoop
+		}
+		if err := deps.RunWorker(ctx, stdout, rt, workerOpts); err != nil {
+			fmt.Fprintf(stderr, "worker runtime error: %v\n", err)
+			return 1
+		}
 	}
 	return 0
+}
+
+type WorkerOptions struct {
+	Once        bool
+	Interval    time.Duration
+	Concurrency int
+}
+
+func workerOptionsFromProcess(opts processOptions, concurrency int) (WorkerOptions, error) {
+	workerOpts := WorkerOptions{Once: opts.WorkerOnce, Concurrency: concurrency}
+	if workerOpts.Concurrency <= 0 {
+		workerOpts.Concurrency = 1
+	}
+	interval := opts.WorkerInterval
+	if interval == "" {
+		interval = "30s"
+	}
+	duration, err := time.ParseDuration(interval)
+	if err != nil {
+		return WorkerOptions{}, fmt.Errorf("--interval must be a duration: %w", err)
+	}
+	if duration <= 0 {
+		return WorkerOptions{}, errors.New("--interval must be greater than zero")
+	}
+	workerOpts.Interval = duration
+	return workerOpts, nil
+}
+
+func runWorkerLoop(ctx context.Context, output io.Writer, rt RuntimeHandle, opts WorkerOptions) error {
+	fmt.Fprintf(output, "worker runtime ready; interval=%s once=%t concurrency=%d\n", opts.Interval, opts.Once, opts.Concurrency)
+	for {
+		if err := runWorkerPass(ctx, output, rt, opts.Concurrency); err != nil {
+			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		if opts.Once {
+			return nil
+		}
+		timer := time.NewTimer(opts.Interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
+}
+
+func runWorkerPass(ctx context.Context, output io.Writer, rt RuntimeHandle, concurrency int) error {
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	maintenance, err := rt.RunMaintenance(ctx)
+	if err != nil {
+		return fmt.Errorf("maintenance: %w", err)
+	}
+	fmt.Fprintf(output, "maintenance expired_attempts=%d deleted_idempotency_keys=%d\n", maintenance.ExpiredAttempts, maintenance.DeletedIdempotencyKeys)
+
+	webhooks, err := runWebhookWorkers(ctx, rt, concurrency)
+	if err != nil {
+		return fmt.Errorf("webhooks: %w", err)
+	}
+	fmt.Fprintf(output, "webhooks claimed=%d succeeded=%d failed=%d retried=%d\n", webhooks.Claimed, webhooks.Succeeded, webhooks.Failed, webhooks.Retried)
+	return nil
+}
+
+func runWebhookWorkers(ctx context.Context, rt RuntimeHandle, concurrency int) (jobs.WebhookRunResult, error) {
+	if concurrency <= 1 {
+		return rt.RunWebhooks(ctx)
+	}
+
+	results := make(chan jobs.WebhookRunResult, concurrency)
+	errs := make(chan error, concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := rt.RunWebhooks(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- result
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	var combined jobs.WebhookRunResult
+	for result := range results {
+		combined.Claimed += result.Claimed
+		combined.Succeeded += result.Succeeded
+		combined.Failed += result.Failed
+		combined.Retried += result.Retried
+	}
+	var combinedErr error
+	for err := range errs {
+		combinedErr = errors.Join(combinedErr, err)
+	}
+	return combined, combinedErr
 }
 
 func webAuthOptions(cfg config.Config) web.AuthOptions {
@@ -1763,6 +1905,8 @@ type processOptions struct {
 	TUIStatus      string
 	TUIType        string
 	TUILimit       int
+	WorkerOnce     bool
+	WorkerInterval string
 }
 
 func parseProcessOptions(name string, args []string, stderr io.Writer) (processOptions, bool) {
@@ -1886,6 +2030,28 @@ func parseProcessOptions(name string, args []string, stderr io.Writer) (processO
 				return processOptions{}, false
 			}
 			opts.TUILimit = limit
+		case arg == "--once":
+			if name != "worker" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
+			opts.WorkerOnce = true
+		case arg == "--interval":
+			if name != "worker" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
+			value, ok := nextProcessFlagValue(args, &i, stderr, "--interval")
+			if !ok {
+				return processOptions{}, false
+			}
+			opts.WorkerInterval = value
+		case strings.HasPrefix(arg, "--interval="):
+			if name != "worker" {
+				fmt.Fprintf(stderr, "unknown flag %q\n", arg)
+				return processOptions{}, false
+			}
+			opts.WorkerInterval = strings.TrimPrefix(arg, "--interval=")
 		default:
 			fmt.Fprintf(stderr, "unknown flag %q\n", arg)
 			return processOptions{}, false

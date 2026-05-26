@@ -30,7 +30,7 @@ Implemented:
 
 Known current limitations:
 
-- `forge server` starts the HTTP router with the OpenAPI surface and the first web inspection pages. `forge worker` opens the live runtime and validates configuration, but it does not yet run a long-lived River loop.
+- `forge server` starts the HTTP router with the OpenAPI surface and human web inspection pages. `forge worker` runs the maintenance and webhook delivery workers in a long-lived loop; use `forge worker --once` for deterministic smoke checks.
 - Observability export subscriptions currently use database-level configuration; CLI/API management and OpenTelemetry-native exporters are not implemented yet.
 - The TUI and web UI are usable, but still early. They are not yet at the full "beautiful, low-friction" product bar.
 
@@ -87,6 +87,7 @@ Pass it with:
 ```bash
 forge server --config forge.json
 forge worker --config forge.json
+forge worker --config forge.json --once
 ```
 
 ## Database Setup
