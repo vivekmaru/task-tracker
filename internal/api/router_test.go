@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
@@ -121,6 +122,9 @@ func TestObservabilitySubscriptionAPICreatesAndLists(t *testing.T) {
 	if !rt.createReq.Secret.Valid || rt.createReq.Secret.String != "shared-secret" {
 		t.Fatalf("expected secret in create request, got %#v", rt.createReq.Secret)
 	}
+	if got := strings.Join(rt.createReq.EventTypes, ","); got != "completed,failed" {
+		t.Fatalf("expected event types completed,failed, got %#v", rt.createReq.EventTypes)
+	}
 	if !strings.Contains(rec.Body.String(), `"secret_set":true`) {
 		t.Fatalf("expected redacted secret output, got %s", rec.Body.String())
 	}
@@ -143,6 +147,47 @@ func TestObservabilitySubscriptionAPICreatesAndLists(t *testing.T) {
 	}
 }
 
+func TestObservabilitySubscriptionAPIDefaultsOmittedEventTypesAndAttempts(t *testing.T) {
+	rt := &fakeObservabilityRuntime{}
+	router := NewRouterWithRuntime(rt)
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected create status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rt.createReq.EventTypes == nil {
+		t.Fatalf("expected omitted event_types to be an empty slice, got nil")
+	}
+	if len(rt.createReq.EventTypes) != 0 {
+		t.Fatalf("expected omitted event_types to subscribe to all events, got %#v", rt.createReq.EventTypes)
+	}
+	if rt.createReq.MaxAttempts != 3 {
+		t.Fatalf("expected omitted max_attempts to default to 3, got %d", rt.createReq.MaxAttempts)
+	}
+}
+
+func TestObservabilitySubscriptionAPIRejectsExplicitZeroAttempts(t *testing.T) {
+	router := NewRouterWithRuntime(&fakeObservabilityRuntime{})
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events","max_attempts":0}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "max_attempts must be greater than zero") {
+		t.Fatalf("expected max_attempts validation error, got %s", rec.Body.String())
+	}
+}
+
 func TestObservabilitySubscriptionAPIRejectsUnsafeURL(t *testing.T) {
 	router := NewRouterWithRuntime(&fakeObservabilityRuntime{})
 	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"file:///tmp/sink"}`
@@ -157,6 +202,26 @@ func TestObservabilitySubscriptionAPIRejectsUnsafeURL(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "endpoint_url must use http or https") {
 		t.Fatalf("expected unsafe URL error, got %s", rec.Body.String())
+	}
+}
+
+func TestObservabilitySubscriptionAPIReturnsNotFoundForMissingScope(t *testing.T) {
+	rt := &fakeObservabilityRuntime{
+		createErr: &pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"},
+	}
+	router := NewRouterWithRuntime(rt)
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "referenced workspace or project does not exist") {
+		t.Fatalf("expected missing scope error, got %s", rec.Body.String())
 	}
 }
 
@@ -176,12 +241,16 @@ type fakeObservabilityRuntime struct {
 	web.Runtime
 	createReq     db.CreateWebhookSubscriptionParams
 	subscription  db.WebhookSubscription
+	createErr     error
 	listReq       db.ListWebhookSubscriptionsParams
 	subscriptions []db.WebhookSubscription
 }
 
 func (f *fakeObservabilityRuntime) CreateWebhookSubscription(_ context.Context, req db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error) {
 	f.createReq = req
+	if f.createErr != nil {
+		return db.WebhookSubscription{}, f.createErr
+	}
 	return f.subscription, nil
 }
 

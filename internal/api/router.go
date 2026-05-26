@@ -9,6 +9,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
@@ -355,7 +356,7 @@ type createObservabilitySubscriptionBody struct {
 	Secret      string   `json:"secret,omitempty"`
 	EventTypes  []string `json:"event_types,omitempty"`
 	Active      *bool    `json:"active,omitempty"`
-	MaxAttempts int32    `json:"max_attempts,omitempty"`
+	MaxAttempts *int32   `json:"max_attempts,omitempty"`
 	Description string   `json:"description,omitempty"`
 }
 
@@ -428,7 +429,7 @@ func registerObservabilityRoutes(api huma.API, rt web.Runtime) {
 		}
 		subscription, err := observability.CreateWebhookSubscription(ctx, req)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("observability subscription create failed", err)
+			return nil, observabilitySubscriptionCreateError(err)
 		}
 		out := &observabilitySubscriptionOutput{}
 		out.Body.Subscription = makeObservabilitySubscriptionPayload(subscription)
@@ -459,9 +460,9 @@ func createObservabilitySubscriptionParams(body createObservabilitySubscriptionB
 	if err := validateWebhookEndpointURL(body.EndpointURL); err != nil {
 		return db.CreateWebhookSubscriptionParams{}, err
 	}
-	maxAttempts := body.MaxAttempts
-	if maxAttempts == 0 {
-		maxAttempts = 3
+	maxAttempts := int32(3)
+	if body.MaxAttempts != nil {
+		maxAttempts = *body.MaxAttempts
 	}
 	if maxAttempts <= 0 {
 		return db.CreateWebhookSubscriptionParams{}, errors.New("max_attempts must be greater than zero")
@@ -470,16 +471,35 @@ func createObservabilitySubscriptionParams(body createObservabilitySubscriptionB
 	if body.Active != nil {
 		active = *body.Active
 	}
+	eventTypes := body.EventTypes
+	if eventTypes == nil {
+		eventTypes = []string{}
+	}
 	return db.CreateWebhookSubscriptionParams{
 		WorkspaceID: workspaceID,
 		ProjectID:   projectID,
 		EndpointUrl: strings.TrimSpace(body.EndpointURL),
 		Secret:      pgtype.Text{String: strings.TrimSpace(body.Secret), Valid: strings.TrimSpace(body.Secret) != ""},
-		EventTypes:  body.EventTypes,
+		EventTypes:  eventTypes,
 		Active:      active,
 		MaxAttempts: maxAttempts,
 		Description: strings.TrimSpace(body.Description),
 	}, nil
+}
+
+func observabilitySubscriptionCreateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			return huma.Error404NotFound("referenced workspace or project does not exist", err)
+		case "23505":
+			return huma.Error409Conflict("observability subscription already exists", err)
+		case "23502", "23514":
+			return huma.Error400BadRequest("invalid observability subscription", err)
+		}
+	}
+	return huma.Error500InternalServerError("observability subscription create failed", err)
 }
 
 func validateWebhookEndpointURL(raw string) error {
