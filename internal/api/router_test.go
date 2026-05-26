@@ -130,6 +130,21 @@ func TestNewRouterWithRuntimeMountsEventLedgerPage(t *testing.T) {
 	}
 }
 
+func TestNewRouterWithRuntimeMountsArtifactListPage(t *testing.T) {
+	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	req := httptest.NewRequest(http.MethodGet, "/artifacts", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected artifact list page status 400 for missing scope, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Artifacts") || !strings.Contains(body, "workspace_id and project_id are required") {
+		t.Fatalf("expected mounted artifact list guidance, got:\n%s", body)
+	}
+}
+
 func TestOpenAPIUsesContractOperationIDsForRESTBoundOperations(t *testing.T) {
 	router := NewRouter()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
