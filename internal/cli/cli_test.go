@@ -222,6 +222,24 @@ func TestRunWorkerRejectsInvalidInterval(t *testing.T) {
 	}
 }
 
+func TestRunWorkerTreatsStartupCancellationAsGracefulShutdown(t *testing.T) {
+	t.Setenv("FORGE_DATABASE_URL", "postgres://db")
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{"worker"}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			return nil, context.Canceled
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("expected graceful shutdown exit code, got %d; stderr=%q", code, stderr.String())
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected quiet shutdown, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestRunWorkerLoopTreatsCanceledContextAsGracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

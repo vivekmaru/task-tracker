@@ -334,10 +334,24 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		if !workerOpts.Once {
 			var stop context.CancelFunc
 			ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-			defer stop()
+			done := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					stop()
+				case <-done:
+				}
+			}()
+			defer func() {
+				close(done)
+				stop()
+			}()
 		}
 		rt, err := deps.OpenRuntime(ctx, cfg)
 		if err != nil {
+			if !workerOpts.Once && errors.Is(err, context.Canceled) {
+				return 0
+			}
 			fmt.Fprintf(stderr, "worker runtime error: %v\n", err)
 			return 1
 		}
