@@ -284,6 +284,91 @@ func TestSearchPageRendersResultsAndKeepsScope(t *testing.T) {
 	}
 }
 
+func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	ticketID := testUUID(3)
+	attemptID := testUUID(4)
+	runtime := &fakeRuntime{
+		eventFeedResult: services.ListEventsResult{
+			NextCursor: "cursor-2",
+			Events: []db.TicketEvent{
+				{
+					ID:            testUUID(30),
+					WorkspaceID:   workspaceID,
+					ProjectID:     projectID,
+					TicketID:      ticketID,
+					AttemptID:     attemptID,
+					Type:          services.EventTicketReady,
+					ActorType:     services.ActorAgent,
+					ActorID:       pgtype.Text{String: "codex", Valid: true},
+					Data:          []byte(`{"summary":"claimed by codex"}`),
+					EventSequence: 42,
+					CreatedAt:     pgtype.Timestamptz{Time: time.Date(2026, 5, 26, 8, 0, 0, 0, time.UTC), Valid: true},
+				},
+			},
+		},
+	}
+	handler := NewHandler(runtime)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID)+"&limit=25", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected events status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Execution Ledger",
+		"Activity",
+		services.EventTicketReady,
+		"codex",
+		"claimed by codex",
+		"/tickets/" + uuidString(ticketID),
+		"/attempts/" + uuidString(attemptID),
+		"cursor-2",
+		"app-shell",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected event ledger to contain %q, got:\n%s", want, body)
+		}
+	}
+	if runtime.eventFeedReq.WorkspaceID != workspaceID || runtime.eventFeedReq.ProjectID != projectID {
+		t.Fatalf("unexpected event scope: %#v", runtime.eventFeedReq)
+	}
+	if runtime.eventFeedReq.Limit != 25 {
+		t.Fatalf("expected event limit 25, got %#v", runtime.eventFeedReq)
+	}
+}
+
+func TestEventLedgerRendersEmptyAndBadRequestStates(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	handler := NewHandler(&fakeRuntime{})
+	req := httptest.NewRequest(http.MethodGet, "/events?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected empty events status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "No ledger events match") {
+		t.Fatalf("expected empty event state, got:\n%s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/events?limit=-1", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid events status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "limit must be a non-negative integer") {
+		t.Fatalf("expected invalid limit guidance, got:\n%s", rec.Body.String())
+	}
+}
+
 func TestSearchPageRequiresScopeAndQuery(t *testing.T) {
 	handler := NewHandler(&fakeRuntime{})
 	req := httptest.NewRequest(http.MethodGet, "/search?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
@@ -1181,12 +1266,15 @@ func TestTicketDetailHandlesBadIDAndMissingRuntime(t *testing.T) {
 type fakeRuntime struct {
 	listReq                   services.ListTicketsRequest
 	searchReq                 services.SearchTicketsRequest
+	eventFeedReq              services.ListEventsRequest
 	detailTicketID            pgtype.UUID
 	tickets                   []db.Ticket
 	searchResults             []services.SearchResult
+	eventFeedResult           services.ListEventsResult
 	artifactListReq           services.ListArtifactsRequest
 	listErr                   error
 	searchErr                 error
+	eventFeedErr              error
 	ticket                    db.Ticket
 	attempt                   db.Attempt
 	attempts                  []db.Attempt
@@ -1226,6 +1314,14 @@ func (f *fakeRuntime) SearchTickets(_ context.Context, req services.SearchTicket
 		return nil, f.searchErr
 	}
 	return f.searchResults, nil
+}
+
+func (f *fakeRuntime) ListEvents(_ context.Context, req services.ListEventsRequest) (services.ListEventsResult, error) {
+	f.eventFeedReq = req
+	if f.eventFeedErr != nil {
+		return services.ListEventsResult{}, f.eventFeedErr
+	}
+	return f.eventFeedResult, nil
 }
 
 func (f *fakeRuntime) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {

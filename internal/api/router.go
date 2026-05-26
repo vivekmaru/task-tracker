@@ -33,6 +33,8 @@ func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Hand
 	mux.Handle("/tickets", webHandler)
 	mux.Handle("/tickets/", webHandler)
 	mux.Handle("/search", webHandler)
+	mux.Handle("/events", webHandler)
+	mux.Handle("/artifacts", webHandler)
 	mux.Handle("/attempts/", webHandler)
 	mux.Handle("/artifacts/", webHandler)
 	mux.Handle("/proposed/", webHandler)
