@@ -215,7 +215,11 @@ func (m QueueModel) View() string {
 			prefix = ">"
 			lineStyle = selectedStyle
 		}
-		b.WriteString(lineStyle.Render(fmt.Sprintf("%s P%d %s %s %s", prefix, ticket.Priority, ticket.Status, ticket.Type, ticket.Title)))
+		proposed := ""
+		if isProposedTicket(ticket) {
+			proposed = " [proposed]"
+		}
+		b.WriteString(lineStyle.Render(fmt.Sprintf("%s P%d %s %s%s %s", prefix, ticket.Priority, ticket.Status, ticket.Type, proposed, ticket.Title)))
 		b.WriteString("\n")
 	}
 	selected := m.tickets[m.selected]
@@ -228,6 +232,21 @@ func (m QueueModel) View() string {
 		b.WriteString("Link: /tickets/")
 		b.WriteString(uuidText(selected.ID))
 		b.WriteString("\n")
+		if isProposedTicket(selected) {
+			b.WriteString("Triage: /proposed/")
+			b.WriteString(uuidText(selected.ID))
+			b.WriteString("\n")
+		}
+	}
+	if isProposedTicket(selected) {
+		b.WriteString("Proposed by: ")
+		b.WriteString(textValue(selected.CreatedByID))
+		b.WriteString("\n")
+		if selected.CreationReason.Valid {
+			b.WriteString("Reason: ")
+			b.WriteString(selected.CreationReason.String)
+			b.WriteString("\n")
+		}
 	}
 	if len(selected.AcceptanceCriteria) > 0 {
 		b.WriteString("Acceptance: ")
@@ -285,8 +304,12 @@ func summaryLine(tickets []db.Ticket) string {
 		return "0 tickets"
 	}
 	counts := map[string]int{}
+	proposedCount := 0
 	for _, ticket := range tickets {
 		counts[ticket.Status]++
+		if isProposedTicket(ticket) {
+			proposedCount++
+		}
 	}
 	statuses := make([]string, 0, len(counts))
 	for status := range counts {
@@ -298,5 +321,12 @@ func summaryLine(tickets []db.Ticket) string {
 	for _, status := range statuses {
 		parts = append(parts, fmt.Sprintf("%s %d", status, counts[status]))
 	}
+	if proposedCount > 0 {
+		parts = append(parts, fmt.Sprintf("proposed %d", proposedCount))
+	}
 	return strings.Join(parts, "  ")
+}
+
+func isProposedTicket(ticket db.Ticket) bool {
+	return ticket.CreatedBy == services.ActorAgent && ticket.Status == services.TicketStatusBacklog
 }

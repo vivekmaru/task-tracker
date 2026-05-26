@@ -36,6 +36,36 @@ func TestQueueModelRendersSummaryListAndPreview(t *testing.T) {
 	}
 }
 
+func TestQueueModelRendersProposedWorkSignals(t *testing.T) {
+	ticketID := testUUID(10)
+	model := NewQueueModel([]db.Ticket{
+		{
+			ID:             ticketID,
+			Title:          "Follow-up from smoke",
+			Type:           services.TicketTypeFollowUp,
+			Status:         services.TicketStatusBacklog,
+			Priority:       2,
+			CreatedBy:      services.ActorAgent,
+			CreatedByID:    pgtype.Text{String: "codex", Valid: true},
+			CreationReason: pgtype.Text{String: "missing retry coverage", Valid: true},
+		},
+	})
+
+	view := model.View()
+
+	for _, want := range []string{
+		"proposed 1",
+		"> P2 backlog follow_up [proposed] Follow-up from smoke",
+		"Proposed by: codex",
+		"Reason: missing retry coverage",
+		"Triage: /proposed/" + uuidText(ticketID),
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected proposed queue view to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestQueueModelMovesSelectionWithinBounds(t *testing.T) {
 	model := NewQueueModel([]db.Ticket{
 		{Title: "First", Status: services.TicketStatusTodo},
