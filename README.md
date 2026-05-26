@@ -19,7 +19,7 @@ Implemented:
 - JSON-first CLI commands over the shared runtime.
 - JSON-first workspace/project setup commands for agent-friendly local bootstrapping.
 - Codex harness commands for claim, checkpoint, complete, propose/follow-up, and block flows.
-- Proposed-work CLI triage for listing proposals and marking them ready.
+- Proposed-work CLI triage for listing proposals and marking them ready, enqueueing, rejecting, or archiving.
 - Huma OpenAPI route registration under `/api/v1`.
 - Server-rendered web pages for login, workspaces, projects, ticket queues, ticket detail, attempt detail, artifact access, proposed work, and search.
 - Runtime-backed web actions for proposed-work triage and ticket lifecycle decisions.
