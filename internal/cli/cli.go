@@ -754,7 +754,21 @@ func runProposedCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	case "list":
 		return runProposedListCommand(ctx, args[1:], stdout, stderr, deps)
 	case "ready":
-		return runProposedReadyCommand(ctx, args[1:], stdout, stderr, deps)
+		return runProposedTriageCommand(ctx, "ready", args[1:], stdout, stderr, deps, func(ctx context.Context, rt RuntimeHandle, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+			return rt.ReadyProposedTicket(ctx, req)
+		})
+	case "enqueue":
+		return runProposedTriageCommand(ctx, "enqueue", args[1:], stdout, stderr, deps, func(ctx context.Context, rt RuntimeHandle, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+			return rt.EnqueueProposedTicket(ctx, req)
+		})
+	case "reject":
+		return runProposedTriageCommand(ctx, "reject", args[1:], stdout, stderr, deps, func(ctx context.Context, rt RuntimeHandle, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+			return rt.RejectProposedTicket(ctx, req)
+		})
+	case "archive":
+		return runProposedTriageCommand(ctx, "archive", args[1:], stdout, stderr, deps, func(ctx context.Context, rt RuntimeHandle, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+			return rt.ArchiveProposedTicket(ctx, req)
+		})
 	default:
 		fmt.Fprintf(stderr, "unknown proposed command %q\n\n", subcommand)
 		printProposedHelp(stderr)
@@ -801,8 +815,15 @@ func runProposedListCommand(ctx context.Context, args []string, stdout, stderr i
 	return writeJSON(stdout, stderr, map[string]any{"proposed": out})
 }
 
-func runProposedReadyCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
-	flags := newFlagSet("proposed ready", stderr)
+func runProposedTriageCommand(
+	ctx context.Context,
+	command string,
+	args []string,
+	stdout, stderr io.Writer,
+	deps Dependencies,
+	transition func(context.Context, RuntimeHandle, services.ProposedTicketTriageRequest) (db.Ticket, error),
+) int {
+	flags := newFlagSet("proposed "+command, stderr)
 	var opts commandOptions
 	opts.bind(flags)
 	var ticketID, actorType, actorID, reason string
@@ -822,7 +843,7 @@ func runProposedReadyCommand(ctx context.Context, args []string, stdout, stderr 
 	}
 	parsedTicketID, err := requiredUUIDFlag("--ticket-id", ticketID)
 	if err != nil {
-		fmt.Fprintf(stderr, "proposed ready argument error: %v\n", err)
+		fmt.Fprintf(stderr, "proposed %s argument error: %v\n", command, err)
 		return 2
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
@@ -830,14 +851,14 @@ func runProposedReadyCommand(ctx context.Context, args []string, stdout, stderr 
 		return 1
 	}
 	defer rt.Close()
-	ticket, err := rt.ReadyProposedTicket(ctx, services.ProposedTicketTriageRequest{
+	ticket, err := transition(ctx, rt, services.ProposedTicketTriageRequest{
 		TicketID:  parsedTicketID,
 		ActorType: actorType,
 		ActorID:   actorID,
 		Reason:    reason,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "proposed ready error: %v\n", err)
+		fmt.Fprintf(stderr, "proposed %s error: %v\n", command, err)
 		return 1
 	}
 	return writeJSON(stdout, stderr, ticketPayload(ticket))
@@ -2552,7 +2573,7 @@ func printProjectsHelp(w io.Writer) {
 
 func printProposedHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  forge proposed <list|ready> [flags]")
+	fmt.Fprintln(w, "  forge proposed <list|ready|enqueue|reject|archive> [flags]")
 }
 
 func printCodexSubcommandHelp(w io.Writer, name string) bool {

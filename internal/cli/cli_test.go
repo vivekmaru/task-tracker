@@ -636,6 +636,88 @@ func TestRunProposedReadyMarksTicketReady(t *testing.T) {
 	}
 }
 
+func TestRunProposedTriageCommandsUpdateTickets(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		status     string
+		configure  func(*fakeRuntime)
+		request    func(*fakeRuntime) services.ProposedTicketTriageRequest
+		statusJSON string
+	}{
+		{
+			name:    "enqueue",
+			command: "enqueue",
+			status:  services.TicketStatusTodo,
+			configure: func(fake *fakeRuntime) {
+				fake.enqueueProposedTicket = proposedTriageTicket(services.TicketStatusTodo)
+			},
+			request: func(fake *fakeRuntime) services.ProposedTicketTriageRequest {
+				return fake.enqueueProposedReq
+			},
+			statusJSON: `"status":"todo"`,
+		},
+		{
+			name:    "reject",
+			command: "reject",
+			status:  services.TicketStatusArchived,
+			configure: func(fake *fakeRuntime) {
+				fake.rejectProposedTicket = proposedTriageTicket(services.TicketStatusArchived)
+			},
+			request: func(fake *fakeRuntime) services.ProposedTicketTriageRequest {
+				return fake.rejectProposedReq
+			},
+			statusJSON: `"status":"archived"`,
+		},
+		{
+			name:    "archive",
+			command: "archive",
+			status:  services.TicketStatusArchived,
+			configure: func(fake *fakeRuntime) {
+				fake.archiveProposedTicket = proposedTriageTicket(services.TicketStatusArchived)
+			},
+			request: func(fake *fakeRuntime) services.ProposedTicketTriageRequest {
+				return fake.archiveProposedReq
+			},
+			statusJSON: `"status":"archived"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			fake := &fakeRuntime{}
+			tt.configure(fake)
+
+			code := RunWithDependencies([]string{
+				"proposed", tt.command,
+				uuidString(t, testUUID(8)),
+				"--actor-type", services.ActorAgent,
+				"--actor-id", "codex",
+				"--reason", "triaged from CLI",
+				"--json",
+			}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+			if code != 0 {
+				t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+			}
+			req := tt.request(fake)
+			if req.TicketID != testUUID(8) {
+				t.Fatalf("expected proposed ticket id, got %#v", req)
+			}
+			if req.ActorType != services.ActorAgent || req.ActorID != "codex" {
+				t.Fatalf("expected actor context, got %#v", req)
+			}
+			if req.Reason != "triaged from CLI" {
+				t.Fatalf("expected triage reason, got %#v", req)
+			}
+			if !strings.Contains(stdout.String(), tt.statusJSON) {
+				t.Fatalf("expected %s ticket JSON, got %s", tt.status, stdout.String())
+			}
+		})
+	}
+}
+
 func TestRunWorkspacesCreateAndListJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -2331,8 +2413,11 @@ type fakeRuntime struct {
 	readyProposedReq        services.ProposedTicketTriageRequest
 	readyProposedTicket     db.Ticket
 	enqueueProposedReq      services.ProposedTicketTriageRequest
+	enqueueProposedTicket   db.Ticket
 	rejectProposedReq       services.ProposedTicketTriageRequest
+	rejectProposedTicket    db.Ticket
 	archiveProposedReq      services.ProposedTicketTriageRequest
+	archiveProposedTicket   db.Ticket
 	recommendationReq       services.RecommendationRequest
 	recommendationResults   []services.RecommendationResult
 	relatedReq              services.RelatedWorkRequest
@@ -2491,17 +2576,17 @@ func (f *fakeRuntime) ReadyProposedTicket(_ context.Context, req services.Propos
 
 func (f *fakeRuntime) EnqueueProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
 	f.enqueueProposedReq = req
-	return db.Ticket{}, nil
+	return f.enqueueProposedTicket, nil
 }
 
 func (f *fakeRuntime) RejectProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
 	f.rejectProposedReq = req
-	return db.Ticket{}, nil
+	return f.rejectProposedTicket, nil
 }
 
 func (f *fakeRuntime) ArchiveProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
 	f.archiveProposedReq = req
-	return db.Ticket{}, nil
+	return f.archiveProposedTicket, nil
 }
 
 func (f *fakeRuntime) SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error) {
@@ -2667,6 +2752,18 @@ func (f *fakeRuntime) AnalyticsTrends(_ context.Context, filter services.Analyti
 	f.analyticsTrendFilter = filter
 	f.analyticsCall = "trends"
 	return f.analyticsTrends, nil
+}
+
+func proposedTriageTicket(status string) db.Ticket {
+	return db.Ticket{
+		ID:          testUUID(8),
+		WorkspaceID: testUUID(2),
+		ProjectID:   testUUID(3),
+		Title:       "Handle empty checkpoint command lists",
+		Type:        services.TicketTypeBug,
+		Status:      status,
+		CreatedBy:   services.ActorAgent,
+	}
 }
 
 func testUUID(seed byte) pgtype.UUID {

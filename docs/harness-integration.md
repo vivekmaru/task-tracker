@@ -139,6 +139,9 @@ Inspect and approve proposed work for a later claim:
 ```bash
 forge proposed list --workspace "$workspace_id" --project "$project_id" --json
 forge proposed ready "$ticket_id" --actor-type agent --actor-id codex --reason "Verified scope is worth a follow-up"
+forge proposed enqueue "$ticket_id" --actor-type agent --actor-id codex --reason "Approved for immediate work"
+forge proposed reject "$ticket_id" --actor-type agent --actor-id codex --reason "Already covered by active work"
+forge proposed archive "$ticket_id" --actor-type agent --actor-id codex --reason "No longer relevant"
 ```
 
 ## Claude Code
