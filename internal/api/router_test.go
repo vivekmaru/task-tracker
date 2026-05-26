@@ -1,15 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	forgeruntime "github.com/vivek/agent-task-tracker/internal/runtime"
+	"github.com/vivek/agent-task-tracker/internal/web"
 )
 
 func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
@@ -65,6 +68,8 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		{"get", "/analytics/by-harness"},
 		{"get", "/analytics/by-status"},
 		{"get", "/analytics/by-agent"},
+		{"get", "/observability/subscriptions"},
+		{"post", "/observability/subscriptions"},
 	} {
 		methods, ok := spec.Paths[route.path]
 		if !ok {
@@ -73,6 +78,85 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		if _, ok := methods[route.method]; !ok {
 			t.Fatalf("expected OpenAPI operation %s %s", route.method, route.path)
 		}
+	}
+}
+
+func TestObservabilitySubscriptionAPICreatesAndLists(t *testing.T) {
+	rt := &fakeObservabilityRuntime{
+		subscription: db.WebhookSubscription{
+			ID:          testUUID(10),
+			WorkspaceID: testUUID(2),
+			ProjectID:   testUUID(3),
+			EndpointUrl: "https://observability.example.test/forge/events",
+			Secret:      pgtype.Text{String: "shared-secret", Valid: true},
+			EventTypes:  []string{"completed", "failed"},
+			Active:      true,
+			MaxAttempts: 5,
+			Description: "External sink",
+		},
+		subscriptions: []db.WebhookSubscription{{
+			ID:          testUUID(10),
+			WorkspaceID: testUUID(2),
+			ProjectID:   testUUID(3),
+			EndpointUrl: "https://observability.example.test/forge/events",
+			Active:      true,
+			MaxAttempts: 5,
+			Description: "External sink",
+		}},
+	}
+	router := NewRouterWithRuntime(rt)
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events","secret":"shared-secret","event_types":["completed","failed"],"max_attempts":5,"description":"External sink"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected create status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rt.createReq.WorkspaceID != testUUID(2) || rt.createReq.ProjectID != testUUID(3) {
+		t.Fatalf("unexpected create scope: %#v", rt.createReq)
+	}
+	if !rt.createReq.Secret.Valid || rt.createReq.Secret.String != "shared-secret" {
+		t.Fatalf("expected secret in create request, got %#v", rt.createReq.Secret)
+	}
+	if !strings.Contains(rec.Body.String(), `"secret_set":true`) {
+		t.Fatalf("expected redacted secret output, got %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/observability/subscriptions?workspace_id="+uuidString(t, testUUID(2))+"&project_id="+uuidString(t, testUUID(3))+"&all=true", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected list status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rt.listReq.WorkspaceID != testUUID(2) || rt.listReq.ProjectID != testUUID(3) {
+		t.Fatalf("unexpected list scope: %#v", rt.listReq)
+	}
+	if rt.listReq.ActiveOnly {
+		t.Fatalf("expected all=true to include inactive subscriptions, got %#v", rt.listReq)
+	}
+	if !strings.Contains(rec.Body.String(), `"subscriptions":[`) {
+		t.Fatalf("expected subscriptions output, got %s", rec.Body.String())
+	}
+}
+
+func TestObservabilitySubscriptionAPIRejectsUnsafeURL(t *testing.T) {
+	router := NewRouterWithRuntime(&fakeObservabilityRuntime{})
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"file:///tmp/sink"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "endpoint_url must use http or https") {
+		t.Fatalf("expected unsafe URL error, got %s", rec.Body.String())
 	}
 }
 
@@ -86,6 +170,43 @@ func TestListEventsRouteValidatesQueryParams(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected event route status 400, got %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+type fakeObservabilityRuntime struct {
+	web.Runtime
+	createReq     db.CreateWebhookSubscriptionParams
+	subscription  db.WebhookSubscription
+	listReq       db.ListWebhookSubscriptionsParams
+	subscriptions []db.WebhookSubscription
+}
+
+func (f *fakeObservabilityRuntime) CreateWebhookSubscription(_ context.Context, req db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error) {
+	f.createReq = req
+	return f.subscription, nil
+}
+
+func (f *fakeObservabilityRuntime) ListWebhookSubscriptions(_ context.Context, req db.ListWebhookSubscriptionsParams) ([]db.WebhookSubscription, error) {
+	f.listReq = req
+	return f.subscriptions, nil
+}
+
+func testUUID(seed byte) pgtype.UUID {
+	var bytes [16]byte
+	bytes[15] = seed
+	return pgtype.UUID{Bytes: bytes, Valid: true}
+}
+
+func uuidString(t *testing.T, id pgtype.UUID) string {
+	t.Helper()
+	value, err := id.Value()
+	if err != nil {
+		t.Fatalf("uuid value: %v", err)
+	}
+	text, ok := value.(string)
+	if !ok {
+		t.Fatalf("expected uuid string, got %T", value)
+	}
+	return text
 }
 
 func TestNewRouterWithRuntimeKeepsOpenAPIRoutes(t *testing.T) {
