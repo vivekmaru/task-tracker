@@ -34,6 +34,11 @@ type Runtime interface {
 	ListProposedTickets(context.Context, services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error)
 	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
 	ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error)
+	MarkReady(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	Reopen(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	Unblock(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	RequestReview(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
+	Archive(context.Context, services.TicketTransitionRequest) (db.Ticket, error)
 	ReadyProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
 	EnqueueProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
 	RejectProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
@@ -114,10 +119,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.renderProposedList(w, r)
 	case strings.HasPrefix(r.URL.Path, "/tickets/"):
-		if !requireMethod(w, r, http.MethodGet) {
-			return
-		}
-		h.renderTicketDetail(w, r)
+		h.renderTicketRoute(w, r)
 	case strings.HasPrefix(r.URL.Path, "/attempts/"):
 		if !requireMethod(w, r, http.MethodGet) {
 			return
@@ -483,19 +485,28 @@ func (h Handler) renderProposedList(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
-func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request) {
-	if h.runtime == nil {
-		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
-		return
-	}
-	idText := strings.TrimPrefix(r.URL.Path, "/tickets/")
-	if strings.Contains(idText, "/") || strings.TrimSpace(idText) == "" {
-		renderStatus(r.Context(), w, http.StatusNotFound, "Ticket not found", "ticket route does not exist")
-		return
-	}
-	ticketID, err := parseUUID(idText)
+func (h Handler) renderTicketRoute(w http.ResponseWriter, r *http.Request) {
+	ticketID, action, err := parseTicketRoute(r.URL.Path)
 	if err != nil {
 		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid ticket id", "ticket id must be a UUID")
+		return
+	}
+	if action == "" {
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderTicketDetail(w, r, ticketID)
+		return
+	}
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	h.transitionTicket(w, r, ticketID, action)
+}
+
+func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request, ticketID pgtype.UUID) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
 	ticket, err := h.runtime.GetTicket(r.Context(), ticketID)
@@ -514,6 +525,47 @@ func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request) {
 		TimelineErr:             timelineErr,
 		ArtifactContentOpenable: artifactContentOpenability(h.runtime, timeline.Artifacts),
 	}))
+}
+
+func (h Handler) transitionTicket(w http.ResponseWriter, r *http.Request, ticketID pgtype.UUID, action string) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Unable to read ticket action form", err.Error())
+		return
+	}
+	req := services.TicketTransitionRequest{
+		TicketID:  ticketID,
+		ActorType: defaultString(r.FormValue("actor_type"), services.ActorHuman),
+		ActorID:   strings.TrimSpace(r.FormValue("actor_id")),
+		Reason:    strings.TrimSpace(r.FormValue("reason")),
+	}
+	var (
+		ticket db.Ticket
+		err    error
+	)
+	switch action {
+	case "ready":
+		ticket, err = h.runtime.MarkReady(r.Context(), req)
+	case "reopen":
+		ticket, err = h.runtime.Reopen(r.Context(), req)
+	case "unblock":
+		ticket, err = h.runtime.Unblock(r.Context(), req)
+	case "request-review":
+		ticket, err = h.runtime.RequestReview(r.Context(), req)
+	case "archive":
+		ticket, err = h.runtime.Archive(r.Context(), req)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		renderTicketServiceError(r.Context(), w, err, "Unable to update ticket")
+		return
+	}
+	http.Redirect(w, r, "/tickets/"+uuidText(ticket.ID), http.StatusSeeOther)
 }
 
 func (h Handler) renderAttemptDetail(w http.ResponseWriter, r *http.Request) {
@@ -1161,6 +1213,26 @@ func parseIDFromPath(path string, prefix string) (pgtype.UUID, error) {
 	return parseUUID(idText)
 }
 
+func parseTicketRoute(path string) (pgtype.UUID, string, error) {
+	rest := strings.TrimPrefix(path, "/tickets/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || len(parts) > 2 || strings.TrimSpace(parts[0]) == "" {
+		return pgtype.UUID{}, "", errors.New("invalid ticket route")
+	}
+	id, err := parseUUID(parts[0])
+	if err != nil {
+		return pgtype.UUID{}, "", err
+	}
+	if len(parts) == 1 {
+		return id, "", nil
+	}
+	action := strings.TrimSpace(parts[1])
+	if action == "" {
+		return pgtype.UUID{}, "", errors.New("invalid ticket action")
+	}
+	return id, action, nil
+}
+
 func parseProposedRoute(path string) (pgtype.UUID, string, error) {
 	rest := strings.TrimPrefix(path, "/proposed/")
 	parts := strings.Split(rest, "/")
@@ -1372,7 +1444,10 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 		writeList(w, "Paths", ticket.RelevantPaths, "")
 		writeShareLinks(w, view)
 		fmt.Fprint(w, `</article>`)
+		fmt.Fprint(w, `<div>`)
+		writeTicketActions(w, ticket)
 		writeTimeline(w, view)
+		fmt.Fprint(w, `</div>`)
 		fmt.Fprint(w, `</section>`)
 	})
 }
@@ -1618,6 +1693,26 @@ func writeProposedCard(w io.Writer, item services.ProposedTicketTriageItem) {
 	writeList(w, "Verification", item.VerificationCommands, "$ ")
 	writeList(w, "Paths", item.RelevantPaths, "")
 	fmt.Fprint(w, `</article>`)
+}
+
+func writeTicketActions(w io.Writer, ticket db.Ticket) {
+	fmt.Fprint(w, `<article class="panel ticket-actions"><h2>Ticket actions</h2><p class="empty-text">Use the same runtime transitions as CLI and API callers; each action writes normal ticket events.</p><div class="action-grid compact">`)
+	writeTicketActionForm(w, ticket.ID, "ready", "Mark ready", "Ready for an agent to claim")
+	writeTicketActionForm(w, ticket.ID, "reopen", "Reopen", "Return to todo for another attempt")
+	writeTicketActionForm(w, ticket.ID, "unblock", "Unblock", "Blocker cleared")
+	writeTicketActionForm(w, ticket.ID, "request-review", "Request review", "Ready for human review")
+	writeTicketActionForm(w, ticket.ID, "archive", "Archive", "No longer needed")
+	fmt.Fprint(w, `</div></article>`)
+}
+
+func writeTicketActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
+	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
+		esc(uuidText(ticketID)),
+		esc(action),
+		esc(services.ActorHuman),
+		esc(placeholder),
+		esc(label),
+	)
 }
 
 func writeEventCard(w io.Writer, event db.TicketEvent) {

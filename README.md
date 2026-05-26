@@ -22,6 +22,7 @@ Implemented:
 - Proposed-work CLI triage for listing proposals and marking them ready.
 - Huma OpenAPI route registration under `/api/v1`.
 - Server-rendered web pages for login, workspaces, projects, ticket queues, ticket detail, attempt detail, artifact access, proposed work, and search.
+- Runtime-backed web actions for proposed-work triage and ticket lifecycle decisions.
 - Bubble Tea TUI for scoped queue inspection and ticket detail handoff links.
 - Basic attempt analytics by summary, model, and harness.
 - Structured observability webhook payloads for ticket events, attempt metadata, and attempt metrics.

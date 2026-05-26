@@ -790,6 +790,89 @@ func TestTicketDetailRendersTrustSummary(t *testing.T) {
 	}
 }
 
+func TestTicketDetailRendersRuntimeBackedTicketActions(t *testing.T) {
+	ticketID := testUUID(55)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Needs operator decision",
+			Type:        services.TicketTypeFeature,
+			Status:      services.TicketStatusBlocked,
+			Priority:    2,
+			CreatedBy:   services.ActorAgent,
+		},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected ticket detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Ticket actions",
+		`action="/tickets/` + uuidString(ticketID) + `/ready"`,
+		`action="/tickets/` + uuidString(ticketID) + `/reopen"`,
+		`action="/tickets/` + uuidString(ticketID) + `/unblock"`,
+		`action="/tickets/` + uuidString(ticketID) + `/request-review"`,
+		`action="/tickets/` + uuidString(ticketID) + `/archive"`,
+		`name="actor_type" value="human"`,
+		`name="actor_id" value="web"`,
+		`hx-boost="false"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("expected ticket action page to contain %q, got:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestTicketRoutePostsLifecycleActions(t *testing.T) {
+	ticketID := testUUID(56)
+	for _, tc := range []struct {
+		action string
+	}{
+		{action: "ready"},
+		{action: "reopen"},
+		{action: "unblock"},
+		{action: "request-review"},
+		{action: "archive"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			runtime := &fakeRuntime{
+				ticketActionTicket: db.Ticket{
+					ID:     ticketID,
+					Status: services.TicketStatusTodo,
+				},
+			}
+			handler := NewHandler(runtime)
+			body := strings.NewReader("actor_type=human&actor_id=web&reason=operator+decision")
+			req := httptest.NewRequest(http.MethodPost, "/tickets/"+uuidString(ticketID)+"/"+tc.action, body)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("expected %s to redirect, got %d: %s", tc.action, rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Location"); got != "/tickets/"+uuidString(ticketID) {
+				t.Fatalf("expected ticket redirect, got %q", got)
+			}
+			got := runtime.ticketActionReq
+			if got.TicketID != ticketID || got.ActorType != services.ActorHuman || got.ActorID != "web" || got.Reason != "operator decision" {
+				t.Fatalf("unexpected ticket action request: %#v", got)
+			}
+			if runtime.ticketAction != tc.action {
+				t.Fatalf("expected action %q, got %q", tc.action, runtime.ticketAction)
+			}
+		})
+	}
+}
+
 func TestWorkspaceAdminRendersAndCreatesWorkspaceAndProject(t *testing.T) {
 	workspaceID := testUUID(51)
 	projectID := testUUID(52)
@@ -1436,6 +1519,9 @@ type fakeRuntime struct {
 	listProposedReq           services.ListProposedTicketsRequest
 	searchReq                 services.SearchTicketsRequest
 	eventFeedReq              services.ListEventsRequest
+	ticketAction              string
+	ticketActionReq           services.TicketTransitionRequest
+	ticketActionTicket        db.Ticket
 	proposedAction            string
 	proposedActionReq         services.ProposedTicketTriageRequest
 	proposedActionTicket      db.Ticket
@@ -1500,6 +1586,36 @@ func (f *fakeRuntime) ListEvents(_ context.Context, req services.ListEventsReque
 		return services.ListEventsResult{}, f.eventFeedErr
 	}
 	return f.eventFeedResult, nil
+}
+
+func (f *fakeRuntime) MarkReady(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.ticketAction = "ready"
+	f.ticketActionReq = req
+	return f.ticketActionTicket, nil
+}
+
+func (f *fakeRuntime) Reopen(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.ticketAction = "reopen"
+	f.ticketActionReq = req
+	return f.ticketActionTicket, nil
+}
+
+func (f *fakeRuntime) Unblock(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.ticketAction = "unblock"
+	f.ticketActionReq = req
+	return f.ticketActionTicket, nil
+}
+
+func (f *fakeRuntime) RequestReview(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.ticketAction = "request-review"
+	f.ticketActionReq = req
+	return f.ticketActionTicket, nil
+}
+
+func (f *fakeRuntime) Archive(_ context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
+	f.ticketAction = "archive"
+	f.ticketActionReq = req
+	return f.ticketActionTicket, nil
 }
 
 func (f *fakeRuntime) ReadyProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
