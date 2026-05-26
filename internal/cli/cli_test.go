@@ -2490,6 +2490,10 @@ func (f *fakeRuntime) SearchTickets(context.Context, services.SearchTicketsReque
 	return nil, nil
 }
 
+func (f *fakeRuntime) ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error) {
+	return services.ListEventsResult{}, nil
+}
+
 func (f *fakeRuntime) RecommendTickets(_ context.Context, req services.RecommendationRequest) ([]services.RecommendationResult, error) {
 	f.recommendationReq = req
 	return f.recommendationResults, nil

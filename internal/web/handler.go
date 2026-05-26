@@ -32,6 +32,7 @@ const defaultSessionCookieName = "forge_admin_session"
 type Runtime interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
 	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
+	ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
@@ -92,6 +93,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.renderTicketList(w, r)
 	case r.URL.Path == "/search":
 		h.renderSearch(w, r)
+	case r.URL.Path == "/events":
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderEventLedger(w, r)
 	case r.URL.Path == "/artifacts":
 		if !requireMethod(w, r, http.MethodGet) {
 			return
@@ -349,6 +355,46 @@ func (h Handler) renderSearch(w http.ResponseWriter, r *http.Request) {
 		WorkspaceIDText: uuidText(req.WorkspaceID),
 		ProjectIDText:   uuidText(req.ProjectID),
 		Query:           req.Query,
+	}))
+}
+
+func (h Handler) renderEventLedger(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	req, err := listEventsRequestFromQuery(r)
+	if err != nil {
+		renderComponent(r.Context(), w, http.StatusBadRequest, eventLedgerPage(eventLedgerViewFromQuery(r, err.Error())))
+		return
+	}
+	result, err := h.runtime.ListEvents(r.Context(), req)
+	if err != nil {
+		var validationErr services.ValidationError
+		if errors.As(err, &validationErr) {
+			renderComponent(r.Context(), w, http.StatusBadRequest, eventLedgerPage(eventLedgerView{
+				WorkspaceIDText: uuidText(req.WorkspaceID),
+				ProjectIDText:   uuidText(req.ProjectID),
+				TicketIDText:    uuidText(req.TicketID),
+				AttemptIDText:   uuidText(req.AttemptID),
+				Cursor:          req.Cursor,
+				LimitText:       limitText(req.Limit),
+				Message:         validationErr.Error(),
+			}))
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load event ledger", err.Error())
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, eventLedgerPage(eventLedgerView{
+		Events:          result.Events,
+		NextCursor:      result.NextCursor,
+		WorkspaceIDText: uuidText(req.WorkspaceID),
+		ProjectIDText:   uuidText(req.ProjectID),
+		TicketIDText:    uuidText(req.TicketID),
+		AttemptIDText:   uuidText(req.AttemptID),
+		Cursor:          req.Cursor,
+		LimitText:       limitText(req.Limit),
 	}))
 }
 
@@ -731,6 +777,18 @@ type searchView struct {
 	Message         string
 }
 
+type eventLedgerView struct {
+	Events          []db.TicketEvent
+	NextCursor      string
+	WorkspaceIDText string
+	ProjectIDText   string
+	TicketIDText    string
+	AttemptIDText   string
+	Cursor          string
+	LimitText       string
+	Message         string
+}
+
 type artifactListView struct {
 	Artifacts       []db.Artifact
 	WorkspaceIDText string
@@ -773,6 +831,42 @@ func loadTimeline(ctx context.Context, runtime Runtime, ticketID pgtype.UUID) (t
 		Attempts:  attempts,
 		Events:    events,
 		Artifacts: artifacts,
+	}, nil
+}
+
+func listEventsRequestFromQuery(r *http.Request) (services.ListEventsRequest, error) {
+	query := r.URL.Query()
+	workspaceID, err := parseOptionalUUID(query.Get("workspace_id"))
+	if err != nil {
+		return services.ListEventsRequest{}, errors.New("workspace_id must be a UUID")
+	}
+	projectID, err := parseOptionalUUID(query.Get("project_id"))
+	if err != nil {
+		return services.ListEventsRequest{}, errors.New("project_id must be a UUID")
+	}
+	ticketID, err := parseOptionalUUID(query.Get("ticket_id"))
+	if err != nil {
+		return services.ListEventsRequest{}, errors.New("ticket_id must be a UUID")
+	}
+	attemptID, err := parseOptionalUUID(query.Get("attempt_id"))
+	if err != nil {
+		return services.ListEventsRequest{}, errors.New("attempt_id must be a UUID")
+	}
+	limit := int32(0)
+	if value := strings.TrimSpace(query.Get("limit")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || parsed < 0 {
+			return services.ListEventsRequest{}, errors.New("limit must be a non-negative integer")
+		}
+		limit = int32(parsed)
+	}
+	return services.ListEventsRequest{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		TicketID:    ticketID,
+		AttemptID:   attemptID,
+		Cursor:      strings.TrimSpace(query.Get("cursor")),
+		Limit:       limit,
 	}, nil
 }
 
@@ -905,6 +999,13 @@ func parseUUID(value string) (pgtype.UUID, error) {
 	return id, nil
 }
 
+func parseOptionalUUID(value string) (pgtype.UUID, error) {
+	if strings.TrimSpace(value) == "" {
+		return pgtype.UUID{}, nil
+	}
+	return parseUUID(value)
+}
+
 func parseIDFromPath(path string, prefix string) (pgtype.UUID, error) {
 	idText := strings.TrimPrefix(path, prefix)
 	if strings.Contains(idText, "/") || strings.TrimSpace(idText) == "" {
@@ -992,6 +1093,43 @@ func searchPage(view searchView) templ.Component {
 			writeSearchResult(w, result)
 		}
 		fmt.Fprint(w, `</section>`)
+	})
+}
+
+func eventLedgerPage(view eventLedgerView) templ.Component {
+	return layout("Forge Activity", func(w io.Writer) {
+		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">Execution Ledger</p><h1>Activity</h1><p>Recent ticket events, agent checkpoints, proof handoffs, and status transitions in one calm inspection stream.</p></div>`)
+		fmt.Fprint(w, `<div class="actions">`)
+		if view.WorkspaceIDText != "" && view.ProjectIDText != "" {
+			fmt.Fprintf(w, `<a class="button secondary" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
+		} else {
+			fmt.Fprint(w, `<a class="button secondary" href="/tickets">Tickets</a>`)
+		}
+		fmt.Fprint(w, `</div></section>`)
+		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/events">`)
+		input(w, "workspace_id", view.WorkspaceIDText)
+		input(w, "project_id", view.ProjectIDText)
+		input(w, "ticket_id", view.TicketIDText)
+		input(w, "attempt_id", view.AttemptIDText)
+		input(w, "limit", view.LimitText)
+		fmt.Fprint(w, `<button type="submit">Filter</button></form></section>`)
+		if view.Message != "" {
+			fmt.Fprintf(w, `<section class="panel empty"><h2>Event ledger needs valid filters</h2><p>%s</p></section>`, esc(view.Message))
+			return
+		}
+		if len(view.Events) == 0 {
+			fmt.Fprint(w, `<section class="panel empty"><h2>No ledger events match</h2><p>Change the scope or wait for agents to write more ticket activity.</p></section>`)
+			return
+		}
+		fmt.Fprint(w, `<section class="event-list" aria-label="Execution ledger events">`)
+		for _, event := range view.Events {
+			writeEventCard(w, event)
+		}
+		fmt.Fprint(w, `</section>`)
+		if view.NextCursor != "" {
+			next := eventLedgerPath(view, view.NextCursor)
+			fmt.Fprintf(w, `<p class="pager"><a class="button secondary" href="%s">Poll after this cursor</a><code>%s</code></p>`, esc(next), esc(view.NextCursor))
+		}
 	})
 }
 
@@ -1198,9 +1336,9 @@ func workspaceDetailPage(view workspaceDetailView) templ.Component {
 
 func layout(title string, body func(io.Writer)) templ.Component {
 	return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
-		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="https://unpkg.com/htmx.org@2.0.4"></script><style>%s</style></head><body hx-boost="true"><main>`, esc(title), pageCSS())
+		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="https://unpkg.com/htmx.org@2.0.4"></script><style>%s</style></head><body hx-boost="true"><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a><nav aria-label="Primary"><a href="/workspaces">Workspaces</a><a href="/tickets">Tickets</a><a href="/events">Activity</a><a href="/search">Search</a><a href="/artifacts">Artifacts</a></nav></aside><main class="content">`, esc(title), pageCSS())
 		body(w)
-		fmt.Fprint(w, `</main></body></html>`)
+		fmt.Fprint(w, `</main></div></body></html>`)
 		return nil
 	})
 }
@@ -1258,6 +1396,26 @@ func writeArtifactCard(w io.Writer, artifact db.Artifact) {
 		writeMeta(w, "Attempt", "/attempts/"+uuidText(artifact.AttemptID))
 	}
 	fmt.Fprint(w, `</article>`)
+}
+
+func writeEventCard(w io.Writer, event db.TicketEvent) {
+	fmt.Fprintf(w, `<article class="event-card"><div class="event-marker"><span>%d</span></div><div class="event-body"><div class="event-topline"><strong>%s</strong><span>%s</span></div>`,
+		event.EventSequence,
+		esc(event.Type),
+		esc(createdAtText(event.CreatedAt)),
+	)
+	fmt.Fprintf(w, `<p class="event-meta">%s / %s</p>`, esc(event.ActorType), esc(textValue(event.ActorID)))
+	if summary := timelineReason(event.Data); summary != "" {
+		fmt.Fprintf(w, `<p>%s</p>`, esc(summary))
+	}
+	fmt.Fprint(w, `<div class="event-links">`)
+	if event.TicketID.Valid {
+		fmt.Fprintf(w, `<a class="copy-link" href="/tickets/%s">Ticket</a>`, esc(uuidText(event.TicketID)))
+	}
+	if event.AttemptID.Valid {
+		fmt.Fprintf(w, `<a class="copy-link" href="/attempts/%s">Attempt</a>`, esc(uuidText(event.AttemptID)))
+	}
+	fmt.Fprint(w, `</div></div></article>`)
 }
 
 func writeShareLinks(w io.Writer, view ticketDetailView) {
@@ -1444,6 +1602,59 @@ func textValue(value pgtype.Text) string {
 	return value.String
 }
 
+func createdAtText(value pgtype.Timestamptz) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.Time.UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+func limitText(value int32) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(int64(value), 10)
+}
+
+func eventLedgerViewFromQuery(r *http.Request, message string) eventLedgerView {
+	query := r.URL.Query()
+	return eventLedgerView{
+		WorkspaceIDText: strings.TrimSpace(query.Get("workspace_id")),
+		ProjectIDText:   strings.TrimSpace(query.Get("project_id")),
+		TicketIDText:    strings.TrimSpace(query.Get("ticket_id")),
+		AttemptIDText:   strings.TrimSpace(query.Get("attempt_id")),
+		Cursor:          strings.TrimSpace(query.Get("cursor")),
+		LimitText:       strings.TrimSpace(query.Get("limit")),
+		Message:         message,
+	}
+}
+
+func eventLedgerPath(view eventLedgerView, cursor string) string {
+	query := url.Values{}
+	if view.WorkspaceIDText != "" {
+		query.Set("workspace_id", view.WorkspaceIDText)
+	}
+	if view.ProjectIDText != "" {
+		query.Set("project_id", view.ProjectIDText)
+	}
+	if view.TicketIDText != "" {
+		query.Set("ticket_id", view.TicketIDText)
+	}
+	if view.AttemptIDText != "" {
+		query.Set("attempt_id", view.AttemptIDText)
+	}
+	if view.LimitText != "" {
+		query.Set("limit", view.LimitText)
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	if encoded := query.Encode(); encoded != "" {
+		return "/events?" + encoded
+	}
+	return "/events"
+}
+
 func uuidText(id pgtype.UUID) string {
 	if !id.Valid {
 		return ""
@@ -1461,5 +1672,5 @@ func esc(value string) string {
 }
 
 func pageCSS() string {
-	return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#202124;background:#f7f7f4}body{margin:0}main{max-width:1120px;margin:0 auto;padding:32px 20px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:32px;line-height:1.1;letter-spacing:0}.page-head p{margin:0;color:#5c625d;max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:700;color:#5b6b5b}.button,button{border:1px solid #202124;background:#202124;color:#fff;text-decoration:none;padding:9px 12px;border-radius:6px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background 0.2s,border-color 0.2s}.button:hover,button:hover{background:#414347;border-color:#414347}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid #202124;outline-offset:2px;border-radius:4px}.panel{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:18px}.filters form{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;align-items:end}.filters span,.auth-panel span{display:block;font-size:12px;font-weight:700;color:#5c625d;margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input{width:100%;box-sizing:border-box;border:1px solid #c7ccc3;border-radius:6px;padding:9px;background:#fff;transition:border-color 0.2s}.filters input:focus,.auth-panel input:focus{border-color:#202124;outline:none}.auth-panel{max-width:360px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:#8c2f1a;font-weight:700}.ticket-list{display:grid;gap:10px;margin-top:16px}.ticket-card{background:#fff;border:1px solid #d9ddd5;border-radius:8px;padding:14px;transition:border-color 0.2s,box-shadow 0.2s}.ticket-card:hover{border-color:#a1a69c;box-shadow:0 2px 8px rgba(0,0,0,0.04)}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:800}.summary,.meta span,.empty-text{color:#61665f}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:700;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:#3c463e}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid #e5e8e1;padding:12px 0}.timeline-item strong{display:block}.timeline-item span{color:#61665f;font-size:13px}.warning{border-color:#d8b45f;background:#fffaf0}@media(max-width:760px){main{padding:20px 14px}.page-head,.ticket-card a{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}}`
+	return `:root{--background:#f8fafc;--foreground:#111827;--card:#fff;--card-foreground:#111827;--muted:#f1f5f9;--muted-foreground:#64748b;--border:#e2e8f0;--input:#cbd5e1;--primary:#111827;--primary-foreground:#fff;--secondary:#f8fafc;--accent:#eef2ff;--success:#15803d;--warning:#b45309;--destructive:#b91c1c;--ring:#64748b;--radius:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--foreground);background:var(--background)}*{box-sizing:border-box}body{margin:0}.app-shell{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:rgba(255,255,255,.82);backdrop-filter:blur(12px);padding:18px 12px}.brand{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;margin:0 8px 22px}.brand span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--primary);color:var(--primary-foreground);font-weight:700}.brand strong{font-size:14px;font-weight:600}.sidebar nav{display:grid;gap:4px}.sidebar nav a{color:var(--muted-foreground);text-decoration:none;padding:8px 10px;border-radius:7px;font-size:14px}.sidebar nav a:hover{background:var(--muted);color:var(--foreground)}.content{max-width:1160px;width:100%;padding:30px 24px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:30px;line-height:1.12;font-weight:600;letter-spacing:0}.page-head p{margin:0;color:var(--muted-foreground);max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:600;color:var(--muted-foreground);letter-spacing:0}.actions{display:flex;gap:8px;align-items:center}.button,button{border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);text-decoration:none;padding:8px 12px;border-radius:7px;font-weight:600;font-size:14px;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s,color .15s}.button.secondary{background:var(--card);color:var(--foreground);border-color:var(--border)}.button:hover,button:hover{background:#374151;border-color:#374151}.button.secondary:hover{background:var(--muted);border-color:var(--input)}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:5px}.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}.filters form{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end}.filters span,.auth-panel span{display:block;font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input{width:100%;border:1px solid var(--input);border-radius:7px;padding:8px 9px;background:var(--card);color:var(--foreground);transition:border-color .15s}.filters input:focus,.auth-panel input:focus{border-color:var(--ring);outline:none}.auth-panel{max-width:380px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:var(--destructive);font-weight:600}.ticket-list,.event-list{display:grid;gap:10px;margin-top:16px}.ticket-card,.event-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;transition:border-color .15s,background .15s}.ticket-card:hover,.event-card:hover{border-color:var(--input);background:#fff}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:600}.summary,.meta span,.empty-text,.event-meta{color:var(--muted-foreground)}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:600;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:var(--foreground);font-weight:600}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid var(--border);padding:12px 0}.timeline-item strong{display:block;font-weight:600}.timeline-item span{color:var(--muted-foreground);font-size:13px}.event-card{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}.event-marker span{display:grid;place-items:center;min-width:36px;height:28px;border-radius:999px;background:var(--muted);color:var(--muted-foreground);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.event-topline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.event-topline strong{font-weight:600}.event-topline span{color:var(--muted-foreground);font-size:12px}.event-body p{margin:6px 0 0}.event-links{display:flex;gap:10px;margin-top:8px}.copy-link{font-size:13px;color:#1d4ed8;text-decoration:none}.copy-link:hover{text-decoration:underline}.match-snippet{background:var(--muted);border-radius:7px;padding:10px}.warning{border-color:#f1c96b;background:#fff9eb}.empty{margin-top:16px}.pager{display:flex;gap:10px;align-items:center;margin:16px 0 0}.pager code{font-size:12px;color:var(--muted-foreground);overflow-wrap:anywhere}@media(max-width:860px){.app-shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}.sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr))}.content{padding:20px 14px}.page-head,.ticket-card a,.event-topline{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}.event-card{grid-template-columns:1fr}}`
 }

@@ -86,6 +86,7 @@ type RuntimeHandle interface {
 	ListProposedTickets(context.Context, services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error)
 	ReadyProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
 	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
+	ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error)
 	RecommendTickets(context.Context, services.RecommendationRequest) ([]services.RecommendationResult, error)
 	RelatedWork(context.Context, services.RelatedWorkRequest) ([]services.RelatedWorkResult, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
