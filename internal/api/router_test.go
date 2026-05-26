@@ -145,6 +145,21 @@ func TestNewRouterWithRuntimeMountsArtifactListPage(t *testing.T) {
 	}
 }
 
+func TestNewRouterWithRuntimeMountsProposedListPageWithoutSlashRedirect(t *testing.T) {
+	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	req := httptest.NewRequest(http.MethodGet, "/proposed", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected proposed list page status 400 for missing scope, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Proposed Work") || !strings.Contains(body, "workspace_id is required") {
+		t.Fatalf("expected mounted proposed list guidance, got:\n%s", body)
+	}
+}
+
 func TestOpenAPIUsesContractOperationIDsForRESTBoundOperations(t *testing.T) {
 	router := NewRouter()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)

@@ -284,6 +284,61 @@ func TestSearchPageRendersResultsAndKeepsScope(t *testing.T) {
 	}
 }
 
+func TestProposedListRendersAgentCreatedWork(t *testing.T) {
+	workspaceID := testUUID(1)
+	projectID := testUUID(2)
+	ticketID := testUUID(49)
+	sourceAttemptID := testUUID(50)
+	runtime := &fakeRuntime{
+		proposedItems: []services.ProposedTicketTriageItem{{
+			Ticket: db.Ticket{
+				ID:          ticketID,
+				WorkspaceID: workspaceID,
+				ProjectID:   projectID,
+				Title:       "Add retry evidence",
+				Type:        services.TicketTypeFollowUp,
+				Status:      services.TicketStatusBacklog,
+				Priority:    2,
+				CreatedBy:   services.ActorAgent,
+			},
+			SourceAttemptID:      sourceAttemptID,
+			CreatedByID:          "codex",
+			CreationReason:       "blocked during smoke",
+			AcceptanceCriteria:   []string{"retry evidence is captured"},
+			VerificationCommands: []string{"go test ./..."},
+			RelevantPaths:        []string{"internal/web"},
+		}},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/proposed?workspace_id="+uuidString(workspaceID)+"&project_id="+uuidString(projectID)+"&type=follow_up", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected proposed list status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Proposed Work",
+		"Add retry evidence",
+		"blocked during smoke",
+		"/proposed/" + uuidString(ticketID),
+		"/attempts/" + uuidString(sourceAttemptID),
+		"go test ./...",
+		`name="workspace_id"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("expected proposed list to contain %q, got:\n%s", want, rec.Body.String())
+		}
+	}
+	if runtime.listProposedReq.WorkspaceID != workspaceID || runtime.listProposedReq.ProjectID != projectID {
+		t.Fatalf("unexpected proposed scope: %#v", runtime.listProposedReq)
+	}
+	if runtime.listProposedReq.Type != services.TicketTypeFollowUp || runtime.listProposedReq.Limit != 50 {
+		t.Fatalf("unexpected proposed filters: %#v", runtime.listProposedReq)
+	}
+}
+
 func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 	workspaceID := testUUID(1)
 	projectID := testUUID(2)
@@ -577,7 +632,7 @@ func TestAttemptArtifactAndProposedRoutesRenderStableInspectionPages(t *testing.
 	}{
 		{path: "/attempts/" + uuidString(attemptID), want: []string{"Attempt Detail", "Needs staging token", "/tickets/" + uuidString(ticketID), "/artifacts/" + uuidString(artifactID)}},
 		{path: "/artifacts/" + uuidString(artifactID), want: []string{"Artifact Detail", "blocked-proof", "https://example.test/blocked-proof.txt", "/tickets/" + uuidString(ticketID), "/attempts/" + uuidString(attemptID)}},
-		{path: "/proposed/" + uuidString(ticketID), want: []string{"Proposed Follow-up", "Follow-up from attempt", "/tickets/" + uuidString(ticketID)}},
+		{path: "/proposed/" + uuidString(ticketID), want: []string{"Proposed Follow-up", "Follow-up from attempt", "/tickets/" + uuidString(ticketID), `action="/proposed/` + uuidString(ticketID) + `/ready"`, `action="/proposed/` + uuidString(ticketID) + `/enqueue"`, `action="/proposed/` + uuidString(ticketID) + `/reject"`, `action="/proposed/` + uuidString(ticketID) + `/archive"`}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()
@@ -619,6 +674,119 @@ func TestProposedRouteRejectsNormalTickets(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "Proposed Follow-up") {
 		t.Fatalf("normal ticket should not render proposed detail page:\n%s", rec.Body.String())
+	}
+}
+
+func TestProposedRoutePostsTriageActions(t *testing.T) {
+	ticketID := testUUID(45)
+	for _, tc := range []struct {
+		action string
+		want   *services.ProposedTicketTriageRequest
+	}{
+		{action: "ready"},
+		{action: "enqueue"},
+		{action: "reject"},
+		{action: "archive"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			runtime := &fakeRuntime{
+				ticket: db.Ticket{
+					ID:          ticketID,
+					WorkspaceID: testUUID(1),
+					ProjectID:   testUUID(2),
+					Title:       "Follow-up from attempt",
+					Type:        services.TicketTypeFollowUp,
+					Status:      services.TicketStatusBacklog,
+					CreatedBy:   services.ActorAgent,
+				},
+				proposedActionTicket: db.Ticket{
+					ID:     ticketID,
+					Status: services.TicketStatusTodo,
+				},
+			}
+			handler := NewHandler(runtime)
+			body := strings.NewReader("actor_type=human&actor_id=web&reason=looks+ready")
+			req := httptest.NewRequest(http.MethodPost, "/proposed/"+uuidString(ticketID)+"/"+tc.action, body)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("expected %s to redirect, got %d: %s", tc.action, rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Location"); got != "/tickets/"+uuidString(ticketID) {
+				t.Fatalf("expected ticket redirect, got %q", got)
+			}
+			got := runtime.proposedActionReq
+			if got.TicketID != ticketID || got.ActorType != services.ActorHuman || got.ActorID != "web" || got.Reason != "looks ready" {
+				t.Fatalf("unexpected triage request: %#v", got)
+			}
+			if runtime.proposedAction != tc.action {
+				t.Fatalf("expected action %q, got %q", tc.action, runtime.proposedAction)
+			}
+		})
+	}
+}
+
+func TestTicketDetailRendersTrustSummary(t *testing.T) {
+	ticketID := testUUID(46)
+	attemptID := testUUID(47)
+	artifactID := testUUID(48)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Ship trust page",
+			Type:        services.TicketTypeFeature,
+			Status:      services.TicketStatusInProgress,
+			Priority:    2,
+			CreatedBy:   services.ActorAgent,
+		},
+		attempts: []db.Attempt{{
+			ID:       attemptID,
+			TicketID: ticketID,
+			Status:   services.AttemptStatusRunning,
+			AgentID:  "codex",
+			Model:    "gpt-5",
+		}},
+		events: []db.TicketEvent{{
+			TicketID:      ticketID,
+			Type:          "claimed",
+			ActorType:     services.ActorAgent,
+			ActorID:       pgtype.Text{String: "codex", Valid: true},
+			EventSequence: 1,
+		}},
+		artifacts: []db.Artifact{{
+			ID:        artifactID,
+			TicketID:  ticketID,
+			AttemptID: attemptID,
+			Name:      "proof.txt",
+			Role:      services.ArtifactRoleEvidence,
+			Type:      services.ArtifactTypeTestOutput,
+		}},
+	}
+	handler := NewHandler(runtime)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected ticket detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Trust summary",
+		"1 attempt",
+		"1 event",
+		"1 proof artifact",
+		"/events?ticket_id=" + uuidString(ticketID),
+		"Shared proof page",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("expected ticket trust page to contain %q, got:\n%s", want, rec.Body.String())
+		}
 	}
 }
 
@@ -1265,10 +1433,15 @@ func TestTicketDetailHandlesBadIDAndMissingRuntime(t *testing.T) {
 
 type fakeRuntime struct {
 	listReq                   services.ListTicketsRequest
+	listProposedReq           services.ListProposedTicketsRequest
 	searchReq                 services.SearchTicketsRequest
 	eventFeedReq              services.ListEventsRequest
+	proposedAction            string
+	proposedActionReq         services.ProposedTicketTriageRequest
+	proposedActionTicket      db.Ticket
 	detailTicketID            pgtype.UUID
 	tickets                   []db.Ticket
+	proposedItems             []services.ProposedTicketTriageItem
 	searchResults             []services.SearchResult
 	eventFeedResult           services.ListEventsResult
 	artifactListReq           services.ListArtifactsRequest
@@ -1308,6 +1481,11 @@ func (f *fakeRuntime) ListTickets(_ context.Context, req services.ListTicketsReq
 	return f.tickets, nil
 }
 
+func (f *fakeRuntime) ListProposedTickets(_ context.Context, req services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error) {
+	f.listProposedReq = req
+	return f.proposedItems, nil
+}
+
 func (f *fakeRuntime) SearchTickets(_ context.Context, req services.SearchTicketsRequest) ([]services.SearchResult, error) {
 	f.searchReq = req
 	if f.searchErr != nil {
@@ -1322,6 +1500,30 @@ func (f *fakeRuntime) ListEvents(_ context.Context, req services.ListEventsReque
 		return services.ListEventsResult{}, f.eventFeedErr
 	}
 	return f.eventFeedResult, nil
+}
+
+func (f *fakeRuntime) ReadyProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.proposedAction = "ready"
+	f.proposedActionReq = req
+	return f.proposedActionTicket, nil
+}
+
+func (f *fakeRuntime) EnqueueProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.proposedAction = "enqueue"
+	f.proposedActionReq = req
+	return f.proposedActionTicket, nil
+}
+
+func (f *fakeRuntime) RejectProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.proposedAction = "reject"
+	f.proposedActionReq = req
+	return f.proposedActionTicket, nil
+}
+
+func (f *fakeRuntime) ArchiveProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.proposedAction = "archive"
+	f.proposedActionReq = req
+	return f.proposedActionTicket, nil
 }
 
 func (f *fakeRuntime) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {

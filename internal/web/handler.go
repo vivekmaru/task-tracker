@@ -31,8 +31,13 @@ const defaultSessionCookieName = "forge_admin_session"
 
 type Runtime interface {
 	ListTickets(context.Context, services.ListTicketsRequest) ([]db.Ticket, error)
+	ListProposedTickets(context.Context, services.ListProposedTicketsRequest) ([]services.ProposedTicketTriageItem, error)
 	SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error)
 	ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error)
+	ReadyProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
+	EnqueueProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
+	RejectProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
+	ArchiveProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
@@ -103,6 +108,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.renderArtifactList(w, r)
+	case r.URL.Path == "/proposed" || r.URL.Path == "/proposed/":
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderProposedList(w, r)
 	case strings.HasPrefix(r.URL.Path, "/tickets/"):
 		if !requireMethod(w, r, http.MethodGet) {
 			return
@@ -116,10 +126,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/artifacts/"):
 		h.renderArtifactRoute(w, r)
 	case strings.HasPrefix(r.URL.Path, "/proposed/"):
-		if !requireMethod(w, r, http.MethodGet) {
-			return
-		}
-		h.renderProposedDetail(w, r)
+		h.renderProposedRoute(w, r)
 	case r.URL.Path == "/workspaces":
 		h.renderWorkspaceIndex(w, r)
 	case strings.HasPrefix(r.URL.Path, "/workspaces/"):
@@ -437,6 +444,45 @@ func (h Handler) renderArtifactList(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
+func (h Handler) renderProposedList(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	req, err := listProposedRequestFromQuery(r)
+	if err != nil {
+		query := r.URL.Query()
+		renderComponent(r.Context(), w, http.StatusBadRequest, proposedListPage(proposedListView{
+			WorkspaceIDText: strings.TrimSpace(query.Get("workspace_id")),
+			ProjectIDText:   strings.TrimSpace(query.Get("project_id")),
+			Type:            strings.TrimSpace(query.Get("type")),
+			Message:         err.Error(),
+		}))
+		return
+	}
+	items, err := h.runtime.ListProposedTickets(r.Context(), req)
+	if err != nil {
+		var validationErr services.ValidationError
+		if errors.As(err, &validationErr) {
+			renderComponent(r.Context(), w, http.StatusBadRequest, proposedListPage(proposedListView{
+				WorkspaceIDText: uuidText(req.WorkspaceID),
+				ProjectIDText:   uuidText(req.ProjectID),
+				Type:            req.Type,
+				Message:         validationErr.Error(),
+			}))
+			return
+		}
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load proposed work", err.Error())
+		return
+	}
+	renderComponent(r.Context(), w, http.StatusOK, proposedListPage(proposedListView{
+		Items:           items,
+		WorkspaceIDText: uuidText(req.WorkspaceID),
+		ProjectIDText:   uuidText(req.ProjectID),
+		Type:            req.Type,
+	}))
+}
+
 func (h Handler) renderTicketDetail(w http.ResponseWriter, r *http.Request) {
 	if h.runtime == nil {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
@@ -607,14 +653,28 @@ func (h Handler) deleteArtifact(w http.ResponseWriter, r *http.Request, idText s
 	http.Redirect(w, r, artifactListPath(artifact), http.StatusSeeOther)
 }
 
-func (h Handler) renderProposedDetail(w http.ResponseWriter, r *http.Request) {
-	if h.runtime == nil {
-		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+func (h Handler) renderProposedRoute(w http.ResponseWriter, r *http.Request) {
+	ticketID, action, err := parseProposedRoute(r.URL.Path)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid proposed ticket route", "proposed routes must include a ticket UUID")
 		return
 	}
-	ticketID, err := parseIDFromPath(r.URL.Path, "/proposed/")
-	if err != nil {
-		renderStatus(r.Context(), w, http.StatusBadRequest, "Invalid proposed ticket id", "proposed ticket id must be a UUID")
+	if action == "" {
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.renderProposedDetail(w, r, ticketID)
+		return
+	}
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	h.triageProposedTicket(w, r, ticketID, action)
+}
+
+func (h Handler) renderProposedDetail(w http.ResponseWriter, r *http.Request, ticketID pgtype.UUID) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
 	ticket, err := h.runtime.GetTicket(r.Context(), ticketID)
@@ -631,6 +691,45 @@ func (h Handler) renderProposedDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderComponent(r.Context(), w, http.StatusOK, proposedDetailPage(ticket))
+}
+
+func (h Handler) triageProposedTicket(w http.ResponseWriter, r *http.Request, ticketID pgtype.UUID, action string) {
+	if h.runtime == nil {
+		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		renderStatus(r.Context(), w, http.StatusBadRequest, "Unable to read triage form", err.Error())
+		return
+	}
+	req := services.ProposedTicketTriageRequest{
+		TicketID:  ticketID,
+		ActorType: defaultString(r.FormValue("actor_type"), services.ActorHuman),
+		ActorID:   strings.TrimSpace(r.FormValue("actor_id")),
+		Reason:    strings.TrimSpace(r.FormValue("reason")),
+	}
+	var (
+		ticket db.Ticket
+		err    error
+	)
+	switch action {
+	case "ready":
+		ticket, err = h.runtime.ReadyProposedTicket(r.Context(), req)
+	case "enqueue":
+		ticket, err = h.runtime.EnqueueProposedTicket(r.Context(), req)
+	case "reject":
+		ticket, err = h.runtime.RejectProposedTicket(r.Context(), req)
+	case "archive":
+		ticket, err = h.runtime.ArchiveProposedTicket(r.Context(), req)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		renderTicketServiceError(r.Context(), w, err, "Unable to triage proposed work")
+		return
+	}
+	http.Redirect(w, r, "/tickets/"+uuidText(ticket.ID), http.StatusSeeOther)
 }
 
 func (h Handler) renderWorkspaceIndex(w http.ResponseWriter, r *http.Request) {
@@ -753,6 +852,20 @@ func renderCreateError(ctx context.Context, w http.ResponseWriter, title string,
 	renderStatus(ctx, w, status, title, message)
 }
 
+func renderTicketServiceError(ctx context.Context, w http.ResponseWriter, err error, title string) {
+	var validationErr services.ValidationError
+	switch {
+	case errors.As(err, &validationErr):
+		renderStatus(ctx, w, http.StatusBadRequest, title, validationErr.Error())
+	case errors.Is(err, services.ErrTicketIsNotProposed), errors.Is(err, pgx.ErrNoRows):
+		renderStatus(ctx, w, http.StatusNotFound, title, err.Error())
+	case errors.Is(err, services.ErrEnqueuePermissionRequired):
+		renderStatus(ctx, w, http.StatusForbidden, title, err.Error())
+	default:
+		renderStatus(ctx, w, http.StatusInternalServerError, title, err.Error())
+	}
+}
+
 type ticketListView struct {
 	Tickets     []db.Ticket
 	WorkspaceID pgtype.UUID
@@ -794,6 +907,14 @@ type artifactListView struct {
 	WorkspaceIDText string
 	ProjectIDText   string
 	TicketIDText    string
+	Message         string
+}
+
+type proposedListView struct {
+	Items           []services.ProposedTicketTriageItem
+	WorkspaceIDText string
+	ProjectIDText   string
+	Type            string
 	Message         string
 }
 
@@ -951,6 +1072,32 @@ func listArtifactsRequestFromQuery(r *http.Request) (services.ListArtifactsReque
 	}, nil
 }
 
+func listProposedRequestFromQuery(r *http.Request) (services.ListProposedTicketsRequest, error) {
+	query := r.URL.Query()
+	workspaceID, err := parseUUID(query.Get("workspace_id"))
+	if err != nil {
+		return services.ListProposedTicketsRequest{}, fmt.Errorf("workspace_id is required")
+	}
+	projectID, err := parseUUID(query.Get("project_id"))
+	if err != nil {
+		return services.ListProposedTicketsRequest{}, fmt.Errorf("project_id is required")
+	}
+	limit := int32(50)
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return services.ListProposedTicketsRequest{}, fmt.Errorf("limit must be an integer")
+		}
+		limit = int32(value)
+	}
+	return services.ListProposedTicketsRequest{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		Type:        strings.TrimSpace(query.Get("type")),
+		Limit:       limit,
+	}, nil
+}
+
 func listTicketsRequestFromQuery(r *http.Request) (services.ListTicketsRequest, error) {
 	query := r.URL.Query()
 	workspaceID, err := parseUUID(query.Get("workspace_id"))
@@ -1012,6 +1159,26 @@ func parseIDFromPath(path string, prefix string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, errors.New("invalid route id")
 	}
 	return parseUUID(idText)
+}
+
+func parseProposedRoute(path string) (pgtype.UUID, string, error) {
+	rest := strings.TrimPrefix(path, "/proposed/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || len(parts) > 2 || strings.TrimSpace(parts[0]) == "" {
+		return pgtype.UUID{}, "", errors.New("invalid proposed route")
+	}
+	id, err := parseUUID(parts[0])
+	if err != nil {
+		return pgtype.UUID{}, "", err
+	}
+	if len(parts) == 1 {
+		return id, "", nil
+	}
+	action := strings.TrimSpace(parts[1])
+	if action == "" {
+		return pgtype.UUID{}, "", errors.New("invalid proposed action")
+	}
+	return id, action, nil
 }
 
 func renderStatus(ctx context.Context, w http.ResponseWriter, status int, title string, message string) {
@@ -1158,6 +1325,30 @@ func artifactListPage(view artifactListView) templ.Component {
 	})
 }
 
+func proposedListPage(view proposedListView) templ.Component {
+	return layout("Proposed Work", func(w io.Writer) {
+		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">agent-created queue</p><h1>Proposed Work</h1><p>Review follow-up work agents discovered while executing tickets.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
+		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/proposed">`)
+		input(w, "workspace_id", view.WorkspaceIDText)
+		input(w, "project_id", view.ProjectIDText)
+		input(w, "type", view.Type)
+		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
+		if view.Message != "" {
+			fmt.Fprintf(w, `<section class="panel empty"><h2>Proposed work needs a scope</h2><p>%s</p></section>`, esc(view.Message))
+			return
+		}
+		if len(view.Items) == 0 {
+			fmt.Fprint(w, `<section class="panel empty"><h2>No proposed work matches</h2><p>Agents have not suggested follow-up work for this scope yet.</p></section>`)
+			return
+		}
+		fmt.Fprint(w, `<section class="ticket-list" aria-label="Proposed work">`)
+		for _, item := range view.Items {
+			writeProposedCard(w, item)
+		}
+		fmt.Fprint(w, `</section>`)
+	})
+}
+
 func ticketDetailPage(view ticketDetailView) templ.Component {
 	ticket := view.Ticket
 	return layout(ticket.Title, func(w io.Writer) {
@@ -1170,6 +1361,7 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 			esc(uuidText(ticket.WorkspaceID)),
 			esc(uuidText(ticket.ProjectID)),
 		)
+		writeTrustSummary(w, view)
 		fmt.Fprint(w, `<section class="detail-grid">`)
 		fmt.Fprint(w, `<article class="panel"><h2>Context</h2>`)
 		writeMeta(w, "Ticket ID", uuidText(ticket.ID))
@@ -1280,6 +1472,12 @@ func proposedDetailPage(ticket db.Ticket) templ.Component {
 		writeList(w, "Acceptance", ticket.AcceptanceCriteria, "")
 		writeList(w, "Paths", ticket.RelevantPaths, "")
 		fmt.Fprint(w, `</section>`)
+		fmt.Fprint(w, `<section class="panel proposed-actions"><h2>Triage actions</h2><p class="empty-text">Approve useful agent-created work, enqueue trusted work immediately, or close out proposals that should not enter the queue.</p><div class="action-grid">`)
+		writeProposedActionForm(w, ticket.ID, "ready", "Move to todo", "Accepted for the scoped queue")
+		writeProposedActionForm(w, ticket.ID, "enqueue", "Approve and enqueue", "Trusted enough for immediate agent claim")
+		writeProposedActionForm(w, ticket.ID, "reject", "Reject", "Not useful right now")
+		writeProposedActionForm(w, ticket.ID, "archive", "Archive", "Keep the record but remove from triage")
+		fmt.Fprint(w, `</div></section>`)
 	})
 }
 
@@ -1336,7 +1534,7 @@ func workspaceDetailPage(view workspaceDetailView) templ.Component {
 
 func layout(title string, body func(io.Writer)) templ.Component {
 	return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
-		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="https://unpkg.com/htmx.org@2.0.4"></script><style>%s</style></head><body hx-boost="true"><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a><nav aria-label="Primary"><a href="/workspaces">Workspaces</a><a href="/tickets">Tickets</a><a href="/events">Activity</a><a href="/search">Search</a><a href="/artifacts">Artifacts</a></nav></aside><main class="content">`, esc(title), pageCSS())
+		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="https://unpkg.com/htmx.org@2.0.4"></script><style>%s</style></head><body hx-boost="true"><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a><nav aria-label="Primary"><a href="/workspaces">Workspaces</a><a href="/tickets">Tickets</a><a href="/proposed">Proposed</a><a href="/events">Activity</a><a href="/search">Search</a><a href="/artifacts">Artifacts</a></nav></aside><main class="content">`, esc(title), pageCSS())
 		body(w)
 		fmt.Fprint(w, `</main></div></body></html>`)
 		return nil
@@ -1398,6 +1596,30 @@ func writeArtifactCard(w io.Writer, artifact db.Artifact) {
 	fmt.Fprint(w, `</article>`)
 }
 
+func writeProposedCard(w io.Writer, item services.ProposedTicketTriageItem) {
+	ticket := item.Ticket
+	fmt.Fprintf(w, `<article class="ticket-card"><a href="/proposed/%s"><span class="title">%s</span><span class="summary">%s P%d</span></a>`,
+		esc(uuidText(ticket.ID)),
+		esc(ticket.Title),
+		esc(ticket.Type),
+		ticket.Priority,
+	)
+	if item.CreationReason != "" {
+		fmt.Fprintf(w, `<p>%s</p>`, esc(item.CreationReason))
+	}
+	writeMeta(w, "Source", ticket.CreatedBy+"/"+item.CreatedByID)
+	if item.SourceAttemptID.Valid {
+		writeMeta(w, "Attempt", "/attempts/"+uuidText(item.SourceAttemptID))
+	}
+	if item.SourceArtifactID.Valid {
+		writeMeta(w, "Artifact", "/artifacts/"+uuidText(item.SourceArtifactID))
+	}
+	writeList(w, "Acceptance", item.AcceptanceCriteria, "")
+	writeList(w, "Verification", item.VerificationCommands, "$ ")
+	writeList(w, "Paths", item.RelevantPaths, "")
+	fmt.Fprint(w, `</article>`)
+}
+
 func writeEventCard(w io.Writer, event db.TicketEvent) {
 	fmt.Fprintf(w, `<article class="event-card"><div class="event-marker"><span>%d</span></div><div class="event-body"><div class="event-topline"><strong>%s</strong><span>%s</span></div>`,
 		event.EventSequence,
@@ -1432,6 +1654,37 @@ func writeShareLinks(w io.Writer, view ticketDetailView) {
 		fmt.Fprintf(w, `<li><a class="copy-link" href="/artifacts/%s">/artifacts/%s</a></li>`, esc(uuidText(artifact.ID)), esc(uuidText(artifact.ID)))
 	}
 	fmt.Fprint(w, `</ul></div>`)
+}
+
+func writeTrustSummary(w io.Writer, view ticketDetailView) {
+	if view.TimelineErr != nil {
+		return
+	}
+	ticket := view.Ticket
+	fmt.Fprint(w, `<section class="trust-strip" aria-label="Trust summary"><div class="trust-card"><span>Trust summary</span><strong>Shared proof page</strong><p>Ticket, activity, attempts, and artifacts in one inspectable place.</p></div>`)
+	writeTrustMetric(w, len(view.Timeline.Attempts), "attempt", "")
+	writeTrustMetric(w, len(view.Timeline.Events), "event", ticketActivityPath(ticket))
+	writeTrustMetric(w, len(view.Timeline.Artifacts), "proof artifact", artifactListPathForTicket(ticket))
+	fmt.Fprint(w, `</section>`)
+}
+
+func writeTrustMetric(w io.Writer, count int, noun string, href string) {
+	label := pluralize(count, noun)
+	if href == "" {
+		fmt.Fprintf(w, `<div class="trust-card metric"><strong>%s</strong><span>%d</span></div>`, esc(label), count)
+		return
+	}
+	fmt.Fprintf(w, `<a class="trust-card metric" href="%s"><strong>%s</strong><span>%d</span></a>`, esc(href), esc(label), count)
+}
+
+func writeProposedActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
+	fmt.Fprintf(w, `<form method="post" action="/proposed/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
+		esc(uuidText(ticketID)),
+		esc(action),
+		esc(services.ActorHuman),
+		esc(placeholder),
+		esc(label),
+	)
 }
 
 func isProposedTicket(ticket db.Ticket) bool {
@@ -1655,6 +1908,20 @@ func eventLedgerPath(view eventLedgerView, cursor string) string {
 	return "/events"
 }
 
+func ticketActivityPath(ticket db.Ticket) string {
+	query := url.Values{}
+	query.Set("ticket_id", uuidText(ticket.ID))
+	return "/events?" + query.Encode()
+}
+
+func artifactListPathForTicket(ticket db.Ticket) string {
+	query := url.Values{}
+	query.Set("workspace_id", uuidText(ticket.WorkspaceID))
+	query.Set("project_id", uuidText(ticket.ProjectID))
+	query.Set("ticket_id", uuidText(ticket.ID))
+	return "/artifacts?" + query.Encode()
+}
+
 func uuidText(id pgtype.UUID) string {
 	if !id.Valid {
 		return ""
@@ -1671,6 +1938,21 @@ func esc(value string) string {
 	return html.EscapeString(value)
 }
 
+func defaultString(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func pluralize(count int, noun string) string {
+	if count == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", count, noun)
+}
+
 func pageCSS() string {
-	return `:root{--background:#f8fafc;--foreground:#111827;--card:#fff;--card-foreground:#111827;--muted:#f1f5f9;--muted-foreground:#64748b;--border:#e2e8f0;--input:#cbd5e1;--primary:#111827;--primary-foreground:#fff;--secondary:#f8fafc;--accent:#eef2ff;--success:#15803d;--warning:#b45309;--destructive:#b91c1c;--ring:#64748b;--radius:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--foreground);background:var(--background)}*{box-sizing:border-box}body{margin:0}.app-shell{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:rgba(255,255,255,.82);backdrop-filter:blur(12px);padding:18px 12px}.brand{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;margin:0 8px 22px}.brand span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--primary);color:var(--primary-foreground);font-weight:700}.brand strong{font-size:14px;font-weight:600}.sidebar nav{display:grid;gap:4px}.sidebar nav a{color:var(--muted-foreground);text-decoration:none;padding:8px 10px;border-radius:7px;font-size:14px}.sidebar nav a:hover{background:var(--muted);color:var(--foreground)}.content{max-width:1160px;width:100%;padding:30px 24px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:30px;line-height:1.12;font-weight:600;letter-spacing:0}.page-head p{margin:0;color:var(--muted-foreground);max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:600;color:var(--muted-foreground);letter-spacing:0}.actions{display:flex;gap:8px;align-items:center}.button,button{border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);text-decoration:none;padding:8px 12px;border-radius:7px;font-weight:600;font-size:14px;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s,color .15s}.button.secondary{background:var(--card);color:var(--foreground);border-color:var(--border)}.button:hover,button:hover{background:#374151;border-color:#374151}.button.secondary:hover{background:var(--muted);border-color:var(--input)}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:5px}.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}.filters form{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end}.filters span,.auth-panel span{display:block;font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input{width:100%;border:1px solid var(--input);border-radius:7px;padding:8px 9px;background:var(--card);color:var(--foreground);transition:border-color .15s}.filters input:focus,.auth-panel input:focus{border-color:var(--ring);outline:none}.auth-panel{max-width:380px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:var(--destructive);font-weight:600}.ticket-list,.event-list{display:grid;gap:10px;margin-top:16px}.ticket-card,.event-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;transition:border-color .15s,background .15s}.ticket-card:hover,.event-card:hover{border-color:var(--input);background:#fff}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:600}.summary,.meta span,.empty-text,.event-meta{color:var(--muted-foreground)}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:600;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:var(--foreground);font-weight:600}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.timeline-item{border-top:1px solid var(--border);padding:12px 0}.timeline-item strong{display:block;font-weight:600}.timeline-item span{color:var(--muted-foreground);font-size:13px}.event-card{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}.event-marker span{display:grid;place-items:center;min-width:36px;height:28px;border-radius:999px;background:var(--muted);color:var(--muted-foreground);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.event-topline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.event-topline strong{font-weight:600}.event-topline span{color:var(--muted-foreground);font-size:12px}.event-body p{margin:6px 0 0}.event-links{display:flex;gap:10px;margin-top:8px}.copy-link{font-size:13px;color:#1d4ed8;text-decoration:none}.copy-link:hover{text-decoration:underline}.match-snippet{background:var(--muted);border-radius:7px;padding:10px}.warning{border-color:#f1c96b;background:#fff9eb}.empty{margin-top:16px}.pager{display:flex;gap:10px;align-items:center;margin:16px 0 0}.pager code{font-size:12px;color:var(--muted-foreground);overflow-wrap:anywhere}@media(max-width:860px){.app-shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}.sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr))}.content{padding:20px 14px}.page-head,.ticket-card a,.event-topline{display:block}.filters form,.detail-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}.event-card{grid-template-columns:1fr}}`
+	return `:root{--background:#f8fafc;--foreground:#111827;--card:#fff;--card-foreground:#111827;--muted:#f1f5f9;--muted-foreground:#64748b;--border:#e2e8f0;--input:#cbd5e1;--primary:#111827;--primary-foreground:#fff;--secondary:#f8fafc;--accent:#eef2ff;--success:#15803d;--warning:#b45309;--destructive:#b91c1c;--ring:#64748b;--radius:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--foreground);background:var(--background)}*{box-sizing:border-box}body{margin:0}.app-shell{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:rgba(255,255,255,.82);backdrop-filter:blur(12px);padding:18px 12px}.brand{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;margin:0 8px 22px}.brand span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--primary);color:var(--primary-foreground);font-weight:700}.brand strong{font-size:14px;font-weight:600}.sidebar nav{display:grid;gap:4px}.sidebar nav a{color:var(--muted-foreground);text-decoration:none;padding:8px 10px;border-radius:7px;font-size:14px}.sidebar nav a:hover{background:var(--muted);color:var(--foreground)}.content{max-width:1160px;width:100%;padding:30px 24px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:30px;line-height:1.12;font-weight:600;letter-spacing:0}.page-head p{margin:0;color:var(--muted-foreground);max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:600;color:var(--muted-foreground);letter-spacing:0}.actions{display:flex;gap:8px;align-items:center}.button,button{border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);text-decoration:none;padding:8px 12px;border-radius:7px;font-weight:600;font-size:14px;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s,color .15s}.button.secondary{background:var(--card);color:var(--foreground);border-color:var(--border)}.button:hover,button:hover{background:#374151;border-color:#374151}.button.secondary:hover{background:var(--muted);border-color:var(--input)}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:5px}.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}.filters form{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end}.filters span,.auth-panel span,.proposed-actions span{display:block;font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input,.proposed-actions input{width:100%;border:1px solid var(--input);border-radius:7px;padding:8px 9px;background:var(--card);color:var(--foreground);transition:border-color .15s}.filters input:focus,.auth-panel input:focus,.proposed-actions input:focus{border-color:var(--ring);outline:none}.auth-panel{max-width:380px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:var(--destructive);font-weight:600}.ticket-list,.event-list{display:grid;gap:10px;margin-top:16px}.ticket-card,.event-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;transition:border-color .15s,background .15s}.ticket-card:hover,.event-card:hover{border-color:var(--input);background:#fff}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:600}.summary,.meta span,.empty-text,.event-meta{color:var(--muted-foreground)}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:600;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:var(--foreground);font-weight:600}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.trust-strip{display:grid;grid-template-columns:1.3fr repeat(3,minmax(120px,.55fr));gap:10px;margin-bottom:16px}.trust-card{display:block;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;color:inherit;text-decoration:none}.trust-card span{display:block;color:var(--muted-foreground);font-size:12px;font-weight:600;text-transform:uppercase}.trust-card strong{display:block;margin-top:4px;font-weight:650}.trust-card p{margin:6px 0 0;color:var(--muted-foreground)}.trust-card.metric span{font-size:24px;color:var(--foreground);font-weight:650;text-transform:none}.trust-card.metric:hover{border-color:var(--input);background:#fff}.action-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}.action-grid form{display:grid;gap:10px;border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--secondary)}.timeline-item{border-top:1px solid var(--border);padding:12px 0}.timeline-item strong{display:block;font-weight:600}.timeline-item span{color:var(--muted-foreground);font-size:13px}.event-card{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}.event-marker span{display:grid;place-items:center;min-width:36px;height:28px;border-radius:999px;background:var(--muted);color:var(--muted-foreground);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.event-topline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.event-topline strong{font-weight:600}.event-topline span{color:var(--muted-foreground);font-size:12px}.event-body p{margin:6px 0 0}.event-links{display:flex;gap:10px;margin-top:8px}.copy-link{font-size:13px;color:#1d4ed8;text-decoration:none}.copy-link:hover{text-decoration:underline}.match-snippet{background:var(--muted);border-radius:7px;padding:10px}.warning{border-color:#f1c96b;background:#fff9eb}.empty{margin-top:16px}.pager{display:flex;gap:10px;align-items:center;margin:16px 0 0}.pager code{font-size:12px;color:var(--muted-foreground);overflow-wrap:anywhere}@media(max-width:860px){.app-shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}.sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr))}.content{padding:20px 14px}.page-head,.ticket-card a,.event-topline{display:block}.filters form,.detail-grid,.trust-strip,.action-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}.event-card{grid-template-columns:1fr}}`
 }
