@@ -2330,6 +2330,9 @@ type fakeRuntime struct {
 	proposedItems           []services.ProposedTicketTriageItem
 	readyProposedReq        services.ProposedTicketTriageRequest
 	readyProposedTicket     db.Ticket
+	enqueueProposedReq      services.ProposedTicketTriageRequest
+	rejectProposedReq       services.ProposedTicketTriageRequest
+	archiveProposedReq      services.ProposedTicketTriageRequest
 	recommendationReq       services.RecommendationRequest
 	recommendationResults   []services.RecommendationResult
 	relatedReq              services.RelatedWorkRequest
@@ -2484,6 +2487,21 @@ func (f *fakeRuntime) ListProposedTickets(_ context.Context, req services.ListPr
 func (f *fakeRuntime) ReadyProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
 	f.readyProposedReq = req
 	return f.readyProposedTicket, nil
+}
+
+func (f *fakeRuntime) EnqueueProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.enqueueProposedReq = req
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) RejectProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.rejectProposedReq = req
+	return db.Ticket{}, nil
+}
+
+func (f *fakeRuntime) ArchiveProposedTicket(_ context.Context, req services.ProposedTicketTriageRequest) (db.Ticket, error) {
+	f.archiveProposedReq = req
+	return db.Ticket{}, nil
 }
 
 func (f *fakeRuntime) SearchTickets(context.Context, services.SearchTicketsRequest) ([]services.SearchResult, error) {
