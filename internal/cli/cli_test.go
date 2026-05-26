@@ -825,6 +825,105 @@ func TestRunWorkspacesCreateAndListJSON(t *testing.T) {
 	}
 }
 
+func TestRunObservabilitySubscriptionsCreateAndListJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeRuntime{
+		webhookSubscription: db.WebhookSubscription{
+			ID:          testUUID(10),
+			WorkspaceID: testUUID(2),
+			ProjectID:   testUUID(3),
+			EndpointUrl: "https://observability.example.test/forge/events",
+			Secret:      pgtype.Text{String: "shared-secret", Valid: true},
+			EventTypes:  []string{"completed", "failed"},
+			Active:      true,
+			MaxAttempts: 5,
+			Description: "External sink",
+		},
+		webhookSubscriptions: []db.WebhookSubscription{{
+			ID:          testUUID(10),
+			WorkspaceID: testUUID(2),
+			ProjectID:   testUUID(3),
+			EndpointUrl: "https://observability.example.test/forge/events",
+			EventTypes:  []string{"completed"},
+			Active:      true,
+			MaxAttempts: 3,
+			Description: "External sink",
+		}},
+	}
+
+	code := RunWithDependencies([]string{
+		"observability", "subscriptions", "create",
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
+		"--url", "https://observability.example.test/forge/events",
+		"--secret", "shared-secret",
+		"--event-types", "completed, failed",
+		"--max-attempts", "5",
+		"--description", "External sink",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected create exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.createWebhookSubscriptionReq.WorkspaceID != testUUID(2) || fake.createWebhookSubscriptionReq.ProjectID != testUUID(3) {
+		t.Fatalf("expected subscription scope, got %#v", fake.createWebhookSubscriptionReq)
+	}
+	if fake.createWebhookSubscriptionReq.EndpointUrl != "https://observability.example.test/forge/events" {
+		t.Fatalf("expected endpoint URL, got %#v", fake.createWebhookSubscriptionReq)
+	}
+	if !fake.createWebhookSubscriptionReq.Secret.Valid || fake.createWebhookSubscriptionReq.Secret.String != "shared-secret" {
+		t.Fatalf("expected signing secret, got %#v", fake.createWebhookSubscriptionReq.Secret)
+	}
+	if strings.Join(fake.createWebhookSubscriptionReq.EventTypes, ",") != "completed,failed" {
+		t.Fatalf("expected event types, got %#v", fake.createWebhookSubscriptionReq.EventTypes)
+	}
+	if !strings.Contains(stdout.String(), `"secret_set":true`) {
+		t.Fatalf("expected secret redaction in subscription JSON, got %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = RunWithDependencies([]string{
+		"observability", "subscriptions", "list",
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
+		"--all",
+		"--json",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+
+	if code != 0 {
+		t.Fatalf("expected list exit code 0, got %d; stderr=%q", code, stderr.String())
+	}
+	if fake.listWebhookSubscriptionsReq.WorkspaceID != testUUID(2) || fake.listWebhookSubscriptionsReq.ProjectID != testUUID(3) {
+		t.Fatalf("expected list scope, got %#v", fake.listWebhookSubscriptionsReq)
+	}
+	if fake.listWebhookSubscriptionsReq.ActiveOnly {
+		t.Fatalf("expected --all to include inactive subscriptions, got %#v", fake.listWebhookSubscriptionsReq)
+	}
+	if !strings.Contains(stdout.String(), `"subscriptions":[{"active":true`) {
+		t.Fatalf("expected subscription list JSON, got %s", stdout.String())
+	}
+}
+
+func TestRunObservabilitySubscriptionsCreateRejectsUnsafeURL(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{
+		"observability", "subscriptions", "create",
+		"--workspace", uuidString(t, testUUID(2)),
+		"--project", uuidString(t, testUUID(3)),
+		"--url", "file:///tmp/sink",
+	}, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(&fakeRuntime{})})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "--endpoint-url must use http or https") {
+		t.Fatalf("expected URL validation error, got %q", stderr.String())
+	}
+}
+
 func TestRunProjectsCreateAndListJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeRuntime{
@@ -2442,72 +2541,76 @@ type noopRuntime struct {
 func (noopRuntime) Close() {}
 
 type fakeRuntime struct {
-	mu                      sync.Mutex
-	createReq               services.CreateTicketRequest
-	createTicket            db.Ticket
-	proposeReq              services.CreateTicketRequest
-	proposeTicket           db.Ticket
-	createFromAttemptReq    services.CreateTicketFromAttemptRequest
-	createFromAttemptTicket db.Ticket
-	claimReq                services.ClaimNextRequest
-	claimResult             services.ClaimNextResult
-	checkpointReq           services.CheckpointRequest
-	checkpointResult        services.CheckpointResult
-	completeReq             services.CompleteAttemptRequest
-	completeCalls           int
-	completeErr             error
-	completeResult          services.AttemptTransitionResult
-	blockReq                services.BlockAttemptRequest
-	blockCalls              int
-	blockErr                error
-	blockResult             services.AttemptTransitionResult
-	attempt                 db.Attempt
-	attemptErr              error
-	artifactReqs            []services.RegisterArtifactRequest
-	artifactReq             services.RegisterArtifactRequest
-	artifact                db.Artifact
-	artifactErr             error
-	storedArtifact          storage.StoredArtifact
-	storeLocalArtifactPath  string
-	storeLocalArtifactName  string
-	storeLocalArtifactErr   error
-	removedLocalArtifactURL string
-	removeLocalArtifactErr  error
-	listReq                 services.ListTicketsRequest
-	listProposedReq         services.ListProposedTicketsRequest
-	proposedItems           []services.ProposedTicketTriageItem
-	readyProposedReq        services.ProposedTicketTriageRequest
-	readyProposedTicket     db.Ticket
-	enqueueProposedReq      services.ProposedTicketTriageRequest
-	enqueueProposedTicket   db.Ticket
-	rejectProposedReq       services.ProposedTicketTriageRequest
-	rejectProposedTicket    db.Ticket
-	archiveProposedReq      services.ProposedTicketTriageRequest
-	archiveProposedTicket   db.Ticket
-	recommendationReq       services.RecommendationRequest
-	recommendationResults   []services.RecommendationResult
-	relatedReq              services.RelatedWorkRequest
-	relatedResults          []services.RelatedWorkResult
-	analyticsFilter         services.AnalyticsFilter
-	analyticsCall           string
-	analyticsSummary        services.AnalyticsSummary
-	analyticsGroups         []services.AnalyticsGroup
-	analyticsTrendFilter    services.AnalyticsTrendFilter
-	analyticsTrends         []services.AnalyticsTrend
-	maintenanceRuns         int
-	maintenanceResult       jobs.MaintenanceResult
-	maintenanceErr          error
-	webhookRuns             int
-	webhookResult           jobs.WebhookRunResult
-	webhookErr              error
-	workspace               db.Workspace
-	workspaces              []db.Workspace
-	workspaceName           string
-	project                 db.Project
-	projects                []db.Project
-	projectWorkspaceID      pgtype.UUID
-	projectListWorkspaceID  pgtype.UUID
-	projectName             string
+	mu                           sync.Mutex
+	createReq                    services.CreateTicketRequest
+	createTicket                 db.Ticket
+	proposeReq                   services.CreateTicketRequest
+	proposeTicket                db.Ticket
+	createFromAttemptReq         services.CreateTicketFromAttemptRequest
+	createFromAttemptTicket      db.Ticket
+	claimReq                     services.ClaimNextRequest
+	claimResult                  services.ClaimNextResult
+	checkpointReq                services.CheckpointRequest
+	checkpointResult             services.CheckpointResult
+	completeReq                  services.CompleteAttemptRequest
+	completeCalls                int
+	completeErr                  error
+	completeResult               services.AttemptTransitionResult
+	blockReq                     services.BlockAttemptRequest
+	blockCalls                   int
+	blockErr                     error
+	blockResult                  services.AttemptTransitionResult
+	attempt                      db.Attempt
+	attemptErr                   error
+	artifactReqs                 []services.RegisterArtifactRequest
+	artifactReq                  services.RegisterArtifactRequest
+	artifact                     db.Artifact
+	artifactErr                  error
+	storedArtifact               storage.StoredArtifact
+	storeLocalArtifactPath       string
+	storeLocalArtifactName       string
+	storeLocalArtifactErr        error
+	removedLocalArtifactURL      string
+	removeLocalArtifactErr       error
+	listReq                      services.ListTicketsRequest
+	listProposedReq              services.ListProposedTicketsRequest
+	proposedItems                []services.ProposedTicketTriageItem
+	readyProposedReq             services.ProposedTicketTriageRequest
+	readyProposedTicket          db.Ticket
+	enqueueProposedReq           services.ProposedTicketTriageRequest
+	enqueueProposedTicket        db.Ticket
+	rejectProposedReq            services.ProposedTicketTriageRequest
+	rejectProposedTicket         db.Ticket
+	archiveProposedReq           services.ProposedTicketTriageRequest
+	archiveProposedTicket        db.Ticket
+	recommendationReq            services.RecommendationRequest
+	recommendationResults        []services.RecommendationResult
+	relatedReq                   services.RelatedWorkRequest
+	relatedResults               []services.RelatedWorkResult
+	analyticsFilter              services.AnalyticsFilter
+	analyticsCall                string
+	analyticsSummary             services.AnalyticsSummary
+	analyticsGroups              []services.AnalyticsGroup
+	analyticsTrendFilter         services.AnalyticsTrendFilter
+	analyticsTrends              []services.AnalyticsTrend
+	maintenanceRuns              int
+	maintenanceResult            jobs.MaintenanceResult
+	maintenanceErr               error
+	webhookRuns                  int
+	webhookResult                jobs.WebhookRunResult
+	webhookErr                   error
+	workspace                    db.Workspace
+	workspaces                   []db.Workspace
+	workspaceName                string
+	project                      db.Project
+	projects                     []db.Project
+	projectWorkspaceID           pgtype.UUID
+	projectListWorkspaceID       pgtype.UUID
+	projectName                  string
+	createWebhookSubscriptionReq db.CreateWebhookSubscriptionParams
+	webhookSubscription          db.WebhookSubscription
+	listWebhookSubscriptionsReq  db.ListWebhookSubscriptionsParams
+	webhookSubscriptions         []db.WebhookSubscription
 }
 
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
@@ -2838,6 +2941,16 @@ func (f *fakeRuntime) RunWebhooks(context.Context) (jobs.WebhookRunResult, error
 	defer f.mu.Unlock()
 	f.webhookRuns++
 	return f.webhookResult, f.webhookErr
+}
+
+func (f *fakeRuntime) CreateWebhookSubscription(_ context.Context, req db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error) {
+	f.createWebhookSubscriptionReq = req
+	return f.webhookSubscription, nil
+}
+
+func (f *fakeRuntime) ListWebhookSubscriptions(_ context.Context, req db.ListWebhookSubscriptionsParams) ([]db.WebhookSubscription, error) {
+	f.listWebhookSubscriptionsReq = req
+	return f.webhookSubscriptions, nil
 }
 
 func proposedTriageTicket(status string) db.Ticket {

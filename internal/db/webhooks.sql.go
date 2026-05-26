@@ -247,6 +247,56 @@ func (q *Queries) ListWebhookDeliveriesByEvent(ctx context.Context, eventID pgty
 	return items, nil
 }
 
+const listWebhookSubscriptions = `-- name: ListWebhookSubscriptions :many
+SELECT id, workspace_id, project_id, endpoint_url, secret, event_types, active, max_attempts, description, created_at, updated_at
+FROM webhook_subscriptions
+WHERE workspace_id = $1
+  AND project_id = $2
+  AND (
+      NOT $3::boolean
+      OR active
+  )
+ORDER BY created_at DESC
+`
+
+type ListWebhookSubscriptionsParams struct {
+	WorkspaceID pgtype.UUID `db:"workspace_id" json:"workspace_id"`
+	ProjectID   pgtype.UUID `db:"project_id" json:"project_id"`
+	ActiveOnly  bool        `db:"active_only" json:"active_only"`
+}
+
+func (q *Queries) ListWebhookSubscriptions(ctx context.Context, arg ListWebhookSubscriptionsParams) ([]WebhookSubscription, error) {
+	rows, err := q.db.Query(ctx, listWebhookSubscriptions, arg.WorkspaceID, arg.ProjectID, arg.ActiveOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WebhookSubscription{}
+	for rows.Next() {
+		var i WebhookSubscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.EndpointUrl,
+			&i.Secret,
+			&i.EventTypes,
+			&i.Active,
+			&i.MaxAttempts,
+			&i.Description,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markWebhookDeliveryFailed = `-- name: MarkWebhookDeliveryFailed :one
 UPDATE webhook_deliveries
 SET status = CASE

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -62,6 +63,7 @@ var commands = []command{
 	{"recommendations", "Recommend the best claimable tickets to pick next."},
 	{"related", "Find historical tickets related to a ticket."},
 	{"analytics", "Show basic attempt metrics and analytics."},
+	{"observability", "Manage observability exports."},
 	{"codex", "Codex harness convenience commands."},
 }
 
@@ -128,6 +130,8 @@ type RuntimeHandle interface {
 	AnalyticsTrends(context.Context, services.AnalyticsTrendFilter) ([]services.AnalyticsTrend, error)
 	RunMaintenance(context.Context) (jobs.MaintenanceResult, error)
 	RunWebhooks(context.Context) (jobs.WebhookRunResult, error)
+	CreateWebhookSubscription(context.Context, db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error)
+	ListWebhookSubscriptions(context.Context, db.ListWebhookSubscriptionsParams) ([]db.WebhookSubscription, error)
 }
 
 type Dependencies struct {
@@ -226,6 +230,8 @@ func runRuntimeCommand(name string, args []string, stdout, stderr io.Writer, dep
 		return runAttachCommand(ctx, args, stdout, stderr, deps)
 	case "analytics":
 		return runAnalyticsCommand(ctx, args, stdout, stderr, deps)
+	case "observability":
+		return runObservabilityCommand(ctx, args, stdout, stderr, deps)
 	}
 	fmt.Fprintf(stderr, "command %q is not implemented yet\n", name)
 	return 1
@@ -1363,6 +1369,167 @@ func runAnalyticsCommand(ctx context.Context, args []string, stdout, stderr io.W
 	}
 }
 
+func runObservabilityCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printObservabilityHelp(stdout)
+		return 0
+	}
+	if args[0] != "subscriptions" {
+		fmt.Fprintf(stderr, "unknown observability command %q\n\n", args[0])
+		printObservabilityHelp(stderr)
+		return 2
+	}
+	if len(args) == 1 || isHelpArg(args[1]) {
+		printObservabilitySubscriptionsHelp(stdout)
+		return 0
+	}
+	switch args[1] {
+	case "list":
+		return runObservabilitySubscriptionsListCommand(ctx, args[2:], stdout, stderr, deps)
+	case "create":
+		return runObservabilitySubscriptionsCreateCommand(ctx, args[2:], stdout, stderr, deps)
+	default:
+		fmt.Fprintf(stderr, "unknown observability subscriptions command %q\n\n", args[1])
+		printObservabilitySubscriptionsHelp(stderr)
+		return 2
+	}
+}
+
+func runObservabilitySubscriptionsListCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("observability subscriptions list", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID string
+	var all bool
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
+	flags.BoolVar(&all, "all", false, "include inactive subscriptions")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	workspaceUUID, err := requiredUUIDFlag("--workspace-id", workspaceID)
+	if err != nil {
+		fmt.Fprintf(stderr, "observability subscriptions list argument error: %v\n", err)
+		return 2
+	}
+	projectUUID, err := requiredUUIDFlag("--project-id", projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "observability subscriptions list argument error: %v\n", err)
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	subscriptions, err := rt.ListWebhookSubscriptions(ctx, db.ListWebhookSubscriptionsParams{
+		WorkspaceID: workspaceUUID,
+		ProjectID:   projectUUID,
+		ActiveOnly:  !all,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "observability subscriptions list error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, map[string]any{"subscriptions": webhookSubscriptionPayloads(subscriptions)})
+}
+
+func runObservabilitySubscriptionsCreateCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	flags := newFlagSet("observability subscriptions create", stderr)
+	var opts commandOptions
+	opts.bind(flags)
+	var workspaceID, projectID, endpointURL, secret, eventTypes, description string
+	var inactive bool
+	var maxAttempts int
+	flags.StringVar(&workspaceID, "workspace-id", "", "workspace id")
+	flags.StringVar(&workspaceID, "workspace", "", "workspace id")
+	flags.StringVar(&projectID, "project-id", "", "project id")
+	flags.StringVar(&projectID, "project", "", "project id")
+	flags.StringVar(&endpointURL, "endpoint-url", "", "webhook endpoint URL")
+	flags.StringVar(&endpointURL, "url", "", "webhook endpoint URL")
+	flags.StringVar(&secret, "secret", "", "webhook signing secret")
+	flags.StringVar(&eventTypes, "event-types", "", "comma-separated event types; empty subscribes to all")
+	flags.IntVar(&maxAttempts, "max-attempts", 3, "maximum delivery attempts")
+	flags.StringVar(&description, "description", "", "subscription description")
+	flags.BoolVar(&inactive, "inactive", false, "create subscription inactive")
+	if !parseFlags(flags, args) {
+		return 2
+	}
+	workspaceUUID, err := requiredUUIDFlag("--workspace-id", workspaceID)
+	if err != nil {
+		fmt.Fprintf(stderr, "observability subscriptions create argument error: %v\n", err)
+		return 2
+	}
+	projectUUID, err := requiredUUIDFlag("--project-id", projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "observability subscriptions create argument error: %v\n", err)
+		return 2
+	}
+	if err := validateWebhookEndpointURL(endpointURL); err != nil {
+		fmt.Fprintf(stderr, "observability subscriptions create argument error: %v\n", err)
+		return 2
+	}
+	if maxAttempts <= 0 || maxAttempts > math.MaxInt32 {
+		fmt.Fprintln(stderr, "observability subscriptions create argument error: --max-attempts must be between 1 and 2147483647")
+		return 2
+	}
+	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
+	if !ok {
+		return 1
+	}
+	defer rt.Close()
+	subscription, err := rt.CreateWebhookSubscription(ctx, db.CreateWebhookSubscriptionParams{
+		WorkspaceID: workspaceUUID,
+		ProjectID:   projectUUID,
+		EndpointUrl: strings.TrimSpace(endpointURL),
+		Secret:      pgtype.Text{String: strings.TrimSpace(secret), Valid: strings.TrimSpace(secret) != ""},
+		EventTypes:  splitCSV(eventTypes),
+		Active:      !inactive,
+		MaxAttempts: int32(maxAttempts),
+		Description: strings.TrimSpace(description),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "observability subscriptions create error: %v\n", err)
+		return 1
+	}
+	return writeJSON(stdout, stderr, webhookSubscriptionPayload(subscription))
+}
+
+func validateWebhookEndpointURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return errors.New("--endpoint-url is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("--endpoint-url must be a valid URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("--endpoint-url must use http or https")
+	}
+	if parsed.Host == "" {
+		return errors.New("--endpoint-url must include a host")
+	}
+	return nil
+}
+
+func splitCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return []string{}
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
+}
+
 func runCodexCommand(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		printCodexHelp(stdout)
@@ -2370,6 +2537,28 @@ func projectPayloads(projects []db.Project) []map[string]any {
 	return payloads
 }
 
+func webhookSubscriptionPayload(subscription db.WebhookSubscription) map[string]any {
+	return map[string]any{
+		"id":           uuidText(subscription.ID),
+		"workspace_id": uuidText(subscription.WorkspaceID),
+		"project_id":   uuidText(subscription.ProjectID),
+		"endpoint_url": subscription.EndpointUrl,
+		"secret_set":   subscription.Secret.Valid && subscription.Secret.String != "",
+		"event_types":  subscription.EventTypes,
+		"active":       subscription.Active,
+		"max_attempts": subscription.MaxAttempts,
+		"description":  subscription.Description,
+	}
+}
+
+func webhookSubscriptionPayloads(subscriptions []db.WebhookSubscription) []map[string]any {
+	payloads := make([]map[string]any, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		payloads = append(payloads, webhookSubscriptionPayload(subscription))
+	}
+	return payloads
+}
+
 func attemptPayload(attempt db.Attempt) map[string]any {
 	return map[string]any{
 		"id":        uuidText(attempt.ID),
@@ -2652,7 +2841,7 @@ func isKnownCommand(name string) bool {
 
 func isRuntimeCommand(name string) bool {
 	switch name {
-	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "workspaces", "projects", "proposed", "recommendations", "related", "analytics":
+	case "create", "propose", "claim-next", "heartbeat", "checkpoint", "complete", "fail", "block", "cancel", "attach", "list", "get", "workspaces", "projects", "proposed", "recommendations", "related", "analytics", "observability":
 		return true
 	default:
 		return false
@@ -2700,6 +2889,10 @@ func printCommandHelp(w io.Writer, name string) {
 		printProposedHelp(w)
 		return
 	}
+	if name == "observability" {
+		printObservabilityHelp(w)
+		return
+	}
 	for _, cmd := range commands {
 		if cmd.name == name {
 			fmt.Fprintf(w, "Usage:\n  forge %s [flags]\n\n%s\n", cmd.name, strings.TrimSuffix(cmd.description, "."))
@@ -2725,6 +2918,16 @@ func printCodexHelp(w io.Writer) {
 func printAnalyticsHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  forge analytics <summary|by-model|by-harness|by-status|by-agent|trends> [flags]")
+}
+
+func printObservabilityHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge observability <subscriptions> [flags]")
+}
+
+func printObservabilitySubscriptionsHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  forge observability subscriptions <list|create> [flags]")
 }
 
 func printWorkspacesHelp(w io.Writer) {

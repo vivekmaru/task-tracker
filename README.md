@@ -26,12 +26,13 @@ Implemented:
 - Bubble Tea TUI for scoped queue inspection and ticket detail handoff links.
 - Basic attempt analytics by summary, model, and harness.
 - Structured observability webhook payloads for ticket events, attempt metadata, and attempt metrics.
+- JSON-first CLI management for observability webhook subscriptions.
 - Correctness regression tests across services, CLI, web, storage, runtime, and contracts.
 
 Known current limitations:
 
 - `forge server` starts the HTTP router with the OpenAPI surface and human web inspection pages. `forge worker` runs the maintenance and webhook delivery workers in a long-lived loop; use `forge worker --once` for deterministic smoke checks.
-- Observability export subscriptions currently use database-level configuration; CLI/API management and OpenTelemetry-native exporters are not implemented yet.
+- Observability export API management and OpenTelemetry-native exporters are not implemented yet.
 - The TUI and web UI are usable, but still early. They are not yet at the full "beautiful, low-friction" product bar.
 
 ## Requirements
