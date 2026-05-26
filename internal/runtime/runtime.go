@@ -121,6 +121,14 @@ func (r *Runtime) RunWebhooks(ctx context.Context) (jobs.WebhookRunResult, error
 	return r.Webhooks.RunOnce(ctx)
 }
 
+func (r *Runtime) CreateWebhookSubscription(ctx context.Context, req db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error) {
+	return r.Queries.CreateWebhookSubscription(ctx, req)
+}
+
+func (r *Runtime) ListWebhookSubscriptions(ctx context.Context, req db.ListWebhookSubscriptionsParams) ([]db.WebhookSubscription, error) {
+	return r.Queries.ListWebhookSubscriptions(ctx, req)
+}
+
 func (r *Runtime) CreateTicket(ctx context.Context, req services.CreateTicketRequest) (db.Ticket, error) {
 	return r.Tickets.CreateTicket(ctx, req)
 }

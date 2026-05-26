@@ -4,31 +4,24 @@ Forge can export execution ledger events through the durable webhook delivery pa
 
 ## Configuration
 
-Exports use `webhook_subscriptions` and `webhook_deliveries`.
+Exports use scoped webhook subscriptions and durable webhook deliveries.
 
-Create a subscription for a workspace/project scope:
+Create and inspect a subscription for a workspace/project scope:
 
-```sql
-INSERT INTO webhook_subscriptions (
-    workspace_id,
-    project_id,
-    endpoint_url,
-    secret,
-    event_types,
-    active,
-    max_attempts,
-    description
-)
-VALUES (
-    '<workspace-id>',
-    '<project-id>',
-    'https://observability.example.test/forge/events',
-    'shared-secret',
-    ARRAY['claimed', 'checkpointed', 'completed', 'failed', 'blocked'],
-    true,
-    3,
-    'External observability sink'
-);
+```bash
+forge observability subscriptions create \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID" \
+  --endpoint-url https://observability.example.test/forge/events \
+  --secret shared-secret \
+  --event-types claimed,checkpointed,completed,failed,blocked \
+  --description "External observability sink" \
+  --json
+
+forge observability subscriptions list \
+  --workspace-id "$WORKSPACE_ID" \
+  --project-id "$PROJECT_ID" \
+  --json
 ```
 
 An empty `event_types` array subscribes to all ticket events in that scope. The endpoint must be `http://` or `https://`. If `secret` is set, deliveries include `X-Forge-Signature-SHA256`, an HMAC-SHA256 over the exact JSON request body.
@@ -84,7 +77,7 @@ The `attempt` section is omitted for ticket-only events. The `metrics` section i
 ## Limits
 
 - This is an export foundation, not a full observability platform. Forge does not yet provide sink management UI, OpenTelemetry exporters, dashboards, or aggregation.
-- Subscription creation is currently database-level; a CLI/API management surface can be added later without changing the payload contract.
+- Subscription creation and listing are available through the JSON CLI; API and web management surfaces can be added later without changing the payload contract.
 - Delivery is at least once. Consumers should deduplicate by `event.id` or the `X-Forge-Event-ID` header.
 - Payload data comes from ticket events plus event-time snapshots of attempts and attempt metrics. Search analytics, policy decisions, claims comparisons, artifacts, and UI state are intentionally out of scope.
 - The current worker type supports the durable claim/post/retry path. A long-lived scheduler around it is a separate operations concern.

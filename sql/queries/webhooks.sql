@@ -21,6 +21,17 @@ VALUES (
 )
 RETURNING *;
 
+-- name: ListWebhookSubscriptions :many
+SELECT *
+FROM webhook_subscriptions
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND project_id = sqlc.arg(project_id)
+  AND (
+      NOT sqlc.arg(active_only)::boolean
+      OR active
+  )
+ORDER BY created_at DESC;
+
 -- name: ListWebhookDeliveriesByEvent :many
 SELECT *
 FROM webhook_deliveries
