@@ -19,6 +19,7 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/config"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
+	"github.com/vivek/agent-task-tracker/internal/jobs"
 	"github.com/vivek/agent-task-tracker/internal/services"
 	"github.com/vivek/agent-task-tracker/internal/storage"
 	forgetui "github.com/vivek/agent-task-tracker/internal/tui"
@@ -155,7 +156,7 @@ func TestRunServerReportsClearConfigValidationError(t *testing.T) {
 	}
 }
 
-func TestRunWorkerLoadsConfigFile(t *testing.T) {
+func TestRunWorkerOnceLoadsConfigFileAndRunsWorkers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "forge.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -167,10 +168,14 @@ func TestRunWorkerLoadsConfigFile(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	var opened config.Config
-	code := RunWithDependencies([]string{"worker", "--config", path}, &stdout, &stderr, Dependencies{
+	fake := &fakeRuntime{
+		maintenanceResult: jobs.MaintenanceResult{ExpiredAttempts: 2, DeletedIdempotencyKeys: 3},
+		webhookResult:     jobs.WebhookRunResult{Claimed: 4, Succeeded: 3, Retried: 1},
+	}
+	code := RunWithDependencies([]string{"worker", "--config", path, "--once"}, &stdout, &stderr, Dependencies{
 		OpenRuntime: func(_ context.Context, cfg config.Config) (RuntimeHandle, error) {
 			opened = cfg
-			return &noopRuntime{}, nil
+			return fake, nil
 		},
 	})
 
@@ -183,11 +188,35 @@ func TestRunWorkerLoadsConfigFile(t *testing.T) {
 	if opened.WorkerConcurrency != 3 {
 		t.Fatalf("expected runtime opener to receive worker concurrency, got %#v", opened)
 	}
-	if !strings.Contains(stdout.String(), "worker runtime configuration ok") {
-		t.Fatalf("expected worker startup message, got %q", stdout.String())
+	if fake.maintenanceRuns != 1 || fake.webhookRuns != 1 {
+		t.Fatalf("expected one maintenance and webhook run, got maintenance=%d webhooks=%d", fake.maintenanceRuns, fake.webhookRuns)
+	}
+	for _, want := range []string{
+		"worker runtime ready",
+		"maintenance expired_attempts=2 deleted_idempotency_keys=3",
+		"webhooks claimed=4 succeeded=3 failed=0 retried=1",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("expected worker output to contain %q, got %q", want, stdout.String())
+		}
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunWorkerRejectsInvalidInterval(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{"worker", "--interval", "0s"}, &stdout, &stderr, Dependencies{
+		OpenRuntime: fakeRuntimeOpener(&fakeRuntime{}),
+	})
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "worker argument error: --interval must be greater than zero") {
+		t.Fatalf("expected interval validation error, got %q", stderr.String())
 	}
 }
 
@@ -2428,6 +2457,12 @@ type fakeRuntime struct {
 	analyticsGroups         []services.AnalyticsGroup
 	analyticsTrendFilter    services.AnalyticsTrendFilter
 	analyticsTrends         []services.AnalyticsTrend
+	maintenanceRuns         int
+	maintenanceResult       jobs.MaintenanceResult
+	maintenanceErr          error
+	webhookRuns             int
+	webhookResult           jobs.WebhookRunResult
+	webhookErr              error
 	workspace               db.Workspace
 	workspaces              []db.Workspace
 	workspaceName           string
@@ -2752,6 +2787,16 @@ func (f *fakeRuntime) AnalyticsTrends(_ context.Context, filter services.Analyti
 	f.analyticsTrendFilter = filter
 	f.analyticsCall = "trends"
 	return f.analyticsTrends, nil
+}
+
+func (f *fakeRuntime) RunMaintenance(context.Context) (jobs.MaintenanceResult, error) {
+	f.maintenanceRuns++
+	return f.maintenanceResult, f.maintenanceErr
+}
+
+func (f *fakeRuntime) RunWebhooks(context.Context) (jobs.WebhookRunResult, error) {
+	f.webhookRuns++
+	return f.webhookResult, f.webhookErr
 }
 
 func proposedTriageTicket(status string) db.Ticket {

@@ -113,6 +113,14 @@ func (r *Runtime) Close() {
 	}
 }
 
+func (r *Runtime) RunMaintenance(ctx context.Context) (jobs.MaintenanceResult, error) {
+	return r.Maintenance.RunOnce(ctx)
+}
+
+func (r *Runtime) RunWebhooks(ctx context.Context) (jobs.WebhookRunResult, error) {
+	return r.Webhooks.RunOnce(ctx)
+}
+
 func (r *Runtime) CreateTicket(ctx context.Context, req services.CreateTicketRequest) (db.Ticket, error) {
 	return r.Tickets.CreateTicket(ctx, req)
 }
