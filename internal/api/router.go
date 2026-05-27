@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
+	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
 	"github.com/vivek/agent-task-tracker/internal/web"
 )
@@ -79,6 +82,7 @@ func RegisterPhaseOneRoutes(api huma.API, rt web.Runtime) {
 	register[idInput](api, http.MethodDelete, "/artifacts/{id}", "delete-artifact", "Delete artifact")
 
 	registerAnalyticsRoutes(api, rt)
+	registerObservabilityRoutes(api, rt)
 }
 
 func register[I any](api huma.API, method, path, operationID, summary string) {
@@ -129,6 +133,11 @@ type analyticsRuntime interface {
 
 type eventRuntime interface {
 	ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error)
+}
+
+type observabilityRuntime interface {
+	CreateWebhookSubscription(context.Context, db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error)
+	ListWebhookSubscriptions(context.Context, db.ListWebhookSubscriptionsParams) ([]db.WebhookSubscription, error)
 }
 
 type eventsInput struct {
@@ -330,6 +339,242 @@ func registerAnalyticsRoutes(api huma.API, rt web.Runtime) {
 	})
 }
 
+type observabilitySubscriptionsInput struct {
+	WorkspaceID string `query:"workspace_id" doc:"Workspace ID"`
+	ProjectID   string `query:"project_id" doc:"Project ID"`
+	All         bool   `query:"all,omitempty" doc:"Include inactive subscriptions"`
+}
+
+type createObservabilitySubscriptionInput struct {
+	Body createObservabilitySubscriptionBody `json:"body"`
+}
+
+type createObservabilitySubscriptionBody struct {
+	WorkspaceID string   `json:"workspace_id"`
+	ProjectID   string   `json:"project_id"`
+	EndpointURL string   `json:"endpoint_url"`
+	Secret      string   `json:"secret,omitempty"`
+	EventTypes  []string `json:"event_types,omitempty"`
+	Active      *bool    `json:"active,omitempty"`
+	MaxAttempts *int32   `json:"max_attempts,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
+type observabilitySubscriptionsOutput struct {
+	Body struct {
+		Subscriptions []observabilitySubscriptionPayload `json:"subscriptions"`
+	} `json:"body"`
+}
+
+type observabilitySubscriptionOutput struct {
+	Body struct {
+		Subscription observabilitySubscriptionPayload `json:"subscription"`
+	} `json:"body"`
+}
+
+type observabilitySubscriptionPayload struct {
+	ID          string   `json:"id"`
+	WorkspaceID string   `json:"workspace_id"`
+	ProjectID   string   `json:"project_id"`
+	EndpointURL string   `json:"endpoint_url"`
+	SecretSet   bool     `json:"secret_set"`
+	EventTypes  []string `json:"event_types"`
+	Active      bool     `json:"active"`
+	MaxAttempts int32    `json:"max_attempts"`
+	Description string   `json:"description"`
+}
+
+var supportedObservabilityEventTypes = map[string]struct{}{
+	"created":          {},
+	"proposed":         {},
+	"claimed":          {},
+	"heartbeat":        {},
+	"checkpointed":     {},
+	"updated":          {},
+	"completed":        {},
+	"failed":           {},
+	"blocked":          {},
+	"expired":          {},
+	"ready":            {},
+	"reopened":         {},
+	"unblocked":        {},
+	"review_requested": {},
+	"reviewed":         {},
+	"archived":         {},
+}
+
+func registerObservabilityRoutes(api huma.API, rt web.Runtime) {
+	observability, _ := rt.(observabilityRuntime)
+	huma.Register[observabilitySubscriptionsInput, observabilitySubscriptionsOutput](api, huma.Operation{
+		OperationID: "list-observability-subscriptions",
+		Method:      http.MethodGet,
+		Path:        "/observability/subscriptions",
+		Summary:     "List observability subscriptions",
+		Tags:        []string{"Phase 5"},
+	}, func(ctx context.Context, input *observabilitySubscriptionsInput) (*observabilitySubscriptionsOutput, error) {
+		if observability == nil {
+			return nil, huma.Error501NotImplemented("route is registered; handler wiring is not implemented yet")
+		}
+		workspaceID, projectID, err := observabilityScope(input.WorkspaceID, input.ProjectID)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		subscriptions, err := observability.ListWebhookSubscriptions(ctx, db.ListWebhookSubscriptionsParams{
+			WorkspaceID: workspaceID,
+			ProjectID:   projectID,
+			ActiveOnly:  !input.All,
+		})
+		if err != nil {
+			return nil, huma.Error500InternalServerError("observability subscription list failed", err)
+		}
+		out := &observabilitySubscriptionsOutput{}
+		out.Body.Subscriptions = observabilitySubscriptionPayloads(subscriptions)
+		return out, nil
+	})
+
+	huma.Register[createObservabilitySubscriptionInput, observabilitySubscriptionOutput](api, huma.Operation{
+		OperationID: "create-observability-subscription",
+		Method:      http.MethodPost,
+		Path:        "/observability/subscriptions",
+		Summary:     "Create observability subscription",
+		Tags:        []string{"Phase 5"},
+	}, func(ctx context.Context, input *createObservabilitySubscriptionInput) (*observabilitySubscriptionOutput, error) {
+		if observability == nil {
+			return nil, huma.Error501NotImplemented("route is registered; handler wiring is not implemented yet")
+		}
+		req, err := createObservabilitySubscriptionParams(input.Body)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		subscription, err := observability.CreateWebhookSubscription(ctx, req)
+		if err != nil {
+			return nil, observabilitySubscriptionCreateError(err)
+		}
+		out := &observabilitySubscriptionOutput{}
+		out.Body.Subscription = makeObservabilitySubscriptionPayload(subscription)
+		return out, nil
+	})
+}
+
+func observabilityScope(workspaceIDText, projectIDText string) (pgtype.UUID, pgtype.UUID, error) {
+	workspaceID, err := parseRequiredUUID("workspace_id", workspaceIDText)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	projectID, err := parseRequiredUUID("project_id", projectIDText)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	return workspaceID, projectID, nil
+}
+
+func createObservabilitySubscriptionParams(body createObservabilitySubscriptionBody) (db.CreateWebhookSubscriptionParams, error) {
+	workspaceID, projectID, err := observabilityScope(body.WorkspaceID, body.ProjectID)
+	if err != nil {
+		return db.CreateWebhookSubscriptionParams{}, err
+	}
+	if strings.TrimSpace(body.EndpointURL) == "" {
+		return db.CreateWebhookSubscriptionParams{}, errors.New("endpoint_url is required")
+	}
+	if err := validateWebhookEndpointURL(body.EndpointURL); err != nil {
+		return db.CreateWebhookSubscriptionParams{}, err
+	}
+	maxAttempts := int32(3)
+	if body.MaxAttempts != nil {
+		maxAttempts = *body.MaxAttempts
+	}
+	if maxAttempts <= 0 {
+		return db.CreateWebhookSubscriptionParams{}, errors.New("max_attempts must be greater than zero")
+	}
+	active := true
+	if body.Active != nil {
+		active = *body.Active
+	}
+	eventTypes, err := normalizeObservabilityEventTypes(body.EventTypes)
+	if err != nil {
+		return db.CreateWebhookSubscriptionParams{}, err
+	}
+	return db.CreateWebhookSubscriptionParams{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		EndpointUrl: strings.TrimSpace(body.EndpointURL),
+		Secret:      pgtype.Text{String: strings.TrimSpace(body.Secret), Valid: strings.TrimSpace(body.Secret) != ""},
+		EventTypes:  eventTypes,
+		Active:      active,
+		MaxAttempts: maxAttempts,
+		Description: strings.TrimSpace(body.Description),
+	}, nil
+}
+
+func normalizeObservabilityEventTypes(values []string) ([]string, error) {
+	if values == nil {
+		return []string{}, nil
+	}
+	eventTypes := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := supportedObservabilityEventTypes[value]; !ok {
+			return nil, errors.New("unsupported event_type " + value)
+		}
+		eventTypes = append(eventTypes, value)
+	}
+	return eventTypes, nil
+}
+
+func observabilitySubscriptionCreateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			return huma.Error404NotFound("referenced workspace or project does not exist", err)
+		case "23505":
+			return huma.Error409Conflict("observability subscription already exists", err)
+		case "23502", "23514":
+			return huma.Error400BadRequest("invalid observability subscription", err)
+		}
+	}
+	return huma.Error500InternalServerError("observability subscription create failed", err)
+}
+
+func validateWebhookEndpointURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("endpoint_url must use http or https")
+	}
+	if parsed.Host == "" {
+		return errors.New("endpoint_url must include a host")
+	}
+	return nil
+}
+
+func makeObservabilitySubscriptionPayload(subscription db.WebhookSubscription) observabilitySubscriptionPayload {
+	return observabilitySubscriptionPayload{
+		ID:          uuidText(subscription.ID),
+		WorkspaceID: uuidText(subscription.WorkspaceID),
+		ProjectID:   uuidText(subscription.ProjectID),
+		EndpointURL: subscription.EndpointUrl,
+		SecretSet:   subscription.Secret.Valid && subscription.Secret.String != "",
+		EventTypes:  subscription.EventTypes,
+		Active:      subscription.Active,
+		MaxAttempts: subscription.MaxAttempts,
+		Description: subscription.Description,
+	}
+}
+
+func observabilitySubscriptionPayloads(subscriptions []db.WebhookSubscription) []observabilitySubscriptionPayload {
+	out := make([]observabilitySubscriptionPayload, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		out = append(out, makeObservabilitySubscriptionPayload(subscription))
+	}
+	return out
+}
+
 func analyticsFilter(workspaceID, projectID string) (services.AnalyticsFilter, error) {
 	workspaceUUID, err := parseOptionalUUID(workspaceID)
 	if err != nil {
@@ -340,6 +585,26 @@ func analyticsFilter(workspaceID, projectID string) (services.AnalyticsFilter, e
 		return services.AnalyticsFilter{}, err
 	}
 	return services.AnalyticsFilter{WorkspaceID: workspaceUUID, ProjectID: projectUUID}, nil
+}
+
+func parseRequiredUUID(name, value string) (pgtype.UUID, error) {
+	id, err := parseOptionalUUID(value)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if !id.Valid {
+		return pgtype.UUID{}, errors.New(name + " is required")
+	}
+	return id, nil
+}
+
+func uuidText(id pgtype.UUID) string {
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
 }
 
 func parseOptionalUUID(value string) (pgtype.UUID, error) {
