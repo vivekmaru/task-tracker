@@ -171,6 +171,41 @@ func TestObservabilitySubscriptionAPIDefaultsOmittedEventTypesAndAttempts(t *tes
 	}
 }
 
+func TestObservabilitySubscriptionAPINormalizesEventTypes(t *testing.T) {
+	rt := &fakeObservabilityRuntime{}
+	router := NewRouterWithRuntime(rt)
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events","event_types":[" completed ",""," failed "]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected create status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(rt.createReq.EventTypes, ","); got != "completed,failed" {
+		t.Fatalf("expected normalized event types completed,failed, got %#v", rt.createReq.EventTypes)
+	}
+}
+
+func TestObservabilitySubscriptionAPIRejectsUnsupportedEventType(t *testing.T) {
+	router := NewRouterWithRuntime(&fakeObservabilityRuntime{})
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events","event_types":["complete"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unsupported event_type complete") {
+		t.Fatalf("expected unsupported event type error, got %s", rec.Body.String())
+	}
+}
+
 func TestObservabilitySubscriptionAPIRejectsExplicitZeroAttempts(t *testing.T) {
 	router := NewRouterWithRuntime(&fakeObservabilityRuntime{})
 	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events","max_attempts":0}`

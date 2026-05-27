@@ -384,6 +384,25 @@ type observabilitySubscriptionPayload struct {
 	Description string   `json:"description"`
 }
 
+var supportedObservabilityEventTypes = map[string]struct{}{
+	"created":          {},
+	"proposed":         {},
+	"claimed":          {},
+	"heartbeat":        {},
+	"checkpointed":     {},
+	"updated":          {},
+	"completed":        {},
+	"failed":           {},
+	"blocked":          {},
+	"expired":          {},
+	"ready":            {},
+	"reopened":         {},
+	"unblocked":        {},
+	"review_requested": {},
+	"reviewed":         {},
+	"archived":         {},
+}
+
 func registerObservabilityRoutes(api huma.API, rt web.Runtime) {
 	observability, _ := rt.(observabilityRuntime)
 	huma.Register[observabilitySubscriptionsInput, observabilitySubscriptionsOutput](api, huma.Operation{
@@ -471,9 +490,9 @@ func createObservabilitySubscriptionParams(body createObservabilitySubscriptionB
 	if body.Active != nil {
 		active = *body.Active
 	}
-	eventTypes := body.EventTypes
-	if eventTypes == nil {
-		eventTypes = []string{}
+	eventTypes, err := normalizeObservabilityEventTypes(body.EventTypes)
+	if err != nil {
+		return db.CreateWebhookSubscriptionParams{}, err
 	}
 	return db.CreateWebhookSubscriptionParams{
 		WorkspaceID: workspaceID,
@@ -485,6 +504,24 @@ func createObservabilitySubscriptionParams(body createObservabilitySubscriptionB
 		MaxAttempts: maxAttempts,
 		Description: strings.TrimSpace(body.Description),
 	}, nil
+}
+
+func normalizeObservabilityEventTypes(values []string) ([]string, error) {
+	if values == nil {
+		return []string{}, nil
+	}
+	eventTypes := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := supportedObservabilityEventTypes[value]; !ok {
+			return nil, errors.New("unsupported event_type " + value)
+		}
+		eventTypes = append(eventTypes, value)
+	}
+	return eventTypes, nil
 }
 
 func observabilitySubscriptionCreateError(err error) error {
