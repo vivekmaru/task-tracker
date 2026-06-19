@@ -1566,7 +1566,7 @@ func workspaceIndexPage(view workspaceIndexView) templ.Component {
 	return layout("Forge Workspaces", func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Workspaces</h1><p>Minimal setup and inspection for Forge scopes.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
 		fmt.Fprint(w, `<section class="filters panel"><form method="post" action="/workspaces">`)
-		input(w, "name", "")
+		requiredInput(w, "name", "")
 		fmt.Fprint(w, `<button type="submit">Create workspace</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel warning"><h2>Workspace action failed</h2><p>%s</p></section>`, esc(view.Message))
@@ -1595,7 +1595,7 @@ func workspaceDetailPage(view workspaceDetailView) templ.Component {
 			esc(workspace.Name),
 		)
 		fmt.Fprintf(w, `<section class="filters panel"><form method="post" action="/workspaces/%s/projects">`, esc(uuidText(workspace.ID)))
-		input(w, "name", "")
+		requiredInput(w, "name", "")
 		fmt.Fprint(w, `<button type="submit">Create project</button></form></section>`)
 		fmt.Fprint(w, `<section class="panel"><h2>Projects</h2>`)
 		if len(view.Projects) == 0 {
@@ -1624,6 +1624,10 @@ func layout(title string, body func(io.Writer)) templ.Component {
 
 func input(w io.Writer, name string, value string) {
 	fmt.Fprintf(w, `<label><span>%s</span><input name="%s" value="%s"></label>`, esc(strings.ReplaceAll(name, "_", " ")), esc(name), esc(value))
+}
+
+func requiredInput(w io.Writer, name string, value string) {
+	fmt.Fprintf(w, `<label><span>%s</span><input name="%s" value="%s" required aria-required="true"></label>`, esc(strings.ReplaceAll(name, "_", " ")), esc(name), esc(value))
 }
 
 func writeTicketCard(w io.Writer, ticket db.Ticket) {
@@ -1715,7 +1719,7 @@ func writeTicketActions(w io.Writer, ticket db.Ticket) {
 }
 
 func writeTicketActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
-	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
+	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><label><span>Reason</span><input name="reason" value="%s" required aria-required="true"></label><button type="submit">%s</button></form>`,
 		esc(uuidText(ticketID)),
 		esc(action),
 		esc(placeholder),
@@ -1817,7 +1821,7 @@ func writeTrustMetric(w io.Writer, count int, noun string, href string) {
 }
 
 func writeProposedActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
-	fmt.Fprintf(w, `<form method="post" action="/proposed/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
+	fmt.Fprintf(w, `<form method="post" action="/proposed/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" value="%s" required aria-required="true"></label><button type="submit">%s</button></form>`,
 		esc(uuidText(ticketID)),
 		esc(action),
 		esc(services.ActorHuman),
