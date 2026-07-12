@@ -488,6 +488,57 @@ func TestWebhookHeartbeatRequiresExplicitSubscription(t *testing.T) {
 	}
 }
 
+func TestScopeIntegrityRejectsCrossScopeWrites(t *testing.T) {
+	fixture := newFixture(t)
+	workspaceA, projectA := createScope(t, fixture.runtime, fixture.context)
+	workspaceB, err := fixture.runtime.CreateWorkspace(fixture.context, "integration-workspace-b")
+	if err != nil {
+		t.Fatalf("create second workspace: %v", err)
+	}
+	projectB, err := fixture.runtime.CreateProject(fixture.context, workspaceB.ID, "integration-project-b")
+	if err != nil {
+		t.Fatalf("create second project: %v", err)
+	}
+	ticketA := createClaimableTicket(t, fixture.runtime, fixture.context, workspaceA.ID, projectA.ID)
+	ticketB := createClaimableTicket(t, fixture.runtime, fixture.context, workspaceB.ID, projectB.ID)
+	now := time.Now().UTC().Add(time.Hour)
+	assertScopeRejected(t, fixture, `INSERT INTO tickets (workspace_id, project_id, title, type, created_by) VALUES ($1, $2, 'cross project', 'task', 'human')`, workspaceA.ID, projectB.ID)
+	assertScopeRejected(t, fixture, `INSERT INTO ticket_dependencies (ticket_id, depends_on_ticket_id, workspace_id, project_id) VALUES ($1, $2, $3, $4)`, ticketA.ID, ticketB.ID, workspaceA.ID, projectA.ID)
+	assertScopeRejected(t, fixture, `INSERT INTO attempts (workspace_id, project_id, ticket_id, agent_id, harness, lease_expires_at) VALUES ($1, $2, $3, 'agent', 'harness', $4)`, workspaceA.ID, projectA.ID, ticketB.ID, now)
+
+	claimA, err := fixture.runtime.ClaimNext(fixture.context, services.ClaimNextRequest{WorkspaceID: workspaceA.ID, ProjectID: projectA.ID, AgentID: "scope-agent-a", Harness: "test", Lease: time.Minute})
+	if err != nil {
+		t.Fatalf("claim scope A ticket: %v", err)
+	}
+	claimB, err := fixture.runtime.ClaimNext(fixture.context, services.ClaimNextRequest{WorkspaceID: workspaceB.ID, ProjectID: projectB.ID, AgentID: "scope-agent-b", Harness: "test", Lease: time.Minute})
+	if err != nil {
+		t.Fatalf("claim scope B ticket: %v", err)
+	}
+	assertScopeRejected(t, fixture, `INSERT INTO attempt_checkpoints (workspace_id, project_id, ticket_id, attempt_id, summary) VALUES ($1, $2, $3, $4, 'cross attempt')`, workspaceA.ID, projectA.ID, ticketA.ID, claimB.Attempt.ID)
+	assertScopeRejected(t, fixture, `INSERT INTO ticket_events (workspace_id, project_id, ticket_id, attempt_id, type, actor_type) VALUES ($1, $2, $3, $4, 'updated', 'agent')`, workspaceA.ID, projectA.ID, ticketA.ID, claimB.Attempt.ID)
+	assertScopeRejected(t, fixture, `INSERT INTO artifacts (workspace_id, project_id, ticket_id, attempt_id, type, role, name, url, storage_backend) VALUES ($1, $2, $3, $4, 'log', 'evidence', 'cross.log', 'file:///cross.log', 'local')`, workspaceA.ID, projectA.ID, ticketA.ID, claimB.Attempt.ID)
+	assertScopeRejected(t, fixture, `INSERT INTO attempt_metrics (attempt_id, workspace_id, project_id) VALUES ($1, $2, $3)`, claimB.Attempt.ID, workspaceA.ID, projectA.ID)
+	assertScopeRejected(t, fixture, `INSERT INTO agent_capabilities (workspace_id, project_id, agent_id, harness) VALUES ($1, $2, 'cross-agent', 'test')`, workspaceA.ID, projectB.ID)
+	assertScopeRejected(t, fixture, `INSERT INTO webhook_subscriptions (workspace_id, project_id, endpoint_url) VALUES ($1, $2, 'https://example.com/hooks')`, workspaceA.ID, projectB.ID)
+
+	eventB, err := fixture.runtime.Queries.CreateTicketEvent(fixture.context, db.CreateTicketEventParams{WorkspaceID: workspaceB.ID, ProjectID: projectB.ID, TicketID: ticketB.ID, AttemptID: claimB.Attempt.ID, Type: "updated", ActorType: services.ActorAgent, Data: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("create scope B event: %v", err)
+	}
+	subscriptionB, err := fixture.runtime.Queries.CreateWebhookSubscription(fixture.context, db.CreateWebhookSubscriptionParams{WorkspaceID: workspaceB.ID, ProjectID: projectB.ID, EndpointUrl: "https://example.com/scope-b", EventTypes: []string{}, Active: true, MaxAttempts: 3})
+	if err != nil {
+		t.Fatalf("create scope B subscription: %v", err)
+	}
+	assertScopeRejected(t, fixture, `INSERT INTO webhook_deliveries (subscription_id, event_id, workspace_id, project_id, ticket_id, attempt_id, payload) VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb)`, subscriptionB.ID, eventB.ID, workspaceA.ID, projectA.ID, ticketA.ID, claimA.Attempt.ID)
+}
+
+func assertScopeRejected(t *testing.T, fixture *fixture, statement string, args ...any) {
+	t.Helper()
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, statement, args...); err == nil {
+		t.Fatalf("expected cross-scope write to fail: %s", statement)
+	}
+}
+
 func setAttemptLease(t *testing.T, fixture *fixture, attemptID pgtype.UUID, leaseExpiresAt time.Time) {
 	t.Helper()
 	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE attempts SET lease_expires_at = $1 WHERE id = $2", leaseExpiresAt, attemptID); err != nil {

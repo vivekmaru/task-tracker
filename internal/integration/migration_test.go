@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/vivek/agent-task-tracker/internal/cli"
 	"github.com/vivek/agent-task-tracker/internal/config"
 	"github.com/vivek/agent-task-tracker/internal/testsupport"
@@ -77,6 +78,50 @@ func TestMigrationChecksumsAdoptLegacyHistoryAndRejectChanges(t *testing.T) {
 	}
 }
 
+func TestScopeMigrationRejectsExistingMismatches(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	rootURL, err := testsupport.TestDatabaseURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := testsupport.CreateDatabase(ctx, rootURL)
+	if err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := database.Close(cleanupCtx); err != nil {
+			t.Errorf("drop test database %q: %v", database.Name, err)
+		}
+	})
+	if _, err := cli.ApplyMigrations(ctx, config.Config{DatabaseURL: database.URL}, copyMigrationsBeforeScopeIntegrity(t)); err != nil {
+		t.Fatalf("apply migrations before scope integrity: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, database.URL)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO workspaces (name) VALUES ('scope-a'), ('scope-b');
+INSERT INTO projects (workspace_id, name) VALUES
+    ((SELECT id FROM workspaces WHERE name = 'scope-a'), 'project-a'),
+    ((SELECT id FROM workspaces WHERE name = 'scope-b'), 'project-b');
+INSERT INTO tickets (workspace_id, project_id, title, type, created_by)
+VALUES (
+    (SELECT id FROM workspaces WHERE name = 'scope-a'),
+    (SELECT id FROM projects WHERE name = 'project-b'),
+    'mismatched scope', 'task', 'human'
+);`); err != nil {
+		t.Fatalf("insert deliberate mismatch: %v", err)
+	}
+	if _, err := database.ApplyMigrations(ctx); err == nil || !strings.Contains(err.Error(), "scope integrity preflight failed") {
+		t.Fatalf("expected scope preflight failure, got %v", err)
+	}
+}
+
 func copyMigrationsBeforeCancellation(t *testing.T) string {
 	t.Helper()
 	sourceDir := testsupport.MigrationsDir()
@@ -110,6 +155,29 @@ func copyAllMigrations(t *testing.T) string {
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sourceDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", entry.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(destinationDir, entry.Name()), data, 0o600); err != nil {
+			t.Fatalf("copy migration %s: %v", entry.Name(), err)
+		}
+	}
+	return destinationDir
+}
+
+func copyMigrationsBeforeScopeIntegrity(t *testing.T) string {
+	t.Helper()
+	sourceDir := testsupport.MigrationsDir()
+	destinationDir := t.TempDir()
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		t.Fatalf("read migration directory: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == "0013_scope_integrity.sql" {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(sourceDir, entry.Name()))
