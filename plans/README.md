@@ -21,7 +21,7 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 | 011 | vds.11 | Typed REST resource routes | P0 | L | 007, 009 | DONE |
 | 012 | vds.12 | REST execution lifecycle | P0 | L | 004, 006, 011 | DONE |
 | 013 | vds.13 | MCP stdio server | P1 | M | 012 | DONE |
-| 014 | vds.14 | Production server envelope | P0 | M | 007 | TODO |
+| 014 | vds.14 | Production server envelope | P0 | M | 007 | DONE |
 | 015 | vds.15 | Release and recovery path | P1 | L | 001, 009, 014 | TODO |
 | 016 | vds.16 | Web shell and scope | P1 | L | 001 | TODO |
 | 017 | vds.17 | Proof-first web workflow | P1 | L | 006, 016 | TODO |

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/netip"
@@ -249,6 +250,10 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		fmt.Fprintf(stderr, "%s configuration error: %v\n", name, err)
 		return 2
 	}
+	if err := configureLogger(cfg.LogLevel, stderr); err != nil {
+		fmt.Fprintf(stderr, "%s configuration error: %v\n", name, err)
+		return 2
+	}
 	if deps.OpenRuntime == nil {
 		deps.OpenRuntime = openRuntime
 	}
@@ -296,7 +301,12 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			fmt.Fprintf(stderr, "server configuration error: %v\n", err)
 			return 2
 		}
-		rt, err := deps.OpenRuntime(context.Background(), cfg)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		rt, err := deps.OpenRuntime(ctx, cfg)
+		if errors.Is(err, context.Canceled) {
+			return 0
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "server runtime error: %v\n", err)
 			return 1
@@ -306,7 +316,7 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			deps.ServeHTTP = serveHTTP
 		}
 		fmt.Fprintf(stdout, "server listening on %s\n", cfg.HTTPAddr)
-		if err := deps.ServeHTTP(context.Background(), cfg.HTTPAddr, api.NewRouterWithRuntimeAndAuth(rt, webAuthOptions(cfg))); err != nil {
+		if err := deps.ServeHTTP(ctx, cfg.HTTPAddr, api.NewRouterWithRuntimeAndAuth(rt, webAuthOptions(cfg))); err != nil {
 			fmt.Fprintf(stderr, "server HTTP error: %v\n", err)
 			return 1
 		}
@@ -375,6 +385,15 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 		}
 	}
 	return 0
+}
+
+func configureLogger(levelText string, output io.Writer) error {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(levelText)); err != nil {
+		return errors.New("log_level must be debug, info, warn, or error")
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: level})))
+	return nil
 }
 
 type WorkerOptions struct {
@@ -496,7 +515,9 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler) error {
 	server := newHTTPServer(addr, handler)
 	go func() {
 		<-ctx.Done()
-		_ = server.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
 	}()
 	err := server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {

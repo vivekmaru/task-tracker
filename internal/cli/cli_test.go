@@ -323,8 +323,8 @@ func TestRunServerStartsHTTPRouter(t *testing.T) {
 	if !strings.Contains(stdout.String(), "server listening on 127.0.0.1:4100") {
 		t.Fatalf("expected server listening message, got %q", stdout.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("expected no stderr, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), `"msg":"http request"`) {
+		t.Fatalf("expected structured access log, got %q", stderr.String())
 	}
 }
 

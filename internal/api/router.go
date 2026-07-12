@@ -2,11 +2,15 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -33,6 +37,20 @@ func NewRouterWithRuntime(rt web.Runtime) http.Handler {
 
 func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if ready, ok := rt.(interface{ Ready(context.Context) error }); ok {
+			if err := ready.Ready(r.Context()); err != nil {
+				http.Error(w, "not ready", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready\n"))
+	})
 	apiMux := http.NewServeMux()
 	api := humago.NewWithPrefix(apiMux, basePath, huma.DefaultConfig("Forge API", "0.1.0"))
 	RegisterPhaseOneRoutes(api, rt)
@@ -55,7 +73,36 @@ func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Hand
 	mux.Handle("/proposed/", webHandler)
 	mux.Handle("/workspaces", webHandler)
 	mux.Handle("/workspaces/", webHandler)
-	return mux
+	return requestIDMiddleware(mux)
+}
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("X-Request-ID")
+		if id == "" {
+			var bytes [16]byte
+			if _, err := rand.Read(bytes[:]); err == nil {
+				id = hex.EncodeToString(bytes[:])
+			} else {
+				id = "forge-request"
+			}
+		}
+		w.Header().Set("X-Request-ID", id)
+		started := time.Now()
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		slog.Info("http request", "request_id", id, "method", r.Method, "path", r.URL.Path, "status", recorder.status, "duration_ms", time.Since(started).Milliseconds())
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
 }
 
 func RegisterPhaseOneRoutes(api huma.API, rt web.Runtime) {

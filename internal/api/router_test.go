@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,6 +79,26 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		if _, ok := methods[route.method]; !ok {
 			t.Fatalf("expected OpenAPI operation %s %s", route.method, route.path)
 		}
+	}
+}
+
+func TestHealthEndpointsAreUnauthenticatedAndReadinessIsDistinct(t *testing.T) {
+	router := NewRouterWithRuntimeAndAuth(&fakeReadyRuntime{}, web.AuthOptions{AdminToken: "operator-token"})
+	for _, path := range []string{"/livez", "/readyz"} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status %d", path, rec.Code)
+		}
+		if rec.Header().Get("X-Request-ID") == "" {
+			t.Fatalf("%s missing request id", path)
+		}
+	}
+	router = NewRouterWithRuntimeAndAuth(&fakeReadyRuntime{err: errors.New("database down")}, web.AuthOptions{AdminToken: "operator-token"})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "database") {
+		t.Fatalf("unexpected readiness failure %d %q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -295,6 +316,13 @@ type fakeObservabilityRuntime struct {
 	listReq       db.ListWebhookSubscriptionsParams
 	subscriptions []db.WebhookSubscription
 }
+
+type fakeReadyRuntime struct {
+	web.Runtime
+	err error
+}
+
+func (f *fakeReadyRuntime) Ready(context.Context) error { return f.err }
 
 func (f *fakeObservabilityRuntime) CreateWebhookSubscription(_ context.Context, req db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error) {
 	f.createReq = req

@@ -40,6 +40,14 @@ type Runtime struct {
 	Webhooks      *jobs.WebhookWorker
 }
 
+// Ready verifies that the runtime can reach its required PostgreSQL dependency.
+func (r *Runtime) Ready(ctx context.Context) error {
+	if r == nil || r.Pool == nil {
+		return fmt.Errorf("runtime database is not configured")
+	}
+	return r.Pool.Ping(ctx)
+}
+
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {

@@ -32,6 +32,8 @@ Implemented:
 Known current limitations:
 
 - `forge server` starts the HTTP router with the OpenAPI surface and human web inspection pages. `forge worker` runs the maintenance and webhook delivery workers in a long-lived loop; use `forge worker --once` for deterministic smoke checks.
+
+`/livez` reports process liveness and `/readyz` verifies the local PostgreSQL dependency without disclosing connection details. Server requests receive an `X-Request-ID`; structured access logs omit query strings, credentials, and bodies.
 - Observability export sink management UI and OpenTelemetry-native exporters are not implemented yet.
 - The TUI and web UI are usable, but still early. They are not yet at the full "beautiful, low-friction" product bar.
 
