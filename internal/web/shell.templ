@@ -1,0 +1,19 @@
+package web
+
+type navigationItem struct {
+	Label  string
+	Href   string
+	Active bool
+}
+
+templ scopedNavigation(items []navigationItem) {
+	<nav aria-label="Primary">
+		for _, item := range items {
+			if item.Active {
+				<a href={ templ.SafeURL(item.Href) } class="active">{ item.Label }</a>
+			} else {
+				<a href={ templ.SafeURL(item.Href) }>{ item.Label }</a>
+			}
+		}
+	</nav>
+}

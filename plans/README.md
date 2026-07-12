@@ -23,7 +23,7 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 | 013 | vds.13 | MCP stdio server | P1 | M | 012 | DONE |
 | 014 | vds.14 | Production server envelope | P0 | M | 007 | DONE |
 | 015 | vds.15 | Release and recovery path | P1 | L | 001, 009, 014 | DONE |
-| 016 | vds.16 | Web shell and scope | P1 | L | 001 | TODO |
+| 016 | vds.16 | Web shell and scope | P1 | L | 001 | DONE |
 | 017 | vds.17 | Proof-first web workflow | P1 | L | 006, 016 | TODO |
 | 018 | vds.18 | Web accessibility/browser tests | P1 | M | 016, 017 | TODO |
 | 019 | vds.19 | TUI operator workflow | P1 | M | 001, 003 | TODO |

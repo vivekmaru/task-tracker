@@ -102,6 +102,12 @@ func RequireAdminToken(auth AuthOptions, next http.Handler) http.Handler {
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/assets/htmx-2.0.4.min.js" {
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = w.Write(htmxAsset)
+		return
+	}
 	if h.auth.enabled() {
 		switch r.URL.Path {
 		case "/login":
@@ -1349,7 +1355,7 @@ func loginPage(next string, message string) templ.Component {
 }
 
 func ticketListPage(view ticketListView) templ.Component {
-	return layout("Forge Tickets", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Forge Tickets", ActiveRoute: "tickets", WorkspaceID: uuidText(view.WorkspaceID), ProjectID: uuidText(view.ProjectID)}, func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Tickets</h1><p>Shared inspection for claimable work, proposed follow-ups, and review handoffs.</p></div>`)
 		fmt.Fprintf(w, `<div class="actions"><a class="button" href="/search?workspace_id=%s&project_id=%s">Search</a><a class="button" href="/tickets?workspace_id=%s&project_id=%s">Refresh</a></div></section>`, esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)), esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/tickets">`)
@@ -1375,7 +1381,7 @@ func ticketListPage(view ticketListView) templ.Component {
 }
 
 func searchPage(view searchView) templ.Component {
-	return layout("Forge Search", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Forge Search", ActiveRoute: "search", WorkspaceID: view.WorkspaceIDText, ProjectID: view.ProjectIDText}, func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Search</h1><p>Find tickets through titles, descriptions, attempts, events, and proof artifacts.</p></div>`)
 		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/search">`)
@@ -1400,7 +1406,7 @@ func searchPage(view searchView) templ.Component {
 }
 
 func eventLedgerPage(view eventLedgerView) templ.Component {
-	return layout("Forge Activity", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Forge Activity", ActiveRoute: "events", WorkspaceID: view.WorkspaceIDText, ProjectID: view.ProjectIDText}, func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">Execution Ledger</p><h1>Activity</h1><p>Recent ticket events, agent checkpoints, proof handoffs, and status transitions in one calm inspection stream.</p></div>`)
 		fmt.Fprint(w, `<div class="actions">`)
 		if view.WorkspaceIDText != "" && view.ProjectIDText != "" {
@@ -1437,7 +1443,7 @@ func eventLedgerPage(view eventLedgerView) templ.Component {
 }
 
 func artifactListPage(view artifactListView) templ.Component {
-	return layout("Forge Artifacts", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Forge Artifacts", ActiveRoute: "artifacts", WorkspaceID: view.WorkspaceIDText, ProjectID: view.ProjectIDText}, func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Artifacts</h1><p>Browse proof files and handoff outputs by workspace, project, or ticket.</p></div>`)
 		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/artifacts">`)
@@ -1462,7 +1468,7 @@ func artifactListPage(view artifactListView) templ.Component {
 }
 
 func proposedListPage(view proposedListView) templ.Component {
-	return layout("Proposed Work", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Proposed Work", ActiveRoute: "proposed", WorkspaceID: view.WorkspaceIDText, ProjectID: view.ProjectIDText}, func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">agent-created queue</p><h1>Proposed Work</h1><p>Review follow-up work agents discovered while executing tickets.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/proposed">`)
 		input(w, "workspace_id", view.WorkspaceIDText)
@@ -1672,12 +1678,46 @@ func workspaceDetailPage(view workspaceDetailView) templ.Component {
 }
 
 func layout(title string, body func(io.Writer)) templ.Component {
+	return layoutWithPage(pageContext{Title: title}, body)
+}
+
+type pageContext struct {
+	Title       string
+	ActiveRoute string
+	WorkspaceID string
+	ProjectID   string
+	ReturnURL   string
+}
+
+func layoutWithPage(page pageContext, body func(io.Writer)) templ.Component {
 	return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
-		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="https://unpkg.com/htmx.org@2.0.4"></script><style>%s</style></head><body hx-boost="true"><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a><nav aria-label="Primary"><a href="/workspaces">Workspaces</a><a href="/tickets">Tickets</a><a href="/proposed">Proposed</a><a href="/events">Activity</a><a href="/search">Search</a><a href="/artifacts">Artifacts</a></nav></aside><main class="content">`, esc(title), pageCSS())
+		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="/assets/htmx-2.0.4.min.js" defer></script><style>%s</style></head><body hx-boost="true"><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a>`, esc(page.Title), pageCSS())
+		if err := scopedNavigation(scopedNavigationItems(page)).Render(context.Background(), w); err != nil {
+			return err
+		}
+		fmt.Fprint(w, `</aside><main class="content">`)
 		body(w)
 		fmt.Fprint(w, `</main></div></body></html>`)
 		return nil
 	})
+}
+
+func scopedNavigationItems(page pageContext) []navigationItem {
+	paths := []struct{ label, route, path string }{{"Workspaces", "workspaces", "/workspaces"}, {"Tickets", "tickets", "/tickets"}, {"Proposed", "proposed", "/proposed"}, {"Activity", "events", "/events"}, {"Search", "search", "/search"}, {"Artifacts", "artifacts", "/artifacts"}}
+	items := make([]navigationItem, 0, len(paths))
+	for _, item := range paths {
+		items = append(items, navigationItem{Label: item.label, Href: scopedPagePath(item.path, page.WorkspaceID, page.ProjectID), Active: item.route == page.ActiveRoute})
+	}
+	return items
+}
+func scopedPagePath(path, workspaceID, projectID string) string {
+	if workspaceID == "" || projectID == "" {
+		return path
+	}
+	values := url.Values{}
+	values.Set("workspace_id", workspaceID)
+	values.Set("project_id", projectID)
+	return path + "?" + values.Encode()
 }
 
 func input(w io.Writer, name string, value string) {
