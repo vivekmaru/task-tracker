@@ -8,7 +8,7 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 
 | Plan | Beads | Packet | Priority | Size | Depends on | Status |
 |---|---|---|---|---|---|---|
-| 001 | vds.1 | Production quality gate | P0 | S | — | TODO |
+| 001 | vds.1 | Production quality gate | P0 | S | — | DONE |
 | 002 | vds.2 | Fix attempt cancellation | P0 | S | 001, 003 | TODO |
 | 003 | vds.3 | PostgreSQL integration harness | P0 | M | 001 | TODO |
 | 004 | vds.4 | Fence lease expiry | P0 | M | 003 | TODO |
@@ -76,4 +76,3 @@ Do not parallelize packets that modify the same hotspot unless they are isolated
 - Realtime dashboard infrastructure: not required for the v0.1 inspection workflows.
 - Enterprise multi-tenant RBAC: deferred until trusted single-tenant production behavior is proven.
 - Advanced analytics or learned routing: deferred until the production acceptance pilot creates real usage evidence.
-

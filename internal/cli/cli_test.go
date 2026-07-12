@@ -2538,7 +2538,7 @@ type noopRuntime struct {
 	fakeRuntime
 }
 
-func (noopRuntime) Close() {}
+func (*noopRuntime) Close() {}
 
 type fakeRuntime struct {
 	mu                           sync.Mutex

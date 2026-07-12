@@ -41,7 +41,7 @@ Known current limitations:
 - PostgreSQL with `pgcrypto`
 - `psql`
 - Optional but useful for the smoke test snippets: `jq`
-- Optional: `sqlc` via `go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest`
+- Optional: `sqlc` via `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1`
 
 ## Configuration
 
@@ -114,7 +114,7 @@ go run ./cmd/forge migrate --baseline-existing
 Regenerate sqlc code after query changes:
 
 ```bash
-go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest generate
+go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
 ```
 
 ## Build And Test
