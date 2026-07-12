@@ -1,0 +1,25 @@
+version: 2
+project_name: forge
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: forge
+    main: ./cmd/forge
+    binary: forge
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/vivek/agent-task-tracker/internal/buildinfo.Version={{ .Version }} -X github.com/vivek/agent-task-tracker/internal/buildinfo.Commit={{ .Commit }} -X github.com/vivek/agent-task-tracker/internal/buildinfo.BuildDate={{ .Date }}
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+checksum:
+  name_template: checksums.txt
+sboms:
+  - artifacts: archive
+    documents:
+      - "${artifact}.spdx.json"
+release:
+  disable: true

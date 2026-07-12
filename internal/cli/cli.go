@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/api"
+	"github.com/vivek/agent-task-tracker/internal/buildinfo"
 	"github.com/vivek/agent-task-tracker/internal/config"
 	"github.com/vivek/agent-task-tracker/internal/contracts"
 	"github.com/vivek/agent-task-tracker/internal/db"
@@ -46,6 +47,7 @@ var commands = []command{
 	{"init", "Create a local Forge config file."},
 	{"migrate", "Apply Forge database migrations."},
 	{"mcp", "Start the Forge MCP server."},
+	{"version", "Print Forge build metadata."},
 	{"tui", "Open the Forge terminal UI."},
 	{"create", "Create a ticket."},
 	{"propose", "Propose agent-discovered work."},
@@ -174,6 +176,14 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, deps Dependenc
 	}
 	if name == "init" {
 		return runInitCommand(args[1:], stdout, stderr)
+	}
+	if name == "version" {
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "version does not accept arguments")
+			return 2
+		}
+		fmt.Fprintf(stdout, "forge %s commit=%s build_date=%s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+		return 0
 	}
 	if name == "server" || name == "worker" || name == "mcp" || name == "tui" {
 		return runProcess(name, args[1:], stdout, stderr, deps)
