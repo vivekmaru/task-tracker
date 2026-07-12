@@ -1521,7 +1521,7 @@ func artifactDetailPage(artifact db.Artifact, contentOpenable bool) templ.Compon
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s/content">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
 		}
 		if storage.IsLocalArtifactURL(artifact.Url) {
-			fmt.Fprintf(w, `<form method="post" action="/artifacts/%s/delete" hx-boost="false"><button type="submit">Delete local artifact</button></form>`, esc(uuidText(artifact.ID)))
+			fmt.Fprintf(w, `<form method="post" action="/artifacts/%s/delete" hx-boost="false" onsubmit="return confirm('Are you sure you want to delete this artifact? This action cannot be undone.');"><button type="submit">Delete local artifact</button></form>`, esc(uuidText(artifact.ID)))
 		} else if storage.IsS3ArtifactURL(artifact.Url) {
 			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
