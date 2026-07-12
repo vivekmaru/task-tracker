@@ -2,9 +2,11 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 )
@@ -39,6 +41,7 @@ func WithBatchLimit(limit int32) Option {
 
 type MaintenanceResult struct {
 	ExpiredAttempts        int
+	SkippedExpiryRaces     int
 	DeletedIdempotencyKeys int64
 }
 
@@ -70,10 +73,15 @@ func (w *MaintenanceWorker) RunOnce(ctx context.Context) (MaintenanceResult, err
 	result := MaintenanceResult{}
 	for _, attempt := range expired {
 		_, err := w.store.ExpireAttempt(ctx, db.ExpireAttemptParams{
-			AttemptID:   attempt.ID,
-			CompletedAt: pgtype.Timestamptz{Time: now, Valid: true},
+			AttemptID:        attempt.ID,
+			CompletedAt:      pgtype.Timestamptz{Time: now, Valid: true},
+			ExpirationCutoff: pgtype.Timestamptz{Time: now, Valid: true},
 		})
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				result.SkippedExpiryRaces++
+				continue
+			}
 			return MaintenanceResult{}, fmt.Errorf("expire attempt %v: %w", attempt.ID, err)
 		}
 		result.ExpiredAttempts++

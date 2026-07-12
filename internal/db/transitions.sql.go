@@ -290,6 +290,7 @@ WITH updated_attempt AS (
         completed_at = $1::timestamptz
     WHERE a.id = $2::uuid
       AND a.status = 'running'
+      AND a.lease_expires_at < $3::timestamptz
     RETURNING id, workspace_id, project_id, ticket_id, agent_id, harness, model, status, lease_expires_at, last_heartbeat_at, progress_percent, current_summary, next_step, output, output_schema, failure_reason, failure_category, blocker, trace_id, checkpoint_ref, started_at, completed_at
 ),
 updated_ticket AS (
@@ -345,8 +346,9 @@ JOIN updated_ticket t ON t.id = a.ticket_id
 `
 
 type ExpireAttemptParams struct {
-	CompletedAt pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-	AttemptID   pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	CompletedAt      pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	AttemptID        pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	ExpirationCutoff pgtype.Timestamptz `db:"expiration_cutoff" json:"expiration_cutoff"`
 }
 
 type ExpireAttemptRow struct {
@@ -359,7 +361,7 @@ type ExpireAttemptRow struct {
 }
 
 func (q *Queries) ExpireAttempt(ctx context.Context, arg ExpireAttemptParams) (ExpireAttemptRow, error) {
-	row := q.db.QueryRow(ctx, expireAttempt, arg.CompletedAt, arg.AttemptID)
+	row := q.db.QueryRow(ctx, expireAttempt, arg.CompletedAt, arg.AttemptID, arg.ExpirationCutoff)
 	var i ExpireAttemptRow
 	err := row.Scan(
 		&i.AttemptID,

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/runtime"
@@ -205,6 +206,114 @@ func TestCancelAttemptTransitionsTicketAndRecordsEvent(t *testing.T) {
 	if cancelledEvents != 1 {
 		t.Fatalf("expected one cancelled event, got %d in %#v", cancelledEvents, events)
 	}
+}
+
+func TestHeartbeatExpiryRaceKeepsRenewedAttemptRunning(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	ticket := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+	claim, err := fixture.runtime.ClaimNext(fixture.context, claimRequest(workspace.ID, project.ID, "integration-agent", ""))
+	if err != nil {
+		t.Fatalf("claim ticket: %v", err)
+	}
+
+	cutoff := time.Now().UTC()
+	setAttemptLease(t, fixture, claim.Attempt.ID, cutoff.Add(-time.Minute))
+	selected := listExpiredAttempts(t, fixture, cutoff)
+	if len(selected) != 1 || selected[0].ID != claim.Attempt.ID {
+		t.Fatalf("expected selected expired attempt %v, got %#v", claim.Attempt.ID, selected)
+	}
+	if _, err := fixture.runtime.Heartbeat(fixture.context, services.HeartbeatRequest{AttemptID: claim.Attempt.ID, Lease: time.Hour}); err != nil {
+		t.Fatalf("renew attempt lease: %v", err)
+	}
+
+	_, err = fixture.runtime.Queries.ExpireAttempt(fixture.context, db.ExpireAttemptParams{
+		AttemptID:        claim.Attempt.ID,
+		CompletedAt:      pgtype.Timestamptz{Time: cutoff, Valid: true},
+		ExpirationCutoff: pgtype.Timestamptz{Time: cutoff, Valid: true},
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("expected stale expiry to lose eligibility, got %v", err)
+	}
+
+	attempt, err := fixture.runtime.Queries.GetAttempt(fixture.context, claim.Attempt.ID)
+	if err != nil {
+		t.Fatalf("get renewed attempt: %v", err)
+	}
+	if attempt.Status != services.AttemptStatusRunning {
+		t.Fatalf("expected renewed attempt to remain running, got %q", attempt.Status)
+	}
+	events, err := fixture.runtime.Queries.ListTicketEventsByTicket(fixture.context, ticket.ID)
+	if err != nil {
+		t.Fatalf("list ticket events: %v", err)
+	}
+	if countEvents(events, "expired") != 0 {
+		t.Fatalf("expected no expiry event after lease renewal, got %#v", events)
+	}
+}
+
+func TestLeaseExpiryRequeuesTicketOnce(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	ticket := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+	claim, err := fixture.runtime.ClaimNext(fixture.context, claimRequest(workspace.ID, project.ID, "integration-agent", ""))
+	if err != nil {
+		t.Fatalf("claim ticket: %v", err)
+	}
+
+	cutoff := time.Now().UTC()
+	setAttemptLease(t, fixture, claim.Attempt.ID, cutoff.Add(-time.Minute))
+	selected := listExpiredAttempts(t, fixture, cutoff)
+	if len(selected) != 1 || selected[0].ID != claim.Attempt.ID {
+		t.Fatalf("expected selected expired attempt %v, got %#v", claim.Attempt.ID, selected)
+	}
+	expired, err := fixture.runtime.Queries.ExpireAttempt(fixture.context, db.ExpireAttemptParams{
+		AttemptID:        claim.Attempt.ID,
+		CompletedAt:      pgtype.Timestamptz{Time: cutoff, Valid: true},
+		ExpirationCutoff: pgtype.Timestamptz{Time: cutoff, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("expire selected attempt: %v", err)
+	}
+	if expired.AttemptStatus != services.AttemptStatusExpired || expired.TicketStatus != services.TicketStatusTodo {
+		t.Fatalf("unexpected expiry result: %#v", expired)
+	}
+	events, err := fixture.runtime.Queries.ListTicketEventsByTicket(fixture.context, ticket.ID)
+	if err != nil {
+		t.Fatalf("list ticket events: %v", err)
+	}
+	if countEvents(events, "expired") != 1 {
+		t.Fatalf("expected exactly one expiry event, got %#v", events)
+	}
+}
+
+func setAttemptLease(t *testing.T, fixture *fixture, attemptID pgtype.UUID, leaseExpiresAt time.Time) {
+	t.Helper()
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE attempts SET lease_expires_at = $1 WHERE id = $2", leaseExpiresAt, attemptID); err != nil {
+		t.Fatalf("set attempt lease: %v", err)
+	}
+}
+
+func listExpiredAttempts(t *testing.T, fixture *fixture, cutoff time.Time) []db.Attempt {
+	t.Helper()
+	attempts, err := fixture.runtime.Queries.ListExpiredRunningAttempts(fixture.context, db.ListExpiredRunningAttemptsParams{
+		Now:        pgtype.Timestamptz{Time: cutoff, Valid: true},
+		BatchLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("list expired attempts: %v", err)
+	}
+	return attempts
+}
+
+func countEvents(events []db.TicketEvent, eventType string) int {
+	var count int
+	for _, event := range events {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	return count
 }
 
 func createScope(t *testing.T, rt *runtime.Runtime, ctx context.Context) (db.Workspace, db.Project) {

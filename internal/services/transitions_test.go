@@ -77,6 +77,7 @@ func TestTerminalTransitionRejectsNonRunningAttempt(t *testing.T) {
 }
 
 func TestCancelAndExpireTransitionsAreExposed(t *testing.T) {
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	attemptID := testUUID(35)
 	store := &fakeAttemptStore{
 		cancel: db.CancelAttemptRow{
@@ -92,18 +93,22 @@ func TestCancelAndExpireTransitionsAreExposed(t *testing.T) {
 			TicketStatus:  TicketStatusTodo,
 		},
 	}
-	service := NewAttemptService(store)
+	service := NewAttemptService(store, WithAttemptClock(func() time.Time { return now }))
 
 	cancelled, err := service.Cancel(context.Background(), CancelAttemptRequest{AttemptID: attemptID, Reason: "operator stopped run"})
 	if err != nil {
 		t.Fatalf("cancel attempt: %v", err)
 	}
-	expired, err := service.Expire(context.Background(), ExpireAttemptRequest{AttemptID: attemptID})
+	cutoff := now.Add(-time.Minute)
+	expired, err := service.Expire(context.Background(), ExpireAttemptRequest{AttemptID: attemptID, ExpirationCutoff: cutoff})
 	if err != nil {
 		t.Fatalf("expire attempt: %v", err)
 	}
 
 	if cancelled.AttemptStatus != AttemptStatusCancelled || expired.AttemptStatus != AttemptStatusExpired {
 		t.Fatalf("unexpected cancel/expire results: %#v %#v", cancelled, expired)
+	}
+	if !store.expireParams[0].ExpirationCutoff.Time.Equal(cutoff) {
+		t.Fatalf("expected expiry cutoff %v, got %v", cutoff, store.expireParams[0].ExpirationCutoff.Time)
 	}
 }

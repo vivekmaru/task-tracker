@@ -100,7 +100,8 @@ type CancelAttemptRequest struct {
 }
 
 type ExpireAttemptRequest struct {
-	AttemptID pgtype.UUID
+	AttemptID        pgtype.UUID
+	ExpirationCutoff time.Time
 }
 
 type AttemptTransitionResult struct {
@@ -295,10 +296,16 @@ func (s *AttemptService) Expire(ctx context.Context, req ExpireAttemptRequest) (
 	if problems := validateAttemptID(req.AttemptID); len(problems) > 0 {
 		return AttemptTransitionResult{}, ValidationError{Problems: problems}
 	}
+	now := s.now().UTC()
+	cutoff := req.ExpirationCutoff.UTC()
+	if cutoff.IsZero() {
+		cutoff = now
+	}
 
 	row, err := s.store.ExpireAttempt(ctx, db.ExpireAttemptParams{
-		AttemptID:   req.AttemptID,
-		CompletedAt: timestamptz(s.now().UTC()),
+		AttemptID:        req.AttemptID,
+		CompletedAt:      timestamptz(now),
+		ExpirationCutoff: timestamptz(cutoff),
 	})
 	if err != nil {
 		return AttemptTransitionResult{}, transitionError("expire attempt", err)

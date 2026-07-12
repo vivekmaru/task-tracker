@@ -243,6 +243,7 @@ WITH updated_attempt AS (
         completed_at = sqlc.arg(completed_at)::timestamptz
     WHERE a.id = sqlc.arg(attempt_id)::uuid
       AND a.status = 'running'
+      AND a.lease_expires_at < sqlc.arg(expiration_cutoff)::timestamptz
     RETURNING *
 ),
 updated_ticket AS (
