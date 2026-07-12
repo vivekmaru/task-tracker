@@ -77,6 +77,57 @@ func TestRESTResourceWorkflow(t *testing.T) {
 	}
 }
 
+func TestRESTExecutionAndIdempotency(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	server := httptest.NewServer(api.NewRouterWithRuntimeAndAuth(fixture.runtime, web.AuthOptions{AdminToken: "integration-token"}))
+	t.Cleanup(server.Close)
+	create := map[string]any{"workspace_id": uuidText(t, workspace.ID), "project_id": uuidText(t, project.ID), "title": "REST execution ticket", "description": "HTTP lifecycle coverage.", "type": "task", "acceptance_criteria": []string{"Complete via REST"}}
+	var ticket struct {
+		ID string `json:"id"`
+	}
+	postJSON(t, server.URL+"/api/v1/tickets", create, &ticket)
+	claim := map[string]any{"workspace_id": uuidText(t, workspace.ID), "project_id": uuidText(t, project.ID), "agent_id": "rest-agent", "harness": "integration", "lease_seconds": 120}
+	var first struct {
+		Ticket struct {
+			ID string `json:"id"`
+		} `json:"ticket"`
+		Attempt struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"attempt"`
+	}
+	requestJSONWithHeader(t, http.MethodPost, server.URL+"/api/v1/tickets/claim-next", claim, "claim-replay", http.StatusOK, &first)
+	if first.Ticket.ID != ticket.ID || first.Attempt.ID == "" || first.Attempt.Status != "running" {
+		t.Fatalf("unexpected claim result: %#v", first)
+	}
+	var replay = first
+	requestJSONWithHeader(t, http.MethodPost, server.URL+"/api/v1/tickets/claim-next", claim, "claim-replay", http.StatusOK, &replay)
+	if replay.Attempt.ID != first.Attempt.ID {
+		t.Fatalf("expected idempotent replay to return attempt %s, got %#v", first.Attempt.ID, replay)
+	}
+	checkpoint := map[string]any{"summary": "halfway", "progress_percent": 50, "commands_run": []string{"go test ./..."}}
+	var checkpointResult struct {
+		CheckpointID    string `json:"checkpoint_id"`
+		ProgressPercent int32  `json:"progress_percent"`
+	}
+	postJSON(t, server.URL+"/api/v1/attempts/"+first.Attempt.ID+"/checkpoint", checkpoint, &checkpointResult)
+	if checkpointResult.CheckpointID == "" || checkpointResult.ProgressPercent != 50 {
+		t.Fatalf("unexpected checkpoint result: %#v", checkpointResult)
+	}
+	complete := map[string]any{"output": map[string]any{"summary": "done"}, "output_schema": "summary.v1", "metrics": map[string]any{"tokens_in": 10, "tokens_out": 20, "duration_seconds": 1.5}}
+	var completed struct {
+		AttemptStatus string `json:"attempt_status"`
+		TicketStatus  string `json:"ticket_status"`
+	}
+	postJSON(t, server.URL+"/api/v1/attempts/"+first.Attempt.ID+"/complete", complete, &completed)
+	if completed.AttemptStatus != "succeeded" || completed.TicketStatus != "done" {
+		t.Fatalf("unexpected terminal result: %#v", completed)
+	}
+	requestJSONWithHeader(t, http.MethodPost, server.URL+"/api/v1/attempts/"+first.Attempt.ID+"/complete", complete, "", http.StatusConflict, &map[string]any{})
+	requestJSONWithHeader(t, http.MethodPost, server.URL+"/api/v1/tickets/claim-next", map[string]any{"workspace_id": uuidText(t, workspace.ID), "project_id": uuidText(t, project.ID), "agent_id": "different", "harness": "integration"}, "claim-replay", http.StatusConflict, &map[string]any{})
+}
+
 func postJSON(t *testing.T, rawURL string, value any, out any) {
 	t.Helper()
 	requestJSON(t, http.MethodPost, rawURL, value, out)
@@ -90,6 +141,9 @@ func getJSON(t *testing.T, rawURL string, out any) {
 	requestJSON(t, http.MethodGet, rawURL, nil, out)
 }
 func requestJSON(t *testing.T, method, rawURL string, value any, out any) {
+	requestJSONWithHeader(t, method, rawURL, value, "", 0, out)
+}
+func requestJSONWithHeader(t *testing.T, method, rawURL string, value any, idempotencyKey string, expectedStatus int, out any) {
 	t.Helper()
 	var body *bytes.Reader
 	if value == nil {
@@ -106,6 +160,9 @@ func requestJSON(t *testing.T, method, rawURL string, value any, out any) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer integration-token")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	if value != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -114,7 +171,10 @@ func requestJSON(t *testing.T, method, rawURL string, value any, out any) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
+	if expectedStatus != 0 && response.StatusCode != expectedStatus {
+		t.Fatalf("%s %s: status %d, want %d", method, rawURL, response.StatusCode, expectedStatus)
+	}
+	if expectedStatus == 0 && (response.StatusCode < 200 || response.StatusCode >= 300) {
 		t.Fatalf("%s %s: status %d", method, rawURL, response.StatusCode)
 	}
 	if err := json.NewDecoder(response.Body).Decode(out); err != nil {

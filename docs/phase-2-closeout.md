@@ -36,7 +36,7 @@ Current adapter status:
 | `decompose_ticket` | yes | no | yes | REST and MCP call the shared decomposition service; generic CLI decomposition is not implemented yet. |
 | `register_agent_capabilities` | no | no | yes | MCP is the implemented adapter for capability registration today. |
 
-REST create, propose, list, get, update, decomposition, and artifact metadata routes are executable typed handlers protected by the API bearer/header token boundary. The lifecycle endpoints remain a separate packet. `TestRESTResourceWorkflow` proves a PostgreSQL-backed HTTP create/list/update/artifact workflow; parity tests continue to verify operation IDs.
+REST resource and execution lifecycle routes are executable typed handlers protected by the API bearer/header token boundary. `Idempotency-Key` is the canonical claim replay header. Request bodies are limited to 1 MiB, and the handler passes the HTTP request context to runtime services so disconnect cancellation reaches PostgreSQL. `TestRESTResourceWorkflow` and `TestRESTExecutionAndIdempotency` prove PostgreSQL-backed resource and execution flows; parity tests continue to verify operation IDs.
 
 ## Parity Coverage
 

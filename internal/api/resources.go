@@ -25,6 +25,15 @@ type resourceRuntime interface {
 	RegisterArtifact(context.Context, services.RegisterArtifactRequest) (db.Artifact, error)
 	GetArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
 	DeleteLocalArtifact(context.Context, pgtype.UUID) (db.Artifact, error)
+	ClaimNext(context.Context, services.ClaimNextRequest) (services.ClaimNextResult, error)
+	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error)
+	Checkpoint(context.Context, services.CheckpointRequest) (services.CheckpointResult, error)
+	Complete(context.Context, services.CompleteAttemptRequest) (services.AttemptTransitionResult, error)
+	Fail(context.Context, services.FailAttemptRequest) (services.AttemptTransitionResult, error)
+	Block(context.Context, services.BlockAttemptRequest) (services.AttemptTransitionResult, error)
+	Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error)
+	ListEvents(context.Context, services.ListEventsRequest) (services.ListEventsResult, error)
 }
 
 type ticketCreateBody struct {
@@ -388,7 +397,7 @@ func resourceError(err error, message string) error {
 	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, services.ErrTicketNotFound) {
 		return huma.Error404NotFound("resource not found", err)
 	}
-	if errors.Is(err, services.ErrTicketTransitionNotAllowed) || errors.Is(err, services.ErrArtifactDeleteUnsupported) {
+	if errors.Is(err, services.ErrTicketTransitionNotAllowed) || errors.Is(err, services.ErrArtifactDeleteUnsupported) || errors.Is(err, services.ErrAttemptNotRunning) || errors.Is(err, services.ErrIdempotencyConflict) || errors.Is(err, services.ErrNoClaimableTickets) {
 		return huma.Error409Conflict(message, err)
 	}
 	var pgErr *pgconn.PgError

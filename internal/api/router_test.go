@@ -51,7 +51,6 @@ func TestOpenAPIIncludesPhaseOneRoutes(t *testing.T) {
 		{"post", "/tickets/{id}/archive"},
 		{"post", "/tickets/claim-next"},
 		{"get", "/attempts/{id}"},
-		{"patch", "/attempts/{id}"},
 		{"post", "/attempts/{id}/heartbeat"},
 		{"post", "/attempts/{id}/checkpoint"},
 		{"post", "/attempts/{id}/complete"},

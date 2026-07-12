@@ -18,7 +18,10 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/web"
 )
 
-const basePath = "/api/v1"
+const (
+	basePath           = "/api/v1"
+	maxAPIRequestBytes = 1 << 20
+)
 
 func NewRouter() http.Handler {
 	return NewRouterWithRuntime(nil)
@@ -33,7 +36,12 @@ func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Hand
 	apiMux := http.NewServeMux()
 	api := humago.NewWithPrefix(apiMux, basePath, huma.DefaultConfig("Forge API", "0.1.0"))
 	RegisterPhaseOneRoutes(api, rt)
-	mux.Handle(basePath+"/", web.RequireAdminToken(auth, apiMux))
+	mux.Handle(basePath+"/", web.RequireAdminToken(auth, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxAPIRequestBytes)
+		}
+		apiMux.ServeHTTP(w, r)
+	})))
 	webHandler := web.NewHandlerWithAuth(rt, auth)
 	mux.Handle("/login", webHandler)
 	mux.Handle("/tickets", webHandler)
@@ -59,19 +67,7 @@ func RegisterPhaseOneRoutes(api huma.API, rt web.Runtime) {
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/review", contracts.RESTReviewTicket, "Review ticket")
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/archive", contracts.RESTArchiveTicket, "Archive ticket")
 
-	register[bodyInput](api, http.MethodPost, "/tickets/claim-next", contracts.RESTClaimNextTicket, "Claim next ticket")
-
-	register[idInput](api, http.MethodGet, "/attempts/{id}", "get-attempt", "Get attempt")
-	register[idBodyInput](api, http.MethodPatch, "/attempts/{id}", "update-attempt", "Update attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/heartbeat", contracts.RESTHeartbeat, "Heartbeat attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/checkpoint", contracts.RESTCheckpoint, "Checkpoint attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/complete", contracts.RESTCompleteAttempt, "Complete attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/fail", contracts.RESTFailAttempt, "Fail attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/block", contracts.RESTBlockAttempt, "Block attempt")
-	register[idBodyInput](api, http.MethodPost, "/attempts/{id}/cancel", "cancel-attempt", "Cancel attempt")
-
-	register[idInput](api, http.MethodGet, "/tickets/{id}/events", "list-ticket-events", "List ticket events")
-	register[idInput](api, http.MethodGet, "/attempts/{id}/events", "list-attempt-events", "List attempt events")
+	registerLifecycleRoutes(api, rt)
 	registerEventRoutes(api, rt)
 
 	registerAnalyticsRoutes(api, rt)
