@@ -55,6 +55,11 @@ type QueueModel struct {
 	showDetail   bool
 	detailTicket pgtype.UUID
 	detailSeq    int64
+	width        int
+	height       int
+	filter       string
+	filtering    bool
+	status       string
 }
 
 type detailLoadedMsg struct {
@@ -148,6 +153,9 @@ func (m QueueModel) Init() tea.Cmd {
 
 func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		return m, nil
 	case tea.KeyMsg:
 		if m.showDetail {
 			switch msg.String() {
@@ -156,6 +164,26 @@ func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "b":
 				m.showDetail = false
 				return m, nil
+			}
+			return m, nil
+		}
+		if m.filtering {
+			switch msg.String() {
+			case "enter":
+				m.filtering = false
+				m.status = "Filter applied: " + m.filter
+			case "esc":
+				m.filtering = false
+				m.filter = ""
+				m.status = "Filter cleared"
+			case "backspace":
+				if len(m.filter) > 0 {
+					m.filter = m.filter[:len(m.filter)-1]
+				}
+			default:
+				if len(msg.Runes) > 0 {
+					m.filter += string(msg.Runes)
+				}
 			}
 			return m, nil
 		}
@@ -168,6 +196,15 @@ func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.MoveUp(), nil
 		case "enter":
 			return m.loadSelectedDetail()
+		case "/":
+			m.filtering = true
+			m.status = "Filter: type text, enter to apply, esc to cancel"
+			return m, nil
+		case "c":
+			if len(m.tickets) > 0 {
+				m.status = "Copy selected ticket ID: " + uuidText(m.tickets[m.selected].ID)
+			}
+			return m, nil
 		}
 	case detailLoadedMsg:
 		if msg.requestSeq != m.detailSeq {
@@ -208,7 +245,9 @@ func (m QueueModel) View() string {
 		b.WriteString("\n")
 		return b.String()
 	}
-	for i, ticket := range m.tickets {
+	visible := m.visibleTickets()
+	for _, row := range visible {
+		i, ticket := row.index, row.ticket
 		prefix := " "
 		lineStyle := lipgloss.NewStyle()
 		if i == m.selected {
@@ -258,9 +297,44 @@ func (m QueueModel) View() string {
 		b.WriteString(strings.Join(selected.RelevantPaths, ", "))
 		b.WriteString("\n")
 	}
-	b.WriteString(mutedStyle.Render("j/k move  enter open detail later  c copy id later  q quit"))
+	if m.status != "" {
+		b.WriteString("\n")
+		b.WriteString(m.status)
+		b.WriteString("\n")
+	}
+	b.WriteString(mutedStyle.Render("j/k move  / filter  enter open  c copy ID  b back  q quit"))
 	b.WriteString("\n")
 	return b.String()
+}
+
+type visibleTicket struct {
+	index  int
+	ticket db.Ticket
+}
+
+func (m QueueModel) visibleTickets() []visibleTicket {
+	rows := m.height - 10
+	if rows < 3 {
+		rows = 3
+	}
+	start := 0
+	if m.selected >= rows {
+		start = m.selected - rows + 1
+	}
+	end := start + rows
+	if end > len(m.tickets) {
+		end = len(m.tickets)
+	}
+	filter := strings.ToLower(strings.TrimSpace(m.filter))
+	items := make([]visibleTicket, 0, end-start)
+	for i := start; i < end; i++ {
+		ticket := m.tickets[i]
+		if filter != "" && !strings.Contains(strings.ToLower(ticket.Title+" "+ticket.Status+" "+ticket.Type), filter) {
+			continue
+		}
+		items = append(items, visibleTicket{index: i, ticket: ticket})
+	}
+	return items
 }
 
 func (m QueueModel) MoveDown() QueueModel {

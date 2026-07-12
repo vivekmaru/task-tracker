@@ -171,3 +171,11 @@ Phase 3 is tracked in Beads as:
 - `agent-task-tracker-phase-3.8` - Add shareable deep links.
 - `agent-task-tracker-phase-3.9` - Add human auth flow.
 - `agent-task-tracker-phase-3.10` - Add project and workspace admin screens.
+
+## TUI inspection key map
+
+Forge's production TUI is read-only. Use `j`/`k` or arrows to move, `enter` to
+open the selected ticket, `b` to return, `/` to filter the loaded queue, `c`
+to reveal the selected ticket ID for copy, and `q` to quit. Resize events bound
+the visible queue rows so the selected item stays in view; terminal mutation
+actions remain deliberately out of scope.
