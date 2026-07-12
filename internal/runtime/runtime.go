@@ -21,6 +21,7 @@ import (
 
 type Runtime struct {
 	Pool          *pgxpool.Pool
+	beginTx       func(context.Context, pgx.TxOptions) (pgx.Tx, error)
 	Queries       *db.Queries
 	Tickets       *services.TicketService
 	Claims        *services.ClaimService
@@ -130,11 +131,23 @@ func (r *Runtime) ListWebhookSubscriptions(ctx context.Context, req db.ListWebho
 }
 
 func (r *Runtime) CreateTicket(ctx context.Context, req services.CreateTicketRequest) (db.Ticket, error) {
-	return r.Tickets.CreateTicket(ctx, req)
+	var ticket db.Ticket
+	err := r.withTransaction(ctx, "ticket", func(queries *db.Queries) error {
+		var err error
+		ticket, err = services.NewTicketService(queries).CreateTicket(ctx, req)
+		return err
+	})
+	return ticket, err
 }
 
 func (r *Runtime) ProposeTicket(ctx context.Context, req services.CreateTicketRequest) (db.Ticket, error) {
-	return r.Tickets.ProposeTicket(ctx, req)
+	var ticket db.Ticket
+	err := r.withTransaction(ctx, "ticket", func(queries *db.Queries) error {
+		var err error
+		ticket, err = services.NewTicketService(queries).ProposeTicket(ctx, req)
+		return err
+	})
+	return ticket, err
 }
 
 func (r *Runtime) CreateTicketFromAttempt(ctx context.Context, req services.CreateTicketFromAttemptRequest) (db.Ticket, error) {
@@ -142,7 +155,13 @@ func (r *Runtime) CreateTicketFromAttempt(ctx context.Context, req services.Crea
 }
 
 func (r *Runtime) UpdateTicket(ctx context.Context, req services.UpdateTicketRequest) (db.Ticket, error) {
-	return r.Tickets.UpdateTicket(ctx, req)
+	var ticket db.Ticket
+	err := r.withTransaction(ctx, "ticket", func(queries *db.Queries) error {
+		var err error
+		ticket, err = services.NewTicketService(queries).UpdateTicket(ctx, req)
+		return err
+	})
+	return ticket, err
 }
 
 func (r *Runtime) MarkReady(ctx context.Context, req services.TicketTransitionRequest) (db.Ticket, error) {
@@ -286,12 +305,43 @@ func (r *Runtime) transitionWithArtifacts(
 	artifactReqs []services.RegisterArtifactRequest,
 	transition func(*services.AttemptService) (services.AttemptTransitionResult, error),
 ) (services.AttemptTransitionResult, []db.Artifact, error) {
-	if r.Pool == nil {
-		return services.AttemptTransitionResult{}, nil, fmt.Errorf("runtime pool is not configured")
-	}
-	tx, err := r.Pool.BeginTx(ctx, pgx.TxOptions{})
+	var result services.AttemptTransitionResult
+	created := make([]db.Artifact, 0, len(artifactReqs))
+	err := r.withTransaction(ctx, "transition", func(queries *db.Queries) error {
+		attempts := services.NewAttemptService(queries)
+		artifacts := services.NewArtifactService(queries)
+
+		var err error
+		result, err = transition(attempts)
+		if err != nil {
+			return err
+		}
+		for _, req := range artifactReqs {
+			artifact, err := artifacts.RegisterArtifact(ctx, req)
+			if err != nil {
+				return err
+			}
+			created = append(created, artifact)
+		}
+		return nil
+	})
 	if err != nil {
-		return services.AttemptTransitionResult{}, nil, fmt.Errorf("begin transition transaction: %w", err)
+		return services.AttemptTransitionResult{}, nil, err
+	}
+	return result, created, nil
+}
+
+func (r *Runtime) withTransaction(ctx context.Context, operation string, callback func(*db.Queries) error) error {
+	begin := r.beginTx
+	if begin == nil {
+		if r.Pool == nil {
+			return fmt.Errorf("runtime pool is not configured")
+		}
+		begin = r.Pool.BeginTx
+	}
+	tx, err := begin(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin %s transaction: %w", operation, err)
 	}
 	committed := false
 	defer func() {
@@ -300,27 +350,14 @@ func (r *Runtime) transitionWithArtifacts(
 		}
 	}()
 
-	queries := r.Queries.WithTx(tx)
-	attempts := services.NewAttemptService(queries)
-	artifacts := services.NewArtifactService(queries)
-
-	result, err := transition(attempts)
-	if err != nil {
-		return services.AttemptTransitionResult{}, nil, err
-	}
-	created := make([]db.Artifact, 0, len(artifactReqs))
-	for _, req := range artifactReqs {
-		artifact, err := artifacts.RegisterArtifact(ctx, req)
-		if err != nil {
-			return services.AttemptTransitionResult{}, nil, err
-		}
-		created = append(created, artifact)
+	if err := callback(r.Queries.WithTx(tx)); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return services.AttemptTransitionResult{}, nil, fmt.Errorf("commit transition transaction: %w", err)
+		return fmt.Errorf("commit %s transaction: %w", operation, err)
 	}
 	committed = true
-	return result, created, nil
+	return nil
 }
 
 func (r *Runtime) ListArtifactsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.Artifact, error) {

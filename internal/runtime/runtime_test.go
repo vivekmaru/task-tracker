@@ -3,12 +3,14 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
 	"github.com/vivek/agent-task-tracker/internal/storage"
@@ -118,6 +120,76 @@ func TestRuntimeStoreArtifactUsesConfiguredStore(t *testing.T) {
 	if len(client.objects) != 1 {
 		t.Fatalf("expected one stored object, got %#v", client.objects)
 	}
+}
+
+func TestWithTransactionCommitsSuccessfulWork(t *testing.T) {
+	tx := &fakeTx{}
+	rt := &Runtime{
+		Queries: db.New(nil),
+		beginTx: func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
+	}
+
+	if err := rt.withTransaction(context.Background(), "ticket", func(*db.Queries) error { return nil }); err != nil {
+		t.Fatalf("run transaction: %v", err)
+	}
+	if tx.commitCalls != 1 || tx.rollbackCalls != 0 {
+		t.Fatalf("expected one commit and no rollback, got %#v", tx)
+	}
+}
+
+func TestWithTransactionRollsBackCallbackAndCommitFailures(t *testing.T) {
+	callbackErr := errors.New("callback failed")
+	commitErr := errors.New("commit failed")
+	for name, test := range map[string]struct {
+		tx       *fakeTx
+		callback error
+		want     error
+	}{
+		"callback": {tx: &fakeTx{}, callback: callbackErr, want: callbackErr},
+		"commit":   {tx: &fakeTx{commitErr: commitErr}, want: commitErr},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt := &Runtime{
+				Queries: db.New(nil),
+				beginTx: func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return test.tx, nil },
+			}
+			err := rt.withTransaction(context.Background(), "ticket", func(*db.Queries) error { return test.callback })
+			if !errors.Is(err, test.want) {
+				t.Fatalf("expected %v, got %v", test.want, err)
+			}
+			if test.tx.rollbackCalls != 1 {
+				t.Fatalf("expected rollback after %s failure, got %#v", name, test.tx)
+			}
+		})
+	}
+}
+
+func TestWithTransactionWrapsBeginFailure(t *testing.T) {
+	beginErr := errors.New("pool unavailable")
+	rt := &Runtime{
+		Queries: db.New(nil),
+		beginTx: func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return nil, beginErr },
+	}
+	if err := rt.withTransaction(context.Background(), "ticket", func(*db.Queries) error { return nil }); !errors.Is(err, beginErr) {
+		t.Fatalf("expected begin error, got %v", err)
+	}
+}
+
+type fakeTx struct {
+	pgx.Tx
+	commitErr     error
+	commitCalls   int
+	rollbackCalls int
+}
+
+func (tx *fakeTx) Commit(context.Context) error {
+	tx.commitCalls++
+	return tx.commitErr
+}
+
+func (tx *fakeTx) Rollback(context.Context) error {
+	tx.rollbackCalls++
+	return nil
 }
 
 type fakeS3Client struct {

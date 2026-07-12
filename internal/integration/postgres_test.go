@@ -287,6 +287,84 @@ func TestLeaseExpiryRequeuesTicketOnce(t *testing.T) {
 	}
 }
 
+func TestCreateTicketAtomicOnDependencyFailure(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	missingDependency := pgtype.UUID{Valid: true}
+	missingDependency.Bytes[15] = 99
+
+	_, err := fixture.runtime.CreateTicket(fixture.context, services.CreateTicketRequest{
+		WorkspaceID:          workspace.ID,
+		ProjectID:            project.ID,
+		Title:                "Atomic ticket creation",
+		Description:          "The ticket and its dependency must commit together.",
+		Type:                 services.TicketTypeTask,
+		AcceptanceCriteria:   []string{"No ticket survives a failed dependency insert"},
+		VerificationCommands: []string{"go test -tags=integration ./internal/integration"},
+		Dependencies:         []pgtype.UUID{missingDependency},
+		CreatedBy:            services.ActorHuman,
+	})
+	if err == nil {
+		t.Fatal("expected missing dependency to fail ticket creation")
+	}
+	tickets, err := fixture.runtime.ListTickets(fixture.context, services.ListTicketsRequest{
+		WorkspaceID: workspace.ID,
+		ProjectID:   project.ID,
+		Limit:       10,
+	})
+	if err != nil {
+		t.Fatalf("list tickets after failed create: %v", err)
+	}
+	if len(tickets) != 0 {
+		t.Fatalf("expected failed create to roll back ticket, got %#v", tickets)
+	}
+}
+
+func TestUpdateTicketAtomicOnEventFailure(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	ticket := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, `
+CREATE FUNCTION reject_integration_updated_events() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.type = 'updated' THEN
+        RAISE EXCEPTION 'reject updated event';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER reject_integration_updated_events
+BEFORE INSERT ON ticket_events
+FOR EACH ROW EXECUTE FUNCTION reject_integration_updated_events();`); err != nil {
+		t.Fatalf("install update event failure trigger: %v", err)
+	}
+
+	updatedTitle := "This update must roll back"
+	_, err := fixture.runtime.UpdateTicket(fixture.context, services.UpdateTicketRequest{
+		TicketID:  ticket.ID,
+		Title:     &updatedTitle,
+		ActorType: services.ActorHuman,
+		ActorID:   "integration-operator",
+	})
+	if err == nil {
+		t.Fatal("expected update event trigger to reject the transaction")
+	}
+	stored, err := fixture.runtime.GetTicket(fixture.context, ticket.ID)
+	if err != nil {
+		t.Fatalf("get ticket after failed update: %v", err)
+	}
+	if stored.Title != ticket.Title {
+		t.Fatalf("expected original title %q after rollback, got %q", ticket.Title, stored.Title)
+	}
+	events, err := fixture.runtime.ListTicketEventsByTicket(fixture.context, ticket.ID)
+	if err != nil {
+		t.Fatalf("list ticket events after failed update: %v", err)
+	}
+	if countEvents(events, "updated") != 0 {
+		t.Fatalf("expected no update event after rollback, got %#v", events)
+	}
+}
+
 func setAttemptLease(t *testing.T, fixture *fixture, attemptID pgtype.UUID, leaseExpiresAt time.Time) {
 	t.Helper()
 	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE attempts SET lease_expires_at = $1 WHERE id = $2", leaseExpiresAt, attemptID); err != nil {
