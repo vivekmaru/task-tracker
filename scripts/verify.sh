@@ -20,6 +20,13 @@ fi
 go run "github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION}" generate
 git diff --exit-code -- internal/db
 
+if [[ -n "${FORGE_TEST_DATABASE_URL:-}" ]]; then
+  go test -tags=integration ./internal/integration
+elif [[ -n "${CI:-}" ]]; then
+  printf '%s is required in CI.\n' "FORGE_TEST_DATABASE_URL" >&2
+  exit 1
+fi
+
 go test ./...
 go test -race ./...
 go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...

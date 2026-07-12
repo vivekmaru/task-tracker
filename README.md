@@ -42,6 +42,7 @@ Known current limitations:
 - `psql`
 - Optional but useful for the smoke test snippets: `jq`
 - Optional: `sqlc` via `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1`
+- PostgreSQL integration tests additionally require a role that can create and drop databases.
 
 ## Configuration
 
@@ -115,6 +116,13 @@ Regenerate sqlc code after query changes:
 
 ```bash
 go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
+```
+
+Run the PostgreSQL integration suite against disposable databases. The URL must name a database beginning with `forge_test`; Forge connects to the server's `postgres` maintenance database and creates a unique `forge_test_*` database for each test, then drops it during cleanup.
+
+```bash
+export FORGE_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/forge_test?sslmode=disable'
+go test -tags=integration ./internal/integration
 ```
 
 ## Build And Test
