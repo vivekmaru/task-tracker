@@ -1,14 +1,28 @@
-# MCP Server Lifecycle
+# MCP stdio lifecycle
 
-Forge MCP mode is intentionally a thin adapter over the same runtime used by the API and CLI.
+Forge serves its existing tool catalog over standard MCP stdio with `forge mcp
+--config /absolute/path/forge.json`. Stdout is reserved exclusively for MCP
+protocol frames; diagnostics and database errors are never written there.
 
-Current lifecycle:
+The server runs until the client closes stdin, receives process cancellation, or
+the runtime fails. Tool failures return an MCP tool error with a generic
+message rather than SQL, file-system, or configuration details.
 
-1. `forge mcp` loads normal Forge configuration.
-2. It validates the database-backed runtime configuration.
-3. It opens the shared runtime composition.
-4. It registers MCP tool metadata from `internal/contracts`.
-5. It wires MCP tool calls to the shared runtime services.
-6. It reports startup success with the registered tool count.
+## Client configuration
 
-The MCP package now has runtime-backed handlers for the Phase 2 operation catalog. Protocol transport remains intentionally thin: it should expose the registered tools and delegate execution to `mcp.Server.Call` rather than duplicating business logic inside the transport layer.
+All hosts use the same local command and explicit config path:
+
+```json
+{
+  "command": "/absolute/path/to/forge",
+  "args": ["mcp", "--config", "/absolute/path/to/forge.json"]
+}
+```
+
+- Codex: add the object as an stdio MCP server in your Codex configuration.
+- Claude Code: place it under `mcpServers.forge` in `.mcp.json`.
+- Gemini CLI: place it under `mcpServers.forge` in its MCP configuration.
+- Other MCP hosts: use the equivalent command/args fields.
+
+The local process is trusted with the database credentials in this config. Do
+not expose this stdio server over a network socket.

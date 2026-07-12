@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -278,11 +277,8 @@ func TestRunMCPBootsRuntimeAndRegistersContractTools(t *testing.T) {
 	if opened.DatabaseURL != "postgres://db" {
 		t.Fatalf("expected runtime opener to receive database URL, got %#v", opened)
 	}
-	if !strings.Contains(stdout.String(), "mcp runtime configuration ok") {
-		t.Fatalf("expected MCP startup message, got %q", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), fmt.Sprintf("registered %d tools", len(contracts.AllOperations()))) {
-		t.Fatalf("expected registered tool count, got %q", stdout.String())
+	if stdout.Len() != 0 {
+		t.Fatalf("expected MCP stdout to contain protocol frames only, got %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())

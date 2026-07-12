@@ -326,7 +326,10 @@ func runProcess(name string, args []string, stdout, stderr io.Writer, deps Depen
 			fmt.Fprintf(stderr, "mcp startup error: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "mcp runtime configuration ok; registered %d tools; protocol serving not implemented yet\n", len(server.Tools()))
+		if err := server.ServeStdio(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(stderr, "mcp server error: %v\n", err)
+			return 1
+		}
 	case "worker":
 		workerOpts, err := workerOptionsFromProcess(opts, cfg.WorkerConcurrency)
 		if err != nil {
