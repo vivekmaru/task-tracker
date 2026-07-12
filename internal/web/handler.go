@@ -1715,7 +1715,7 @@ func writeTicketActions(w io.Writer, ticket db.Ticket) {
 }
 
 func writeTicketActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
-	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
+	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><label><span>Reason</span><input name="reason" placeholder="%s"></label><button type="submit">%s</button></form>`,
 		esc(uuidText(ticketID)),
 		esc(action),
 		esc(placeholder),
@@ -1817,7 +1817,7 @@ func writeTrustMetric(w io.Writer, count int, noun string, href string) {
 }
 
 func writeProposedActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
-	fmt.Fprintf(w, `<form method="post" action="/proposed/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" value="%s"></label><button type="submit">%s</button></form>`,
+	fmt.Fprintf(w, `<form method="post" action="/proposed/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" placeholder="%s"></label><button type="submit">%s</button></form>`,
 		esc(uuidText(ticketID)),
 		esc(action),
 		esc(services.ActorHuman),
