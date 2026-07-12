@@ -193,6 +193,34 @@ func TestAuthenticatedHandlerRejectsExpiredSessionCookie(t *testing.T) {
 	}
 }
 
+func TestCookieAuthenticatedMutationRequiresSameOriginAndLogoutExpiresSession(t *testing.T) {
+	auth := AuthOptions{AdminToken: "secret-token"}.normalized()
+	handler := NewHandlerWithAuth(&fakeRuntime{}, auth)
+	session := &http.Cookie{Name: auth.cookieName(), Value: auth.sessionValue(auth.now().Add(time.Hour))}
+
+	mutation := httptest.NewRequest(http.MethodPost, "/workspaces", strings.NewReader("name=Security+Test"))
+	mutation.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	mutation.AddCookie(session)
+	mutationRec := httptest.NewRecorder()
+	handler.ServeHTTP(mutationRec, mutation)
+	if mutationRec.Code != http.StatusForbidden {
+		t.Fatalf("expected missing Origin to be rejected, got %d: %s", mutationRec.Code, mutationRec.Body.String())
+	}
+
+	logout := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	logout.Header.Set("Origin", "http://example.com")
+	logout.AddCookie(session)
+	logoutRec := httptest.NewRecorder()
+	handler.ServeHTTP(logoutRec, logout)
+	if logoutRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected logout redirect, got %d: %s", logoutRec.Code, logoutRec.Body.String())
+	}
+	cookies := logoutRec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != auth.cookieName() || cookies[0].MaxAge >= 0 {
+		t.Fatalf("expected expired session cookie, got %#v", cookies)
+	}
+}
+
 func TestTicketListRendersEmptyAndBadRequestStates(t *testing.T) {
 	handler := NewHandler(&fakeRuntime{})
 	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,11 +12,12 @@ import (
 )
 
 const (
-	defaultHTTPAddr          = "127.0.0.1:3017"
-	defaultLogLevel          = "info"
-	defaultWorkerConcurrency = 1
-	defaultArtifactRoot      = ".forge/artifacts"
-	defaultArtifactBackend   = "local"
+	DeprecatedDevelopmentAdminToken = "change-me-local-admin-token"
+	defaultHTTPAddr                 = "127.0.0.1:3017"
+	defaultLogLevel                 = "info"
+	defaultWorkerConcurrency        = 1
+	defaultArtifactRoot             = ".forge/artifacts"
+	defaultArtifactBackend          = "local"
 )
 
 // Config contains process configuration shared by Forge command modes.
@@ -157,10 +159,31 @@ func (c Config) ValidateServer() error {
 	if strings.TrimSpace(c.AdminToken) == "" {
 		return errors.New("admin_token is required")
 	}
+	if !isLoopbackAddress(c.HTTPAddr) {
+		if strings.TrimSpace(c.AdminToken) == DeprecatedDevelopmentAdminToken {
+			return errors.New("admin_token must not use the development placeholder outside loopback")
+		}
+		if !c.AuthCookieSecure {
+			return errors.New("auth_cookie_secure must be true outside loopback")
+		}
+	}
 	if err := c.ValidateArtifactStorage(); err != nil {
 		return err
 	}
 	return nil
+}
+
+func isLoopbackAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ValidateWorker checks the minimum configuration needed to start worker mode.

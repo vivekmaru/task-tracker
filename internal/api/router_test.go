@@ -325,6 +325,31 @@ func TestNewRouterWithRuntimeKeepsOpenAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestRouterWithAuthProtectsEveryAPIRoute(t *testing.T) {
+	router := NewRouterWithRuntimeAndAuth(nil, web.AuthOptions{AdminToken: "operator-token"})
+	for name, request := range map[string]*http.Request{
+		"openapi": httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil),
+		"event":   httptest.NewRequest(http.MethodGet, "/api/v1/events", nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, request)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected unauthorized API route, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	for _, header := range []struct{ name, value string }{{"Authorization", "Bearer operator-token"}, {"X-Forge-Admin-Token", "operator-token"}} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
+		req.Header.Set(header.name, header.value)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected authorized OpenAPI route with %s, got %d: %s", header.name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestNewRouterWithRuntimeMountsSearchPage(t *testing.T) {
 	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
 	req := httptest.NewRequest(http.MethodGet, "/search?workspace_id=00000000-0000-0000-0000-000000000001&project_id=00000000-0000-0000-0000-000000000002", nil)

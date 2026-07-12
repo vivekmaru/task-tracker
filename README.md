@@ -67,14 +67,14 @@ Equivalent config file:
   "database_url": "postgres://localhost:5432/forge?sslmode=disable",
   "http_addr": "127.0.0.1:3017",
   "worker_concurrency": 1,
-  "admin_token": "change-me-local-admin-token",
+  "admin_token": "replace-with-a-generated-32-byte-token",
   "auth_cookie_secure": false,
   "artifact_root": ".forge/artifacts",
   "artifact_backend": "local"
 }
 ```
 
-Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Keep it `false` for direct plain HTTP access.
+Run `forge init` without `--admin-token` to generate a 32-byte token in a mode-0600 config file; the command intentionally never prints that secret. Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Non-loopback servers require secure cookies and reject the former development placeholder.
 
 Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be inspected from the human `/artifacts/{id}` route and opened from `/artifacts/{id}/content` when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user's home directory.
 
@@ -240,7 +240,7 @@ go run ./cmd/forge tui --config forge.local.json \
 
 Open these URLs:
 
-- `http://127.0.0.1:3017/login` and sign in with `change-me-local-admin-token`.
+- `http://127.0.0.1:3017/login` and sign in with the `admin_token` from your mode-0600 config file.
 - `http://127.0.0.1:3017/workspaces`
 - `http://127.0.0.1:3017/tickets?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID`
 - `http://127.0.0.1:3017/search?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID&q=smoke`
@@ -258,7 +258,7 @@ Expected results:
 
 ## Runtime Commands
 
-The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/login`, `/workspaces`, `/tickets`, and `/tickets/{id}`. Human web views require `admin_token`; sign in at `/login`, or pass `Authorization: Bearer $FORGE_ADMIN_TOKEN` for scripted checks:
+The process commands open the shared runtime. `forge server` listens on `http_addr` and exposes `/api/v1/openapi.json`, `/login`, `/workspaces`, `/tickets`, and `/tickets/{id}`. Human web views require `admin_token`; cookie-authenticated changes require a same-origin browser request. Every `/api/v1` route requires `Authorization: Bearer $FORGE_ADMIN_TOKEN` or `X-Forge-Admin-Token`; browser session cookies are not accepted there.
 
 ```bash
 forge server --config forge.json

@@ -83,15 +83,40 @@ type AuthOptions struct {
 	Now          func() time.Time
 }
 
+// RequireAdminToken protects machine-facing routes with the configured operator token.
+// Browser session cookies are deliberately not accepted on this boundary.
+func RequireAdminToken(auth AuthOptions, next http.Handler) http.Handler {
+	auth = auth.normalized()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !auth.enabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if auth.ValidAdminToken(bearerToken(r.Header.Get("Authorization"))) || auth.ValidAdminToken(r.Header.Get("X-Forge-Admin-Token")) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Forge API"`)
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+	})
+}
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.auth.enabled() {
 		switch r.URL.Path {
 		case "/login":
 			h.handleLogin(w, r)
 			return
+		case "/logout":
+			h.handleLogout(w, r)
+			return
 		}
 		if !h.isAuthorized(r) {
 			h.requireLogin(w, r)
+			return
+		}
+		if h.isCookieAuthorized(r) && unsafeMethod(r.Method) && !sameOrigin(r) {
+			renderStatus(r.Context(), w, http.StatusForbidden, "Request rejected", "Cookie-authenticated changes require a same-origin request.")
 			return
 		}
 	}
@@ -136,6 +161,20 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (h Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		renderStatus(r.Context(), w, http.StatusMethodNotAllowed, "Method not allowed", "Logout accepts POST requests.")
+		return
+	}
+	if !h.isAuthorized(r) {
+		h.requireLogin(w, r)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: h.auth.cookieName(), Value: "", Path: "/", HttpOnly: true, Secure: h.auth.SecureCookie, MaxAge: -1, Expires: time.Unix(1, 0)})
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
 func requireMethod(w http.ResponseWriter, r *http.Request, methods ...string) bool {
@@ -192,17 +231,36 @@ func (h Handler) requireLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) isAuthorized(r *http.Request) bool {
-	if token := bearerToken(r.Header.Get("Authorization")); token != "" && constantTimeTokenEqual(token, h.auth.AdminToken) {
+	if h.auth.ValidAdminToken(bearerToken(r.Header.Get("Authorization"))) {
 		return true
 	}
-	if token := r.Header.Get("X-Forge-Admin-Token"); token != "" && constantTimeTokenEqual(token, h.auth.AdminToken) {
+	if h.auth.ValidAdminToken(r.Header.Get("X-Forge-Admin-Token")) {
 		return true
 	}
+	return h.isCookieAuthorized(r)
+}
+
+func (h Handler) isCookieAuthorized(r *http.Request) bool {
 	cookie, err := r.Cookie(h.auth.cookieName())
-	if err != nil {
+	return err == nil && h.auth.validSessionValue(cookie.Value)
+}
+
+func unsafeMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
 		return false
 	}
-	return h.auth.validSessionValue(cookie.Value)
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Host, r.Host)
+}
+
+// ValidAdminToken compares a supplied operator token in constant time.
+func (a AuthOptions) ValidAdminToken(token string) bool {
+	return constantTimeTokenEqual(token, a.normalized().AdminToken)
 }
 
 func (a AuthOptions) normalized() AuthOptions {

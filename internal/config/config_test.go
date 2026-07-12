@@ -291,6 +291,25 @@ func TestValidateServerRejectsWhitespaceAdminToken(t *testing.T) {
 	}
 }
 
+func TestValidateServerRejectsUnsafeNonLoopbackAuthentication(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"placeholder": {DatabaseURL: "postgres://db", HTTPAddr: "0.0.0.0:3017", AdminToken: DeprecatedDevelopmentAdminToken, AuthCookieSecure: true},
+		"cookie":      {DatabaseURL: "postgres://db", HTTPAddr: "0.0.0.0:3017", AdminToken: "real-token", AuthCookieSecure: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := cfg.ValidateServer(); err == nil {
+				t.Fatal("expected non-loopback server validation error")
+			}
+		})
+	}
+	if err := (Config{DatabaseURL: "postgres://db", HTTPAddr: "127.0.0.1:3017", AdminToken: DeprecatedDevelopmentAdminToken}).ValidateServer(); err != nil {
+		t.Fatalf("expected loopback development configuration to remain valid: %v", err)
+	}
+	if err := (Config{DatabaseURL: "postgres://db", HTTPAddr: "[::1]:3017", AdminToken: "real-token"}).ValidateServer(); err != nil {
+		t.Fatalf("expected IPv6 loopback configuration to remain valid: %v", err)
+	}
+}
+
 func TestValidateWorkerRequiresPositiveConcurrency(t *testing.T) {
 	cfg := Config{DatabaseURL: "postgres://db", WorkerConcurrency: 0}
 

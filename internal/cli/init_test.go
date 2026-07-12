@@ -134,3 +134,32 @@ func TestRunInitForceOverwritesExistingConfig(t *testing.T) {
 		t.Fatalf("expected human output, got %q", stdout.String())
 	}
 }
+
+func TestRunInitGeneratesUnprintedAdminToken(t *testing.T) {
+	var tokens []string
+	for i := 0; i < 2; i++ {
+		path := filepath.Join(t.TempDir(), "forge.local.json")
+		var stdout, stderr strings.Builder
+		if code := RunWithDependencies([]string{"init", "--path", path}, &stdout, &stderr, Dependencies{}); code != 0 {
+			t.Fatalf("init run %d failed: code=%d stderr=%q", i, code, stderr.String())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read generated config: %v", err)
+		}
+		var cfg config.Config
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			t.Fatalf("decode generated config: %v", err)
+		}
+		if len(cfg.AdminToken) < 43 || cfg.AdminToken == config.DeprecatedDevelopmentAdminToken {
+			t.Fatalf("expected generated admin token, got %q", cfg.AdminToken)
+		}
+		if strings.Contains(stdout.String(), cfg.AdminToken) || strings.Contains(stderr.String(), cfg.AdminToken) {
+			t.Fatal("init output must not disclose generated admin token")
+		}
+		tokens = append(tokens, cfg.AdminToken)
+	}
+	if tokens[0] == tokens[1] {
+		t.Fatal("expected distinct generated admin tokens")
+	}
+}

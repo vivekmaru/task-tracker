@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,7 +37,7 @@ func runInitCommand(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&databaseURL, "database-url", firstNonEmpty(os.Getenv("FORGE_DATABASE_URL"), "postgres://localhost:5432/forge?sslmode=disable"), "database URL")
 	flags.StringVar(&httpAddr, "http-addr", firstNonEmpty(os.Getenv("FORGE_HTTP_ADDR"), "127.0.0.1:3017"), "HTTP listen address")
 	flags.IntVar(&workerConcurrency, "worker-concurrency", defaultIntEnv("FORGE_WORKER_CONCURRENCY", 1), "worker concurrency")
-	flags.StringVar(&adminToken, "admin-token", firstNonEmpty(os.Getenv("FORGE_ADMIN_TOKEN"), "change-me-local-admin-token"), "human admin token")
+	flags.StringVar(&adminToken, "admin-token", strings.TrimSpace(os.Getenv("FORGE_ADMIN_TOKEN")), "human admin token")
 	flags.BoolVar(&authCookieSecure, "auth-cookie-secure", defaultBoolEnv("FORGE_AUTH_COOKIE_SECURE", false), "set secure auth cookie")
 	flags.StringVar(&artifactRoot, "artifact-root", firstNonEmpty(os.Getenv("FORGE_ARTIFACT_ROOT"), ".forge/artifacts"), "local artifact root")
 	flags.StringVar(&artifactBackend, "artifact-backend", firstNonEmpty(os.Getenv("FORGE_ARTIFACT_BACKEND"), "local"), "artifact backend")
@@ -43,6 +45,14 @@ func runInitCommand(args []string, stdout, stderr io.Writer) int {
 	flags.BoolVar(&jsonOut, "json", false, "write JSON output")
 	if !parseFlags(flags, args) {
 		return 2
+	}
+	if strings.TrimSpace(adminToken) == "" {
+		generatedToken, err := generateAdminToken()
+		if err != nil {
+			fmt.Fprintf(stderr, "init error: generate admin token: %v\n", err)
+			return 1
+		}
+		adminToken = generatedToken
 	}
 	if err := validateInitOptions(path, databaseURL, httpAddr, workerConcurrency, adminToken, artifactRoot, artifactBackend); err != nil {
 		fmt.Fprintf(stderr, "init argument error: %v\n", err)
@@ -112,6 +122,14 @@ func runInitCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "created artifact root %s\n", resolvedArtifactRoot)
 	}
 	return 0
+}
+
+func generateAdminToken() (string, error) {
+	var bytes [32]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes[:]), nil
 }
 
 func validateInitOptions(path, databaseURL, httpAddr string, workerConcurrency int, adminToken, artifactRoot, artifactBackend string) error {
