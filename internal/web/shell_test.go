@@ -1,6 +1,8 @@
 package web
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,5 +37,19 @@ func TestLocalHTMXAssetHasImmutableCaching(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "2.0.4") {
 		t.Fatalf("expected pinned asset version, got %q", rec.Body.String())
+	}
+}
+
+func TestShellIncludesSkipLinkAndActiveNavigationSemantics(t *testing.T) {
+	component := layoutWithPage(pageContext{Title: "Tickets", ActiveRoute: "tickets", WorkspaceID: "workspace", ProjectID: "project"}, func(io.Writer) {})
+	var output strings.Builder
+	if err := component.Render(context.Background(), &output); err != nil {
+		t.Fatal(err)
+	}
+	page := output.String()
+	for _, fragment := range []string{`href="#main-content"`, `id="main-content"`, `aria-current="page"`} {
+		if !strings.Contains(page, fragment) {
+			t.Fatalf("expected %q in shell", fragment)
+		}
 	}
 }

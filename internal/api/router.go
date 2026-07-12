@@ -62,6 +62,7 @@ func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Hand
 	})))
 	webHandler := web.NewHandlerWithAuth(rt, auth)
 	mux.Handle("/login", webHandler)
+	mux.Handle("/assets/", webHandler)
 	mux.Handle("/tickets", webHandler)
 	mux.Handle("/tickets/", webHandler)
 	mux.Handle("/search", webHandler)
