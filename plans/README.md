@@ -13,7 +13,7 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 | 003 | vds.3 | PostgreSQL integration harness | P0 | M | 001 | DONE |
 | 004 | vds.4 | Fence lease expiry | P0 | M | 003 | DONE |
 | 005 | vds.5 | Transactional ticket writes | P0 | M | 003 | DONE |
-| 006 | vds.6 | Transactional decomposition and terminal writes | P0 | M | 005 | TODO |
+| 006 | vds.6 | Transactional decomposition and terminal writes | P0 | M | 005 | DONE |
 | 007 | vds.7 | Authentication boundary | P0 | M | 001 | TODO |
 | 008 | vds.8 | Webhook security and fencing | P0 | L | 003, 007 | TODO |
 | 009 | vds.9 | Migration and sqlc integrity | P0 | M | 003 | TODO |

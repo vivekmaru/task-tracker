@@ -201,7 +201,9 @@ func (r *Runtime) Checkpoint(ctx context.Context, req services.CheckpointRequest
 }
 
 func (r *Runtime) Complete(ctx context.Context, req services.CompleteAttemptRequest) (services.AttemptTransitionResult, error) {
-	return r.Attempts.Complete(ctx, req)
+	return r.transitionAttempt(ctx, func(attempts *services.AttemptService) (services.AttemptTransitionResult, error) {
+		return attempts.Complete(ctx, req)
+	})
 }
 
 func (r *Runtime) CompleteWithArtifacts(ctx context.Context, req services.CompleteAttemptRequest, artifactReqs []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error) {
@@ -211,11 +213,15 @@ func (r *Runtime) CompleteWithArtifacts(ctx context.Context, req services.Comple
 }
 
 func (r *Runtime) Fail(ctx context.Context, req services.FailAttemptRequest) (services.AttemptTransitionResult, error) {
-	return r.Attempts.Fail(ctx, req)
+	return r.transitionAttempt(ctx, func(attempts *services.AttemptService) (services.AttemptTransitionResult, error) {
+		return attempts.Fail(ctx, req)
+	})
 }
 
 func (r *Runtime) Block(ctx context.Context, req services.BlockAttemptRequest) (services.AttemptTransitionResult, error) {
-	return r.Attempts.Block(ctx, req)
+	return r.transitionAttempt(ctx, func(attempts *services.AttemptService) (services.AttemptTransitionResult, error) {
+		return attempts.Block(ctx, req)
+	})
 }
 
 func (r *Runtime) BlockWithArtifacts(ctx context.Context, req services.BlockAttemptRequest, artifactReqs []services.RegisterArtifactRequest) (services.AttemptTransitionResult, []db.Artifact, error) {
@@ -329,6 +335,19 @@ func (r *Runtime) transitionWithArtifacts(
 		return services.AttemptTransitionResult{}, nil, err
 	}
 	return result, created, nil
+}
+
+func (r *Runtime) transitionAttempt(ctx context.Context, transition func(*services.AttemptService) (services.AttemptTransitionResult, error)) (services.AttemptTransitionResult, error) {
+	var result services.AttemptTransitionResult
+	err := r.withTransaction(ctx, "transition", func(queries *db.Queries) error {
+		var err error
+		result, err = transition(services.NewAttemptService(queries))
+		return err
+	})
+	if err != nil {
+		return services.AttemptTransitionResult{}, err
+	}
+	return result, nil
 }
 
 func (r *Runtime) withTransaction(ctx context.Context, operation string, callback func(*db.Queries) error) error {
@@ -458,7 +477,13 @@ func (r *Runtime) RegisterCapabilities(ctx context.Context, req services.Registe
 }
 
 func (r *Runtime) DecomposeTicket(ctx context.Context, req services.DecomposeTicketRequest) (services.DecomposeTicketResult, error) {
-	return r.Tickets.DecomposeTicket(ctx, req)
+	var result services.DecomposeTicketResult
+	err := r.withTransaction(ctx, "ticket decomposition", func(queries *db.Queries) error {
+		var err error
+		result, err = services.NewTicketService(queries).DecomposeTicket(ctx, req)
+		return err
+	})
+	return result, err
 }
 
 func newS3Client(ctx context.Context, cfg config.Config) (storage.S3Client, error) {

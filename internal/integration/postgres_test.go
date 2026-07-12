@@ -365,6 +365,67 @@ FOR EACH ROW EXECUTE FUNCTION reject_integration_updated_events();`); err != nil
 	}
 }
 
+func TestDecomposeAtomicOnChildEventFailure(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	parent := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, `CREATE FUNCTION reject_integration_proposed_events() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.type = 'proposed' THEN RAISE EXCEPTION 'reject proposed event'; END IF; RETURN NEW; END; $$`); err != nil {
+		t.Fatalf("install proposal failure function: %v", err)
+	}
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, `CREATE TRIGGER reject_integration_proposed_events BEFORE INSERT ON ticket_events FOR EACH ROW EXECUTE FUNCTION reject_integration_proposed_events()`); err != nil {
+		t.Fatalf("install proposal failure trigger: %v", err)
+	}
+	_, err := fixture.runtime.DecomposeTicket(fixture.context, services.DecomposeTicketRequest{
+		WorkspaceID: workspace.ID, ProjectID: project.ID, ParentID: parent.ID,
+		Mode: services.DecomposeModePropose, CreatedBy: services.ActorAgent, CreatedByID: "planner", CreationReason: "integration transaction test",
+		Children: []services.DecomposeChildRequest{{Key: "one", Title: "First child", Description: "First child must not persist.", Type: services.TicketTypeTask, AcceptanceCriteria: []string{"No partial child"}, VerificationCommands: []string{"go test ./..."}}},
+	})
+	if err == nil {
+		t.Fatal("expected child event failure")
+	}
+	tickets, err := fixture.runtime.ListTickets(fixture.context, services.ListTicketsRequest{WorkspaceID: workspace.ID, ProjectID: project.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("list tickets: %v", err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != parent.ID {
+		t.Fatalf("expected only parent after rollback, got %#v", tickets)
+	}
+}
+
+func TestTerminalMetricsAtomicOnMetricsFailure(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	ticket := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+	claim, err := fixture.runtime.ClaimNext(fixture.context, claimRequest(workspace.ID, project.ID, "integration-agent", ""))
+	if err != nil {
+		t.Fatalf("claim ticket: %v", err)
+	}
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, `CREATE FUNCTION reject_integration_metrics() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject attempt metrics'; END; $$`); err != nil {
+		t.Fatalf("install metrics failure function: %v", err)
+	}
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, `CREATE TRIGGER reject_integration_metrics BEFORE INSERT ON attempt_metrics FOR EACH ROW EXECUTE FUNCTION reject_integration_metrics()`); err != nil {
+		t.Fatalf("install metrics failure trigger: %v", err)
+	}
+	_, err = fixture.runtime.Complete(fixture.context, services.CompleteAttemptRequest{AttemptID: claim.Attempt.ID, Output: map[string]any{"summary": "must roll back"}, Metrics: &services.AttemptMetricsRequest{TokensIn: 1}})
+	if err == nil {
+		t.Fatal("expected metrics failure")
+	}
+	attempt, err := fixture.runtime.GetAttempt(fixture.context, claim.Attempt.ID)
+	if err != nil {
+		t.Fatalf("get attempt: %v", err)
+	}
+	if attempt.Status != services.AttemptStatusRunning {
+		t.Fatalf("expected running attempt after rollback, got %q", attempt.Status)
+	}
+	stored, err := fixture.runtime.GetTicket(fixture.context, ticket.ID)
+	if err != nil {
+		t.Fatalf("get ticket: %v", err)
+	}
+	if stored.Status != services.TicketStatusInProgress {
+		t.Fatalf("expected in_progress ticket after rollback, got %q", stored.Status)
+	}
+}
+
 func setAttemptLease(t *testing.T, fixture *fixture, attemptID pgtype.UUID, leaseExpiresAt time.Time) {
 	t.Helper()
 	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE attempts SET lease_expires_at = $1 WHERE id = $2", leaseExpiresAt, attemptID); err != nil {
