@@ -174,7 +174,7 @@ func TestObservabilitySubscriptionAPIDefaultsOmittedEventTypesAndAttempts(t *tes
 func TestObservabilitySubscriptionAPINormalizesEventTypes(t *testing.T) {
 	rt := &fakeObservabilityRuntime{}
 	router := NewRouterWithRuntime(rt)
-	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events","event_types":[" completed ",""," failed "]}`
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"https://observability.example.test/forge/events","event_types":[" completed ",""," cancelled "]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -184,8 +184,8 @@ func TestObservabilitySubscriptionAPINormalizesEventTypes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected create status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := strings.Join(rt.createReq.EventTypes, ","); got != "completed,failed" {
-		t.Fatalf("expected normalized event types completed,failed, got %#v", rt.createReq.EventTypes)
+	if got := strings.Join(rt.createReq.EventTypes, ","); got != "completed,cancelled" {
+		t.Fatalf("expected normalized event types completed,cancelled, got %#v", rt.createReq.EventTypes)
 	}
 }
 

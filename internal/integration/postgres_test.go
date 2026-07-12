@@ -158,6 +158,55 @@ func TestClaimReplayAndCompleteUseRealPostgreSQL(t *testing.T) {
 	}
 }
 
+func TestCancelAttemptTransitionsTicketAndRecordsEvent(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	ticket := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+
+	claim, err := fixture.runtime.ClaimNext(fixture.context, claimRequest(workspace.ID, project.ID, "integration-agent", ""))
+	if err != nil {
+		t.Fatalf("claim ticket: %v", err)
+	}
+	cancelled, err := fixture.runtime.Cancel(fixture.context, services.CancelAttemptRequest{
+		AttemptID: claim.Attempt.ID,
+		Reason:    "operator stopped run",
+	})
+	if err != nil {
+		t.Fatalf("cancel attempt: %v", err)
+	}
+	if cancelled.AttemptStatus != services.AttemptStatusCancelled || cancelled.TicketStatus != services.TicketStatusTodo {
+		t.Fatalf("unexpected cancellation result: %#v", cancelled)
+	}
+
+	attempt, err := fixture.runtime.Queries.GetAttempt(fixture.context, claim.Attempt.ID)
+	if err != nil {
+		t.Fatalf("get cancelled attempt: %v", err)
+	}
+	if attempt.Status != services.AttemptStatusCancelled {
+		t.Fatalf("expected cancelled attempt, got %q", attempt.Status)
+	}
+	updatedTicket, err := fixture.runtime.Queries.GetTicket(fixture.context, ticket.ID)
+	if err != nil {
+		t.Fatalf("get ticket after cancellation: %v", err)
+	}
+	if updatedTicket.Status != services.TicketStatusTodo {
+		t.Fatalf("expected todo ticket after cancellation, got %q", updatedTicket.Status)
+	}
+	events, err := fixture.runtime.Queries.ListTicketEventsByTicket(fixture.context, ticket.ID)
+	if err != nil {
+		t.Fatalf("list ticket events: %v", err)
+	}
+	var cancelledEvents int
+	for _, event := range events {
+		if event.Type == "cancelled" {
+			cancelledEvents++
+		}
+	}
+	if cancelledEvents != 1 {
+		t.Fatalf("expected one cancelled event, got %d in %#v", cancelledEvents, events)
+	}
+}
+
 func createScope(t *testing.T, rt *runtime.Runtime, ctx context.Context) (db.Workspace, db.Project) {
 	t.Helper()
 	workspace, err := rt.CreateWorkspace(ctx, "integration-workspace")

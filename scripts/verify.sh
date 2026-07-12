@@ -13,12 +13,13 @@ fi
 go vet ./...
 go mod tidy -diff
 
-if ! git diff --quiet -- internal/db; then
-  printf 'Generated database code has local changes; regenerate from a clean tree.\n' >&2
-  exit 1
+readonly GENERATED_DATABASE_FILES=(internal/db/*.sql.go internal/db/db.go internal/db/models.go)
+if ! git diff --quiet -- "${GENERATED_DATABASE_FILES[@]}"; then
+	printf 'Generated database code has local changes; regenerate from a clean tree.\n' >&2
+	exit 1
 fi
 go run "github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION}" generate
-git diff --exit-code -- internal/db
+git diff --exit-code -- "${GENERATED_DATABASE_FILES[@]}"
 
 if [[ -n "${FORGE_TEST_DATABASE_URL:-}" ]]; then
   go test -tags=integration ./internal/integration

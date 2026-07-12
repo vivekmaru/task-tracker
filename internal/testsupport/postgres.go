@@ -70,7 +70,7 @@ func CreateDatabase(ctx context.Context, rootURL string) (*Database, error) {
 
 // ApplyMigrations applies Forge migrations using the production migration runner.
 func (d *Database) ApplyMigrations(ctx context.Context) (cli.MigrationResult, error) {
-	result, err := cli.ApplyMigrations(ctx, config.Config{DatabaseURL: d.URL}, migrationsDir())
+	result, err := cli.ApplyMigrations(ctx, config.Config{DatabaseURL: d.URL}, MigrationsDir())
 	if err != nil {
 		return cli.MigrationResult{}, fmt.Errorf("apply Forge migrations: %w", err)
 	}
@@ -131,7 +131,8 @@ func uniqueDatabaseName(baseName string) (string, error) {
 	return baseName + "_" + suffix, nil
 }
 
-func migrationsDir() string {
+// MigrationsDir resolves the repository's production migration directory.
+func MigrationsDir() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		panic("resolve testsupport source directory")

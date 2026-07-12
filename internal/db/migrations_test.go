@@ -141,6 +141,25 @@ func TestForwardMigrationAddsHumanTransitionEventTypes(t *testing.T) {
 	}
 }
 
+func TestForwardMigrationAddsCancelledTicketEventType(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0010_allow_cancelled_ticket_event.sql"))
+	if err != nil {
+		t.Fatalf("read cancelled event migration: %v", err)
+	}
+	sql := strings.ToLower(string(data))
+
+	for _, want := range []string{
+		"drop constraint if exists ticket_events_type_check",
+		"'cancelled'",
+		"where type = 'cancelled'",
+		"type = 'updated'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expected cancelled event migration to contain %q", want)
+		}
+	}
+}
+
 func TestForwardMigrationAddsFullTextSearchIndexes(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", "0003_full_text_search.sql"))
 	if err != nil {

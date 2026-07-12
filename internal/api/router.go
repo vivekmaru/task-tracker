@@ -395,6 +395,7 @@ var supportedObservabilityEventTypes = map[string]struct{}{
 	"failed":           {},
 	"blocked":          {},
 	"expired":          {},
+	"cancelled":        {},
 	"ready":            {},
 	"reopened":         {},
 	"unblocked":        {},
