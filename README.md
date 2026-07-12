@@ -416,4 +416,8 @@ See [Phase 2 Closeout](docs/phase-2-closeout.md) for the REST, CLI, and MCP pari
 
 For local coding-agent integration, see [MCP stdio lifecycle](docs/mcp-lifecycle.md).
 
+Run the release-candidate pilot with `scripts/production-acceptance.sh`; it
+requires disposable test and recovery database URLs and writes a redacted
+[acceptance report](docs/production-acceptance-report.md).
+
 See [Human Operations](docs/human-operations.md) for the Phase 3 TUI-first UX contract, view order, non-goals, and Beads breakdown.

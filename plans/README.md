@@ -27,7 +27,7 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 | 017 | vds.17 | Proof-first web workflow | P1 | L | 006, 016 | DONE |
 | 018 | vds.18 | Web accessibility/browser tests | P1 | M | 016, 017 | DONE |
 | 019 | vds.19 | TUI operator workflow | P1 | M | 001, 003 | DONE |
-| 020 | vds.20 | Production acceptance pilot | P0 | M | 002, 008, 010, 012, 013, 015, 018, 019 | TODO |
+| 020 | vds.20 | Production acceptance pilot | P0 | M | 002, 008, 010, 012, 013, 015, 018, 019 | DONE |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: reason`, `REJECTED: rationale`.
 
