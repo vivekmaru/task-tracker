@@ -16,7 +16,7 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 | 006 | vds.6 | Transactional decomposition and terminal writes | P0 | M | 005 | DONE |
 | 007 | vds.7 | Authentication boundary | P0 | M | 001 | DONE |
 | 008 | vds.8 | Webhook security and fencing | P0 | L | 003, 007 | TODO |
-| 009 | vds.9 | Migration and sqlc integrity | P0 | M | 003 | TODO |
+| 009 | vds.9 | Migration and sqlc integrity | P0 | M | 003 | DONE |
 | 010 | vds.10 | Relational scope integrity | P0 | L | 009 | TODO |
 | 011 | vds.11 | Typed REST resource routes | P0 | L | 007, 009 | TODO |
 | 012 | vds.12 | REST execution lifecycle | P0 | L | 004, 006, 011 | TODO |

@@ -4,10 +4,15 @@ sql:
     schema:
       - sql/migrations/0001_initial_schema.sql
       - sql/migrations/0002_ticket_transition_event_types.sql
+      - sql/migrations/0003_add_attempt_checkpoints_ticket_index.sql
       - sql/migrations/0003_full_text_search.sql
       - sql/migrations/0004_webhook_deliveries.sql
       - sql/migrations/0005_workspace_members.sql
       - sql/migrations/0006_ticket_event_sequence.sql
+      - sql/migrations/0007_webhook_observability_snapshots.sql
+      - sql/migrations/0008_ticket_task_type.sql
+      - sql/migrations/0009_ticket_event_sequence_indexes.sql
+      - sql/migrations/0010_allow_cancelled_ticket_event.sql
     queries:
       - sql/queries
     gen:

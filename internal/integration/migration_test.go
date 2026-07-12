@@ -47,6 +47,36 @@ func TestCancellationMigrationAppliesAfterPreviousSchema(t *testing.T) {
 	}
 }
 
+func TestMigrationChecksumsAdoptLegacyHistoryAndRejectChanges(t *testing.T) {
+	fixture := newFixture(t)
+	var checksum string
+	if err := fixture.runtime.Pool.QueryRow(fixture.context, "SELECT checksum FROM forge_schema_migrations WHERE id = '0001_initial_schema'").Scan(&checksum); err != nil || checksum == "" {
+		t.Fatalf("expected recorded migration checksum, got %q err=%v", checksum, err)
+	}
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE forge_schema_migrations SET checksum = NULL WHERE id = '0001_initial_schema'"); err != nil {
+		t.Fatalf("clear legacy checksum: %v", err)
+	}
+	if _, err := fixture.database.ApplyMigrations(fixture.context); err != nil {
+		t.Fatalf("adopt legacy checksum: %v", err)
+	}
+	if err := fixture.runtime.Pool.QueryRow(fixture.context, "SELECT checksum FROM forge_schema_migrations WHERE id = '0001_initial_schema'").Scan(&checksum); err != nil || checksum == "" {
+		t.Fatalf("expected adopted checksum, got %q err=%v", checksum, err)
+	}
+
+	dir := copyAllMigrations(t)
+	path := filepath.Join(dir, "0001_initial_schema.sql")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read copied migration: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, []byte("\n-- changed\n")...), 0o600); err != nil {
+		t.Fatalf("change copied migration: %v", err)
+	}
+	if _, err := cli.ApplyMigrations(fixture.context, config.Config{DatabaseURL: fixture.database.URL}, dir); err == nil || !strings.Contains(err.Error(), "checksum does not match") {
+		t.Fatalf("expected migration checksum rejection, got %v", err)
+	}
+}
+
 func copyMigrationsBeforeCancellation(t *testing.T) string {
 	t.Helper()
 	sourceDir := testsupport.MigrationsDir()
@@ -57,6 +87,29 @@ func copyMigrationsBeforeCancellation(t *testing.T) string {
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || entry.Name() == "0010_allow_cancelled_ticket_event.sql" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sourceDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", entry.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(destinationDir, entry.Name()), data, 0o600); err != nil {
+			t.Fatalf("copy migration %s: %v", entry.Name(), err)
+		}
+	}
+	return destinationDir
+}
+
+func copyAllMigrations(t *testing.T) string {
+	t.Helper()
+	sourceDir := testsupport.MigrationsDir()
+	destinationDir := t.TempDir()
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		t.Fatalf("read migration directory: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(sourceDir, entry.Name()))

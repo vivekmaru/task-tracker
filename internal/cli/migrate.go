@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/vivek/agent-task-tracker/internal/config"
 )
@@ -20,8 +23,10 @@ const migrationTableSQL = `
 CREATE TABLE IF NOT EXISTS forge_schema_migrations (
     id text PRIMARY KEY,
     filename text NOT NULL,
+    checksum text,
     applied_at timestamptz NOT NULL DEFAULT now()
-)`
+);
+ALTER TABLE forge_schema_migrations ADD COLUMN IF NOT EXISTS checksum text`
 
 type MigrationResult struct {
 	Applied   []string `json:"applied"`
@@ -136,13 +141,16 @@ func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir stri
 			if !baseline[id] {
 				continue
 			}
-			if err := recordMigration(ctx, tx, id, filepath.Base(path)); err != nil {
+			if err := recordMigration(ctx, tx, id, path); err != nil {
 				return MigrationResult{}, fmt.Errorf("record baseline migration %s: %w", id, err)
 			}
 			applied[id] = true
 			baselinedThisRun[id] = true
 			result.Baselined = append(result.Baselined, id)
 		}
+	}
+	if err := verifyMigrationChecksums(ctx, tx, files); err != nil {
+		return MigrationResult{}, err
 	}
 	for _, path := range files {
 		id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -159,7 +167,7 @@ func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir stri
 		if _, err := tx.Exec(ctx, sql); err != nil {
 			return MigrationResult{}, fmt.Errorf("apply migration %s: %w", id, err)
 		}
-		if err := recordMigration(ctx, tx, id, filepath.Base(path)); err != nil {
+		if err := recordMigration(ctx, tx, id, path); err != nil {
 			return MigrationResult{}, fmt.Errorf("record migration %s: %w", id, err)
 		}
 		result.Applied = append(result.Applied, id)
@@ -175,9 +183,74 @@ type migrationRecorder interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
-func recordMigration(ctx context.Context, q migrationRecorder, id string, filename string) error {
-	_, err := q.Exec(ctx, "INSERT INTO forge_schema_migrations (id, filename) VALUES ($1, $2)", id, filename)
+func recordMigration(ctx context.Context, q migrationRecorder, id string, path string) error {
+	checksum, err := migrationChecksum(path)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, "INSERT INTO forge_schema_migrations (id, filename, checksum) VALUES ($1, $2, $3)", id, filepath.Base(path), checksum)
 	return err
+}
+
+type migrationChecksumQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func verifyMigrationChecksums(ctx context.Context, q migrationChecksumQuerier, files []string) error {
+	byID := make(map[string]string, len(files))
+	for _, path := range files {
+		byID[strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))] = path
+	}
+	rows, err := q.Query(ctx, "SELECT id, filename, checksum FROM forge_schema_migrations")
+	if err != nil {
+		return fmt.Errorf("list migration checksums: %w", err)
+	}
+	defer rows.Close()
+	type adoption struct{ id, checksum string }
+	adoptions := []adoption{}
+	for rows.Next() {
+		var id, filename string
+		var checksum pgtype.Text
+		if err := rows.Scan(&id, &filename, &checksum); err != nil {
+			return fmt.Errorf("scan migration checksum: %w", err)
+		}
+		path, ok := byID[id]
+		if !ok {
+			return fmt.Errorf("applied migration %s is missing", id)
+		}
+		if filename != filepath.Base(path) {
+			return fmt.Errorf("applied migration %s filename changed from %s to %s", id, filename, filepath.Base(path))
+		}
+		current, err := migrationChecksum(path)
+		if err != nil {
+			return err
+		}
+		if !checksum.Valid || checksum.String == "" {
+			adoptions = append(adoptions, adoption{id: id, checksum: current})
+		} else if checksum.String != current {
+			return fmt.Errorf("applied migration %s checksum does not match file", id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read migration checksums: %w", err)
+	}
+	rows.Close()
+	for _, adoption := range adoptions {
+		if _, err := q.Exec(ctx, "UPDATE forge_schema_migrations SET checksum = $2 WHERE id = $1 AND checksum IS NULL", adoption.id, adoption.checksum); err != nil {
+			return fmt.Errorf("adopt checksum for migration %s: %w", adoption.id, err)
+		}
+	}
+	return nil
+}
+
+func migrationChecksum(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read migration %s: %w", filepath.Base(path), err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 type baselineMigrationQuerier interface {
