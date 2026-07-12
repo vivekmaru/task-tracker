@@ -426,6 +426,68 @@ func TestTerminalMetricsAtomicOnMetricsFailure(t *testing.T) {
 	}
 }
 
+func TestWebhookStaleClaimCannotOverwriteNewOwner(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	ticket := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+	subscription, err := fixture.runtime.Queries.CreateWebhookSubscription(fixture.context, db.CreateWebhookSubscriptionParams{WorkspaceID: workspace.ID, ProjectID: project.ID, EndpointUrl: "https://example.com/hooks", EventTypes: []string{"updated"}, Active: true, MaxAttempts: 3})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	_, err = fixture.runtime.Queries.CreateTicketEvent(fixture.context, db.CreateTicketEventParams{WorkspaceID: workspace.ID, ProjectID: project.ID, TicketID: ticket.ID, Type: "updated", ActorType: services.ActorHuman, Data: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE webhook_deliveries SET next_attempt_at = $2 WHERE subscription_id = $1", subscription.ID, now.Add(-time.Second)); err != nil {
+		t.Fatalf("make delivery claimable: %v", err)
+	}
+	tokenA := pgtype.UUID{Valid: true}
+	tokenA.Bytes[15] = 1
+	tokenB := pgtype.UUID{Valid: true}
+	tokenB.Bytes[15] = 2
+	first, err := fixture.runtime.Queries.ClaimPendingWebhookDeliveries(fixture.context, db.ClaimPendingWebhookDeliveriesParams{Now: pgtype.Timestamptz{Time: now, Valid: true}, LockedUntil: pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true}, ClaimToken: tokenA, BatchLimit: 1})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim: rows=%#v err=%v", first, err)
+	}
+	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE webhook_deliveries SET locked_until=$2 WHERE id=$1", first[0].ID, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := fixture.runtime.Queries.ClaimPendingWebhookDeliveries(fixture.context, db.ClaimPendingWebhookDeliveriesParams{Now: pgtype.Timestamptz{Time: now, Valid: true}, LockedUntil: pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true}, ClaimToken: tokenB, BatchLimit: 1})
+	if err != nil || len(second) != 1 {
+		t.Fatalf("second claim: rows=%#v err=%v", second, err)
+	}
+	_, err = fixture.runtime.Queries.MarkWebhookDeliverySucceeded(fixture.context, db.MarkWebhookDeliverySucceededParams{ID: first[0].ID, ClaimToken: tokenA, AttemptCount: 1, AttemptedAt: pgtype.Timestamptz{Time: now, Valid: true}})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("expected stale owner rejection, got %v", err)
+	}
+}
+
+func TestWebhookHeartbeatRequiresExplicitSubscription(t *testing.T) {
+	fixture := newFixture(t)
+	workspace, project := createScope(t, fixture.runtime, fixture.context)
+	ticket := createClaimableTicket(t, fixture.runtime, fixture.context, workspace.ID, project.ID)
+	implicit, err := fixture.runtime.Queries.CreateWebhookSubscription(fixture.context, db.CreateWebhookSubscriptionParams{WorkspaceID: workspace.ID, ProjectID: project.ID, EndpointUrl: "https://all.example/hooks", EventTypes: []string{}, Active: true, MaxAttempts: 3})
+	if err != nil {
+		t.Fatalf("create implicit subscription: %v", err)
+	}
+	explicit, err := fixture.runtime.Queries.CreateWebhookSubscription(fixture.context, db.CreateWebhookSubscriptionParams{WorkspaceID: workspace.ID, ProjectID: project.ID, EndpointUrl: "https://heartbeat.example/hooks", EventTypes: []string{"heartbeat"}, Active: true, MaxAttempts: 3})
+	if err != nil {
+		t.Fatalf("create explicit subscription: %v", err)
+	}
+	event, err := fixture.runtime.Queries.CreateTicketEvent(fixture.context, db.CreateTicketEventParams{WorkspaceID: workspace.ID, ProjectID: project.ID, TicketID: ticket.ID, Type: "heartbeat", ActorType: services.ActorAgent, Data: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("create heartbeat event: %v", err)
+	}
+	deliveries, err := fixture.runtime.Queries.ListWebhookDeliveriesByEvent(fixture.context, event.ID)
+	if err != nil {
+		t.Fatalf("list heartbeat deliveries: %v", err)
+	}
+	if len(deliveries) != 1 || deliveries[0].SubscriptionID != explicit.ID {
+		t.Fatalf("expected only explicit heartbeat subscription %v, got %#v (implicit %v)", explicit.ID, deliveries, implicit.ID)
+	}
+}
+
 func setAttemptLease(t *testing.T, fixture *fixture, attemptID pgtype.UUID, leaseExpiresAt time.Time) {
 	t.Helper()
 	if _, err := fixture.runtime.Pool.Exec(fixture.context, "UPDATE attempts SET lease_expires_at = $1 WHERE id = $2", leaseExpiresAt, attemptID); err != nil {

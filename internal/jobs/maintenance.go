@@ -15,14 +15,16 @@ type MaintenanceStore interface {
 	ListExpiredRunningAttempts(context.Context, db.ListExpiredRunningAttemptsParams) ([]db.Attempt, error)
 	ExpireAttempt(context.Context, db.ExpireAttemptParams) (db.ExpireAttemptRow, error)
 	DeleteExpiredIdempotencyKeys(context.Context) (int64, error)
+	DeleteTerminalWebhookDeliveries(context.Context, pgtype.Timestamptz) (int64, error)
 }
 
 var _ MaintenanceStore = (*db.Queries)(nil)
 
 type MaintenanceWorker struct {
-	store      MaintenanceStore
-	now        func() time.Time
-	batchLimit int32
+	store            MaintenanceStore
+	now              func() time.Time
+	batchLimit       int32
+	webhookRetention time.Duration
 }
 
 type Option func(*MaintenanceWorker)
@@ -39,10 +41,15 @@ func WithBatchLimit(limit int32) Option {
 	}
 }
 
+func WithWebhookRetention(retention time.Duration) Option {
+	return func(worker *MaintenanceWorker) { worker.webhookRetention = retention }
+}
+
 type MaintenanceResult struct {
-	ExpiredAttempts        int
-	SkippedExpiryRaces     int
-	DeletedIdempotencyKeys int64
+	ExpiredAttempts          int
+	SkippedExpiryRaces       int
+	DeletedIdempotencyKeys   int64
+	DeletedWebhookDeliveries int64
 }
 
 func NewMaintenanceWorker(store MaintenanceStore, opts ...Option) *MaintenanceWorker {
@@ -92,5 +99,12 @@ func (w *MaintenanceWorker) RunOnce(ctx context.Context) (MaintenanceResult, err
 		return MaintenanceResult{}, fmt.Errorf("delete expired idempotency keys: %w", err)
 	}
 	result.DeletedIdempotencyKeys = deleted
+	if w.webhookRetention > 0 {
+		deleted, err := w.store.DeleteTerminalWebhookDeliveries(ctx, pgtype.Timestamptz{Time: now.Add(-w.webhookRetention), Valid: true})
+		if err != nil {
+			return MaintenanceResult{}, fmt.Errorf("delete terminal webhook deliveries: %w", err)
+		}
+		result.DeletedWebhookDeliveries = deleted
+	}
 	return result, nil
 }

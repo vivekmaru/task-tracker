@@ -19,19 +19,20 @@ WITH candidates AS (
     WHERE s.active
       AND d.status IN ('pending', 'delivering')
       AND d.attempt_count < d.max_attempts
-      AND d.next_attempt_at <= $2::timestamptz
+      AND d.next_attempt_at <= $3::timestamptz
       AND (
           d.status <> 'delivering'
           OR d.locked_until IS NULL
-          OR d.locked_until <= $2::timestamptz
+          OR d.locked_until <= $3::timestamptz
       )
     ORDER BY d.created_at ASC
-    LIMIT $3::integer
+    LIMIT $4::integer
     FOR UPDATE OF d SKIP LOCKED
 )
 UPDATE webhook_deliveries d
 SET status = 'delivering',
     locked_until = $1::timestamptz,
+    claim_token = $2::uuid,
     updated_at = now()
 FROM candidates c
 JOIN webhook_deliveries claimed ON claimed.id = c.id
@@ -51,6 +52,7 @@ RETURNING
     d.max_attempts,
     d.next_attempt_at,
     d.locked_until,
+    d.claim_token,
     d.last_attempt_at,
     d.delivered_at,
     d.response_status,
@@ -64,6 +66,7 @@ RETURNING
 
 type ClaimPendingWebhookDeliveriesParams struct {
 	LockedUntil pgtype.Timestamptz `db:"locked_until" json:"locked_until"`
+	ClaimToken  pgtype.UUID        `db:"claim_token" json:"claim_token"`
 	Now         pgtype.Timestamptz `db:"now" json:"now"`
 	BatchLimit  int32              `db:"batch_limit" json:"batch_limit"`
 }
@@ -82,6 +85,7 @@ type ClaimPendingWebhookDeliveriesRow struct {
 	MaxAttempts    int32              `db:"max_attempts" json:"max_attempts"`
 	NextAttemptAt  pgtype.Timestamptz `db:"next_attempt_at" json:"next_attempt_at"`
 	LockedUntil    pgtype.Timestamptz `db:"locked_until" json:"locked_until"`
+	ClaimToken     pgtype.UUID        `db:"claim_token" json:"claim_token"`
 	LastAttemptAt  pgtype.Timestamptz `db:"last_attempt_at" json:"last_attempt_at"`
 	DeliveredAt    pgtype.Timestamptz `db:"delivered_at" json:"delivered_at"`
 	ResponseStatus pgtype.Int4        `db:"response_status" json:"response_status"`
@@ -94,7 +98,12 @@ type ClaimPendingWebhookDeliveriesRow struct {
 }
 
 func (q *Queries) ClaimPendingWebhookDeliveries(ctx context.Context, arg ClaimPendingWebhookDeliveriesParams) ([]ClaimPendingWebhookDeliveriesRow, error) {
-	rows, err := q.db.Query(ctx, claimPendingWebhookDeliveries, arg.LockedUntil, arg.Now, arg.BatchLimit)
+	rows, err := q.db.Query(ctx, claimPendingWebhookDeliveries,
+		arg.LockedUntil,
+		arg.ClaimToken,
+		arg.Now,
+		arg.BatchLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +125,7 @@ func (q *Queries) ClaimPendingWebhookDeliveries(ctx context.Context, arg ClaimPe
 			&i.MaxAttempts,
 			&i.NextAttemptAt,
 			&i.LockedUntil,
+			&i.ClaimToken,
 			&i.LastAttemptAt,
 			&i.DeliveredAt,
 			&i.ResponseStatus,
@@ -199,8 +209,22 @@ func (q *Queries) CreateWebhookSubscription(ctx context.Context, arg CreateWebho
 	return i, err
 }
 
+const deleteTerminalWebhookDeliveries = `-- name: DeleteTerminalWebhookDeliveries :execrows
+DELETE FROM webhook_deliveries
+WHERE status IN ('succeeded', 'failed')
+  AND updated_at < $1::timestamptz
+`
+
+func (q *Queries) DeleteTerminalWebhookDeliveries(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteTerminalWebhookDeliveries, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listWebhookDeliveriesByEvent = `-- name: ListWebhookDeliveriesByEvent :many
-SELECT id, subscription_id, event_id, workspace_id, project_id, ticket_id, attempt_id, status, payload, attempt_count, max_attempts, next_attempt_at, locked_until, last_attempt_at, delivered_at, response_status, response_body, error, created_at, updated_at
+SELECT id, subscription_id, event_id, workspace_id, project_id, ticket_id, attempt_id, status, payload, attempt_count, max_attempts, next_attempt_at, locked_until, last_attempt_at, delivered_at, response_status, response_body, error, created_at, updated_at, claim_token
 FROM webhook_deliveries
 WHERE event_id = $1
 ORDER BY created_at ASC
@@ -236,6 +260,7 @@ func (q *Queries) ListWebhookDeliveriesByEvent(ctx context.Context, eventID pgty
 			&i.Error,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ClaimToken,
 		); err != nil {
 			return nil, err
 		}
@@ -312,7 +337,9 @@ SET status = CASE
     next_attempt_at = $6::timestamptz,
     updated_at = now()
 WHERE id = $7::uuid
-RETURNING id, subscription_id, event_id, workspace_id, project_id, ticket_id, attempt_id, status, payload, attempt_count, max_attempts, next_attempt_at, locked_until, last_attempt_at, delivered_at, response_status, response_body, error, created_at, updated_at
+  AND claim_token = $8::uuid
+  AND status = 'delivering'
+RETURNING id, subscription_id, event_id, workspace_id, project_id, ticket_id, attempt_id, status, payload, attempt_count, max_attempts, next_attempt_at, locked_until, last_attempt_at, delivered_at, response_status, response_body, error, created_at, updated_at, claim_token
 `
 
 type MarkWebhookDeliveryFailedParams struct {
@@ -323,6 +350,7 @@ type MarkWebhookDeliveryFailedParams struct {
 	Error          string             `db:"error" json:"error"`
 	NextAttemptAt  pgtype.Timestamptz `db:"next_attempt_at" json:"next_attempt_at"`
 	ID             pgtype.UUID        `db:"id" json:"id"`
+	ClaimToken     pgtype.UUID        `db:"claim_token" json:"claim_token"`
 }
 
 func (q *Queries) MarkWebhookDeliveryFailed(ctx context.Context, arg MarkWebhookDeliveryFailedParams) (WebhookDelivery, error) {
@@ -334,6 +362,7 @@ func (q *Queries) MarkWebhookDeliveryFailed(ctx context.Context, arg MarkWebhook
 		arg.Error,
 		arg.NextAttemptAt,
 		arg.ID,
+		arg.ClaimToken,
 	)
 	var i WebhookDelivery
 	err := row.Scan(
@@ -357,6 +386,7 @@ func (q *Queries) MarkWebhookDeliveryFailed(ctx context.Context, arg MarkWebhook
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClaimToken,
 	)
 	return i, err
 }
@@ -373,7 +403,9 @@ SET status = 'succeeded',
     error = NULL,
     updated_at = now()
 WHERE id = $5::uuid
-RETURNING id, subscription_id, event_id, workspace_id, project_id, ticket_id, attempt_id, status, payload, attempt_count, max_attempts, next_attempt_at, locked_until, last_attempt_at, delivered_at, response_status, response_body, error, created_at, updated_at
+  AND claim_token = $6::uuid
+  AND status = 'delivering'
+RETURNING id, subscription_id, event_id, workspace_id, project_id, ticket_id, attempt_id, status, payload, attempt_count, max_attempts, next_attempt_at, locked_until, last_attempt_at, delivered_at, response_status, response_body, error, created_at, updated_at, claim_token
 `
 
 type MarkWebhookDeliverySucceededParams struct {
@@ -382,6 +414,7 @@ type MarkWebhookDeliverySucceededParams struct {
 	ResponseStatus pgtype.Int4        `db:"response_status" json:"response_status"`
 	ResponseBody   pgtype.Text        `db:"response_body" json:"response_body"`
 	ID             pgtype.UUID        `db:"id" json:"id"`
+	ClaimToken     pgtype.UUID        `db:"claim_token" json:"claim_token"`
 }
 
 func (q *Queries) MarkWebhookDeliverySucceeded(ctx context.Context, arg MarkWebhookDeliverySucceededParams) (WebhookDelivery, error) {
@@ -391,6 +424,7 @@ func (q *Queries) MarkWebhookDeliverySucceeded(ctx context.Context, arg MarkWebh
 		arg.ResponseStatus,
 		arg.ResponseBody,
 		arg.ID,
+		arg.ClaimToken,
 	)
 	var i WebhookDelivery
 	err := row.Scan(
@@ -414,6 +448,7 @@ func (q *Queries) MarkWebhookDeliverySucceeded(ctx context.Context, arg MarkWebh
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClaimToken,
 	)
 	return i, err
 }

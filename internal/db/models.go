@@ -206,6 +206,7 @@ type WebhookDelivery struct {
 	Error          pgtype.Text        `db:"error" json:"error"`
 	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ClaimToken     pgtype.UUID        `db:"claim_token" json:"claim_token"`
 }
 
 type WebhookSubscription struct {

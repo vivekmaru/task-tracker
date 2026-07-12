@@ -27,10 +27,12 @@ forge observability subscriptions list \
 API clients can use the same scope and payload contract without direct database access:
 
 ```bash
-curl -sS "$FORGE_URL/api/v1/observability/subscriptions?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID"
+curl -sS -H "Authorization: Bearer $FORGE_ADMIN_TOKEN" \
+  "$FORGE_URL/api/v1/observability/subscriptions?workspace_id=$WORKSPACE_ID&project_id=$PROJECT_ID"
 
 curl -sS -X POST "$FORGE_URL/api/v1/observability/subscriptions" \
   -H 'content-type: application/json' \
+  -H "Authorization: Bearer $FORGE_ADMIN_TOKEN" \
   -d "{
     \"workspace_id\": \"$WORKSPACE_ID\",
     \"project_id\": \"$PROJECT_ID\",
@@ -43,7 +45,9 @@ curl -sS -X POST "$FORGE_URL/api/v1/observability/subscriptions" \
 
 Subscription responses report whether a secret is set, but never return the secret value.
 
-An empty `event_types` array subscribes to all ticket events in that scope. The endpoint must be `http://` or `https://`. If `secret` is set, deliveries include `X-Forge-Signature-SHA256`, an HMAC-SHA256 over the exact JSON request body.
+An empty `event_types` array subscribes to all ticket events in that scope except high-volume `heartbeat` events; include `heartbeat` explicitly to export them. The endpoint must be `http://` or `https://`. If `secret` is set, deliveries include `X-Forge-Signature-SHA256`, an HMAC-SHA256 over the exact JSON request body.
+
+Webhook egress is default-deny for loopback, private, link-local, multicast, and unspecified IP addresses. The worker validates the resolved address at connection time to prevent DNS rebinding. Intentional internal sinks require exact hostname or CIDR allowlists through `FORGE_WEBHOOK_ALLOWED_HOSTS` and `FORGE_WEBHOOK_ALLOWED_CIDRS` (or matching config fields). Redirects are not followed.
 
 Ticket event inserts enqueue `webhook_deliveries` automatically. The enqueue trigger snapshots attempt metadata and attempt metrics into the delivery payload when those rows exist, so retries preserve the event-time view instead of reading mutable attempt state later. The webhook worker claims pending deliveries, posts the observability payload, records response metadata, and retries failures with exponential backoff up to `max_attempts`.
 
@@ -97,6 +101,7 @@ The `attempt` section is omitted for ticket-only events. The `metrics` section i
 
 - This is an export foundation, not a full observability platform. Forge does not yet provide sink management UI, OpenTelemetry exporters, dashboards, or aggregation.
 - Subscription creation and listing are available through the JSON CLI and REST API. Web management surfaces can be added later without changing the payload contract.
-- Delivery is at least once. Consumers should deduplicate by `event.id` or the `X-Forge-Event-ID` header.
+- Delivery is at least once. Consumers should deduplicate by `event.id` or the `X-Forge-Event-ID` header. A claim token fences stale workers: a worker that loses its lease cannot overwrite the newer owner's result.
+- Terminal delivery rows (`succeeded` and `failed`) may be removed after `FORGE_WEBHOOK_RETENTION_HOURS`; pending and delivering rows are never selected by that cleanup.
 - Payload data comes from ticket events plus event-time snapshots of attempts and attempt metrics. Search analytics, policy decisions, claims comparisons, artifacts, and UI state are intentionally out of scope.
 - The current worker type supports the durable claim/post/retry path. A long-lived scheduler around it is a separate operations concern.

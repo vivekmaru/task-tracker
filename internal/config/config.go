@@ -22,22 +22,25 @@ const (
 
 // Config contains process configuration shared by Forge command modes.
 type Config struct {
-	DatabaseURL       string `json:"database_url"`
-	HTTPAddr          string `json:"http_addr"`
-	LogLevel          string `json:"log_level"`
-	WorkerConcurrency int    `json:"worker_concurrency"`
-	AdminToken        string `json:"admin_token"`
-	AuthCookieSecure  bool   `json:"auth_cookie_secure"`
-	ArtifactRoot      string `json:"artifact_root"`
-	ArtifactBackend   string `json:"artifact_backend"`
-	S3Endpoint        string `json:"s3_endpoint"`
-	S3Region          string `json:"s3_region"`
-	S3Bucket          string `json:"s3_bucket"`
-	S3Prefix          string `json:"s3_prefix"`
-	S3AccessKeyID     string `json:"s3_access_key_id"`
-	S3SecretAccessKey string `json:"s3_secret_access_key"`
-	S3SessionToken    string `json:"s3_session_token"`
-	S3UsePathStyle    bool   `json:"s3_use_path_style"`
+	DatabaseURL           string   `json:"database_url"`
+	HTTPAddr              string   `json:"http_addr"`
+	LogLevel              string   `json:"log_level"`
+	WorkerConcurrency     int      `json:"worker_concurrency"`
+	AdminToken            string   `json:"admin_token"`
+	AuthCookieSecure      bool     `json:"auth_cookie_secure"`
+	WebhookAllowedHosts   []string `json:"webhook_allowed_hosts"`
+	WebhookAllowedCIDRs   []string `json:"webhook_allowed_cidrs"`
+	WebhookRetentionHours int      `json:"webhook_retention_hours"`
+	ArtifactRoot          string   `json:"artifact_root"`
+	ArtifactBackend       string   `json:"artifact_backend"`
+	S3Endpoint            string   `json:"s3_endpoint"`
+	S3Region              string   `json:"s3_region"`
+	S3Bucket              string   `json:"s3_bucket"`
+	S3Prefix              string   `json:"s3_prefix"`
+	S3AccessKeyID         string   `json:"s3_access_key_id"`
+	S3SecretAccessKey     string   `json:"s3_secret_access_key"`
+	S3SessionToken        string   `json:"s3_session_token"`
+	S3UsePathStyle        bool     `json:"s3_use_path_style"`
 }
 
 // Options controls configuration loading.
@@ -92,6 +95,19 @@ func Load(opts Options) (Config, error) {
 		}
 		cfg.AuthCookieSecure = secure
 	}
+	if value := os.Getenv("FORGE_WEBHOOK_ALLOWED_HOSTS"); value != "" {
+		cfg.WebhookAllowedHosts = splitCSV(value)
+	}
+	if value := os.Getenv("FORGE_WEBHOOK_ALLOWED_CIDRS"); value != "" {
+		cfg.WebhookAllowedCIDRs = splitCSV(value)
+	}
+	if value := os.Getenv("FORGE_WEBHOOK_RETENTION_HOURS"); value != "" {
+		hours, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("FORGE_WEBHOOK_RETENTION_HOURS must be an integer: %w", err)
+		}
+		cfg.WebhookRetentionHours = hours
+	}
 	if value := os.Getenv("FORGE_ARTIFACT_ROOT"); value != "" {
 		cfg.ArtifactRoot = value
 		artifactRootExplicit = true
@@ -144,8 +160,21 @@ func Load(opts Options) (Config, error) {
 	cfg.S3AccessKeyID = strings.TrimSpace(cfg.S3AccessKeyID)
 	cfg.S3SecretAccessKey = strings.TrimSpace(cfg.S3SecretAccessKey)
 	cfg.S3SessionToken = strings.TrimSpace(cfg.S3SessionToken)
+	cfg.WebhookAllowedHosts = compactConfigStrings(cfg.WebhookAllowedHosts)
+	cfg.WebhookAllowedCIDRs = compactConfigStrings(cfg.WebhookAllowedCIDRs)
 
 	return cfg, nil
+}
+
+func splitCSV(value string) []string { return strings.Split(value, ",") }
+func compactConfigStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // ValidateServer checks the minimum configuration needed to start server mode.
@@ -203,6 +232,9 @@ func (c Config) ValidateWorker() error {
 func (c Config) ValidateRuntime() error {
 	if c.DatabaseURL == "" {
 		return errors.New("database_url is required")
+	}
+	if c.WebhookRetentionHours < 0 {
+		return errors.New("webhook_retention_hours must not be negative")
 	}
 	if err := c.ValidateArtifactStorage(); err != nil {
 		return err

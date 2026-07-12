@@ -240,6 +240,22 @@ func TestObservabilitySubscriptionAPIRejectsUnsafeURL(t *testing.T) {
 	}
 }
 
+func TestObservabilitySubscriptionAPIRejectsPrivateIPAddress(t *testing.T) {
+	router := NewRouterWithRuntime(&fakeObservabilityRuntime{})
+	body := `{"workspace_id":"` + uuidString(t, testUUID(2)) + `","project_id":"` + uuidString(t, testUUID(3)) + `","endpoint_url":"http://127.0.0.1:8080/events"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "private or local IP") {
+		t.Fatalf("expected private IP rejection, got %s", rec.Body.String())
+	}
+}
+
 func TestObservabilitySubscriptionAPIReturnsNotFoundForMissingScope(t *testing.T) {
 	rt := &fakeObservabilityRuntime{
 		createErr: &pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"},

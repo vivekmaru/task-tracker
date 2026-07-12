@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -89,6 +90,10 @@ func NewWithConfig(ctx context.Context, queries *db.Queries, cfg config.Config) 
 		artifactStore = s3Store
 	}
 	policy := services.NewPolicyService(services.PolicyConfig{})
+	webhookPolicy, err := jobs.NewWebhookDestinationPolicy(cfg.WebhookAllowedHosts, cfg.WebhookAllowedCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("configure webhook destination policy: %w", err)
+	}
 	return &Runtime{
 		Queries:       queries,
 		Tickets:       services.NewTicketService(queries),
@@ -103,8 +108,8 @@ func NewWithConfig(ctx context.Context, queries *db.Queries, cfg config.Config) 
 		Search:        services.NewSearchService(queries),
 		Capabilities:  services.NewCapabilityService(queries),
 		Analytics:     services.NewAnalyticsService(queries),
-		Maintenance:   jobs.NewMaintenanceWorker(queries),
-		Webhooks:      jobs.NewWebhookWorker(queries),
+		Maintenance:   jobs.NewMaintenanceWorker(queries, jobs.WithWebhookRetention(time.Duration(cfg.WebhookRetentionHours)*time.Hour)),
+		Webhooks:      jobs.NewWebhookWorker(queries, jobs.WithWebhookDestinationPolicy(webhookPolicy)),
 	}, nil
 }
 

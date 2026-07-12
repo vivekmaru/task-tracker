@@ -16,6 +16,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("FORGE_LOG_LEVEL", "")
 	t.Setenv("FORGE_WORKER_CONCURRENCY", "")
 	t.Setenv("FORGE_AUTH_COOKIE_SECURE", "")
+	t.Setenv("FORGE_WEBHOOK_ALLOWED_HOSTS", "")
+	t.Setenv("FORGE_WEBHOOK_ALLOWED_CIDRS", "")
+	t.Setenv("FORGE_WEBHOOK_RETENTION_HOURS", "")
 	t.Setenv("FORGE_ARTIFACT_ROOT", "")
 
 	cfg, err := Load(Options{})
@@ -184,6 +187,33 @@ func TestLoadRejectsInvalidAuthCookieSecureEnv(t *testing.T) {
 	}
 	if got, want := err.Error(), "FORGE_AUTH_COOKIE_SECURE must be a boolean"; !strings.Contains(got, want) {
 		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestLoadReadsWebhookEgressConfiguration(t *testing.T) {
+	t.Setenv("FORGE_WEBHOOK_ALLOWED_HOSTS", " sink.internal, metrics.internal ")
+	t.Setenv("FORGE_WEBHOOK_ALLOWED_CIDRS", "10.0.0.0/8, 2001:db8::/32")
+	t.Setenv("FORGE_WEBHOOK_RETENTION_HOURS", "168")
+
+	cfg, err := Load(Options{})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got, want := strings.Join(cfg.WebhookAllowedHosts, ","), "sink.internal,metrics.internal"; got != want {
+		t.Fatalf("expected webhook hosts %q, got %q", want, got)
+	}
+	if got, want := strings.Join(cfg.WebhookAllowedCIDRs, ","), "10.0.0.0/8,2001:db8::/32"; got != want {
+		t.Fatalf("expected webhook CIDRs %q, got %q", want, got)
+	}
+	if cfg.WebhookRetentionHours != 168 {
+		t.Fatalf("expected retention 168, got %d", cfg.WebhookRetentionHours)
+	}
+}
+
+func TestValidateRuntimeRejectsNegativeWebhookRetention(t *testing.T) {
+	err := (Config{DatabaseURL: "postgres://db", WebhookRetentionHours: -1}).ValidateRuntime()
+	if err == nil || !strings.Contains(err.Error(), "webhook_retention_hours") {
+		t.Fatalf("expected retention validation error, got %v", err)
 	}
 }
 

@@ -13,6 +13,8 @@ sql:
       - sql/migrations/0008_ticket_task_type.sql
       - sql/migrations/0009_ticket_event_sequence_indexes.sql
       - sql/migrations/0010_allow_cancelled_ticket_event.sql
+      - sql/migrations/0011_webhook_delivery_claim_token.sql
+      - sql/migrations/0012_webhook_heartbeat_opt_in.sql
     queries:
       - sql/queries
     gen:

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -97,7 +98,7 @@ func TestWebhookWorkerPostsPayloadAndMarksSuccess(t *testing.T) {
 func TestWebhookWorkerClaimsDefaultBatchWithLongEnoughLock(t *testing.T) {
 	now := time.Date(2026, 5, 22, 9, 0, 0, 0, time.UTC)
 	store := &fakeWebhookStore{}
-	worker := NewWebhookWorker(store, WithWebhookClock(func() time.Time { return now }))
+	worker := NewWebhookWorker(store, WithWebhookClock(func() time.Time { return now }), WithWebhookDestinationPolicy(WebhookDestinationPolicy{AllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}))
 
 	result, err := worker.RunOnce(context.Background())
 	if err != nil {
@@ -139,7 +140,7 @@ func TestWebhookWorkerDoesNotFollowRedirects(t *testing.T) {
 			MaxAttempts:  3,
 		}},
 	}
-	worker := NewWebhookWorker(store, WithWebhookClock(func() time.Time { return now }))
+	worker := NewWebhookWorker(store, WithWebhookClock(func() time.Time { return now }), WithWebhookDestinationPolicy(WebhookDestinationPolicy{AllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}))
 
 	result, err := worker.RunOnce(context.Background())
 	if err != nil {

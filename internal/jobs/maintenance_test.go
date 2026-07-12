@@ -45,6 +45,26 @@ func TestMaintenanceWorkerExpiresAttemptsAndCleansIdempotency(t *testing.T) {
 	if !store.expireParams[0].ExpirationCutoff.Time.Equal(now) {
 		t.Fatalf("expected expiry cutoff %v, got %v", now, store.expireParams[0].ExpirationCutoff.Time)
 	}
+	if len(store.webhookCutoffs) != 0 {
+		t.Fatalf("expected retention cleanup to stay disabled by default, got %v", store.webhookCutoffs)
+	}
+}
+
+func TestMaintenanceWorkerRemovesOnlyTerminalWebhookDeliveriesAfterRetention(t *testing.T) {
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	store := &fakeMaintenanceStore{deletedWebhookDeliveries: 4}
+	worker := NewMaintenanceWorker(store, WithClock(func() time.Time { return now }), WithWebhookRetention(72*time.Hour))
+
+	result, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run maintenance: %v", err)
+	}
+	if result.DeletedWebhookDeliveries != 4 {
+		t.Fatalf("expected four deleted webhook deliveries, got %d", result.DeletedWebhookDeliveries)
+	}
+	if len(store.webhookCutoffs) != 1 || !store.webhookCutoffs[0].Time.Equal(now.Add(-72*time.Hour)) {
+		t.Fatalf("expected retention cutoff %v, got %v", now.Add(-72*time.Hour), store.webhookCutoffs)
+	}
 }
 
 func TestMaintenanceWorkerSkipsLostExpiryRaces(t *testing.T) {
@@ -80,12 +100,14 @@ func TestMaintenanceWorkerReturnsActualExpiryErrors(t *testing.T) {
 }
 
 type fakeMaintenanceStore struct {
-	listParams      []db.ListExpiredRunningAttemptsParams
-	expiredAttempts []db.Attempt
-	expireParams    []db.ExpireAttemptParams
-	expireErrors    []error
-	expireCall      int
-	deletedKeys     int64
+	listParams               []db.ListExpiredRunningAttemptsParams
+	expiredAttempts          []db.Attempt
+	expireParams             []db.ExpireAttemptParams
+	expireErrors             []error
+	expireCall               int
+	deletedKeys              int64
+	webhookCutoffs           []pgtype.Timestamptz
+	deletedWebhookDeliveries int64
 }
 
 func (s *fakeMaintenanceStore) ListExpiredRunningAttempts(_ context.Context, params db.ListExpiredRunningAttemptsParams) ([]db.Attempt, error) {
@@ -112,6 +134,11 @@ func (s *fakeMaintenanceStore) ExpireAttempt(_ context.Context, params db.Expire
 
 func (s *fakeMaintenanceStore) DeleteExpiredIdempotencyKeys(_ context.Context) (int64, error) {
 	return s.deletedKeys, nil
+}
+
+func (s *fakeMaintenanceStore) DeleteTerminalWebhookDeliveries(_ context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	s.webhookCutoffs = append(s.webhookCutoffs, cutoff)
+	return s.deletedWebhookDeliveries, nil
 }
 
 func testUUID(seed byte) pgtype.UUID {

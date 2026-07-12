@@ -38,6 +38,11 @@ FROM webhook_deliveries
 WHERE event_id = sqlc.arg(event_id)
 ORDER BY created_at ASC;
 
+-- name: DeleteTerminalWebhookDeliveries :execrows
+DELETE FROM webhook_deliveries
+WHERE status IN ('succeeded', 'failed')
+  AND updated_at < sqlc.arg(cutoff)::timestamptz;
+
 -- name: ClaimPendingWebhookDeliveries :many
 WITH candidates AS (
     SELECT d.id
@@ -59,6 +64,7 @@ WITH candidates AS (
 UPDATE webhook_deliveries d
 SET status = 'delivering',
     locked_until = sqlc.arg(locked_until)::timestamptz,
+    claim_token = sqlc.arg(claim_token)::uuid,
     updated_at = now()
 FROM candidates c
 JOIN webhook_deliveries claimed ON claimed.id = c.id
@@ -78,6 +84,7 @@ RETURNING
     d.max_attempts,
     d.next_attempt_at,
     d.locked_until,
+    d.claim_token,
     d.last_attempt_at,
     d.delivered_at,
     d.response_status,
@@ -100,6 +107,8 @@ SET status = 'succeeded',
     error = NULL,
     updated_at = now()
 WHERE id = sqlc.arg(id)::uuid
+  AND claim_token = sqlc.arg(claim_token)::uuid
+  AND status = 'delivering'
 RETURNING *;
 
 -- name: MarkWebhookDeliveryFailed :one
@@ -117,4 +126,6 @@ SET status = CASE
     next_attempt_at = sqlc.arg(next_attempt_at)::timestamptz,
     updated_at = now()
 WHERE id = sqlc.arg(id)::uuid
+  AND claim_token = sqlc.arg(claim_token)::uuid
+  AND status = 'delivering'
 RETURNING *;

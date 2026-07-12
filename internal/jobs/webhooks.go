@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
@@ -45,6 +49,7 @@ type WebhookWorker struct {
 	now        func() time.Time
 	batchLimit int32
 	lockTTL    time.Duration
+	policy     WebhookDestinationPolicy
 }
 
 type WebhookOption func(*WebhookWorker)
@@ -67,16 +72,24 @@ func WithWebhookHTTPClient(client HTTPDoer) WebhookOption {
 	}
 }
 
+func WithWebhookDestinationPolicy(policy WebhookDestinationPolicy) WebhookOption {
+	return func(worker *WebhookWorker) { worker.policy = policy }
+}
+
 func NewWebhookWorker(store WebhookDeliveryStore, opts ...WebhookOption) *WebhookWorker {
+	policy, _ := NewWebhookDestinationPolicy(nil, nil)
 	worker := &WebhookWorker{
 		store:      store,
-		client:     newWebhookHTTPClient(),
 		now:        time.Now,
 		batchLimit: defaultWebhookBatchLimit,
 		lockTTL:    defaultWebhookLockTTL,
+		policy:     policy,
 	}
 	for _, opt := range opts {
 		opt(worker)
+	}
+	if worker.client == nil {
+		worker.client = newWebhookHTTPClient(worker.policy)
 	}
 	if worker.batchLimit <= 0 {
 		worker.batchLimit = defaultWebhookBatchLimit
@@ -87,9 +100,23 @@ func NewWebhookWorker(store WebhookDeliveryStore, opts ...WebhookOption) *Webhoo
 	return worker
 }
 
-func newWebhookHTTPClient() *http.Client {
+func newWebhookHTTPClient(policy WebhookDestinationPolicy) *http.Client {
 	return &http.Client{
 		Timeout: defaultWebhookTimeout,
+		Transport: &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			addresses, err := policy.ValidateHost(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			if len(addresses) == 0 {
+				return nil, fmt.Errorf("webhook destination host %s is allowed by hostname but no IP was resolved", host)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+		}},
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -97,17 +124,23 @@ func newWebhookHTTPClient() *http.Client {
 }
 
 type WebhookRunResult struct {
-	Claimed   int
-	Succeeded int
-	Failed    int
-	Retried   int
+	Claimed       int
+	Succeeded     int
+	Failed        int
+	Retried       int
+	LostOwnership int
 }
 
 func (w *WebhookWorker) RunOnce(ctx context.Context) (WebhookRunResult, error) {
 	now := w.now().UTC()
+	claimToken, err := webhookClaimToken()
+	if err != nil {
+		return WebhookRunResult{}, fmt.Errorf("generate webhook claim token: %w", err)
+	}
 	deliveries, err := w.store.ClaimPendingWebhookDeliveries(ctx, db.ClaimPendingWebhookDeliveriesParams{
 		Now:         timestamptz(now),
 		LockedUntil: timestamptz(now.Add(w.claimLockTTL())),
+		ClaimToken:  claimToken,
 		BatchLimit:  w.batchLimit,
 	})
 	if err != nil {
@@ -119,6 +152,10 @@ func (w *WebhookWorker) RunOnce(ctx context.Context) (WebhookRunResult, error) {
 		outcome := w.deliver(ctx, delivery)
 		if outcome.err == nil && outcome.statusCode >= 200 && outcome.statusCode < 300 {
 			if err := w.markSucceeded(ctx, delivery, outcome); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					result.LostOwnership++
+					continue
+				}
 				return WebhookRunResult{}, err
 			}
 			result.Succeeded++
@@ -127,6 +164,10 @@ func (w *WebhookWorker) RunOnce(ctx context.Context) (WebhookRunResult, error) {
 
 		exhausted, err := w.markFailed(ctx, delivery, outcome)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				result.LostOwnership++
+				continue
+			}
 			return WebhookRunResult{}, err
 		}
 		if exhausted {
@@ -202,6 +243,7 @@ func (w *WebhookWorker) markSucceeded(ctx context.Context, delivery db.ClaimPend
 		AttemptedAt:    timestamptz(w.now().UTC()),
 		ResponseStatus: nullableInt4(outcome.statusCode),
 		ResponseBody:   nullableText(outcome.body),
+		ClaimToken:     delivery.ClaimToken,
 	})
 	if err != nil {
 		return fmt.Errorf("mark webhook delivery %v succeeded: %w", delivery.ID, err)
@@ -220,11 +262,20 @@ func (w *WebhookWorker) markFailed(ctx context.Context, delivery db.ClaimPending
 		ResponseBody:   nullableText(outcome.body),
 		Error:          errorText,
 		NextAttemptAt:  timestamptz(w.now().UTC().Add(webhookBackoff(attemptCount))),
+		ClaimToken:     delivery.ClaimToken,
 	})
 	if err != nil {
 		return false, fmt.Errorf("mark webhook delivery %v failed: %w", delivery.ID, err)
 	}
 	return attemptCount >= delivery.MaxAttempts, nil
+}
+
+func webhookClaimToken() (pgtype.UUID, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return pgtype.UUID{Bytes: bytes, Valid: true}, nil
 }
 
 func webhookDeliveryError(outcome deliveryOutcome) string {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -1511,6 +1512,12 @@ func validateWebhookEndpointURL(raw string) error {
 	}
 	if parsed.Host == "" {
 		return errors.New("--endpoint-url must include a host")
+	}
+	if ip, err := netip.ParseAddr(parsed.Hostname()); err == nil {
+		ip = ip.Unmap()
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsPrivate() {
+			return errors.New("--endpoint-url must not use a private or local IP address")
+		}
 	}
 	return nil
 }
