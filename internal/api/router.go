@@ -51,13 +51,7 @@ func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Hand
 }
 
 func RegisterPhaseOneRoutes(api huma.API, rt web.Runtime) {
-	_ = rt
-	register[bodyInput](api, http.MethodPost, "/tickets", contracts.RESTCreateTicket, "Create ticket")
-	register[bodyInput](api, http.MethodPost, "/tickets/propose", contracts.RESTProposeTicket, "Propose ticket")
-	register[listTicketsInput](api, http.MethodGet, "/tickets", contracts.RESTListTickets, "List tickets")
-	register[idInput](api, http.MethodGet, "/tickets/{id}", contracts.RESTGetTicket, "Get ticket")
-	register[idBodyInput](api, http.MethodPatch, "/tickets/{id}", contracts.RESTUpdateTicket, "Update ticket")
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/decompose", contracts.RESTDecomposeTicket, "Decompose ticket")
+	registerResourceRoutes(api, rt)
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/ready", contracts.RESTMarkTicketReady, "Move ticket to todo")
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/reopen", contracts.RESTReopenTicket, "Reopen ticket")
 	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/unblock", contracts.RESTUnblockTicket, "Unblock ticket")
@@ -79,10 +73,6 @@ func RegisterPhaseOneRoutes(api huma.API, rt web.Runtime) {
 	register[idInput](api, http.MethodGet, "/tickets/{id}/events", "list-ticket-events", "List ticket events")
 	register[idInput](api, http.MethodGet, "/attempts/{id}/events", "list-attempt-events", "List attempt events")
 	registerEventRoutes(api, rt)
-
-	register[bodyInput](api, http.MethodPost, "/artifacts", contracts.RESTAttachArtifact, "Register artifact")
-	register[idInput](api, http.MethodGet, "/artifacts/{id}", "get-artifact", "Get artifact")
-	register[idInput](api, http.MethodDelete, "/artifacts/{id}", "delete-artifact", "Delete artifact")
 
 	registerAnalyticsRoutes(api, rt)
 	registerObservabilityRoutes(api, rt)

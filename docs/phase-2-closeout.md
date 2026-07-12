@@ -20,23 +20,23 @@ Current adapter status:
 
 | Operation | REST | CLI | MCP | Notes |
 |---|---:|---:|---:|---|
-| `create_ticket` | yes | yes | yes | CLI and MCP call shared runtime services; REST is registered in OpenAPI. |
+| `create_ticket` | yes | yes | yes | All three adapters call shared runtime services. |
 | `propose_ticket` | yes | yes | yes | Agent-created proposals should include acceptance criteria, verification commands, relevant paths, and creation reason. |
 | `create_ticket_from_attempt` | no | via `forge codex follow-up` | yes | MCP has the direct operation; Codex exposes a scoped convenience command. |
 | `claim_next_ticket` | yes | yes | yes | Claim requests support harness, capabilities, lease, and idempotency key semantics. |
 | `heartbeat_attempt` | yes | yes | yes | All implemented adapters use the attempt lease runtime operation. |
 | `checkpoint_attempt` | yes | yes | yes | Checkpoints capture resumable progress, files, commands, next step, and risk. |
-| `update_ticket` | yes | no | yes | REST and MCP expose ticket metadata patching; generic CLI update is not implemented yet. |
+| `update_ticket` | yes | no | yes | REST and MCP expose typed ticket metadata patching; generic CLI update is not implemented yet. |
 | `complete_attempt` | yes | yes | yes | Generic CLI completes attempts; Codex convenience completion can attach proof artifacts atomically. |
 | `fail_attempt` | yes | yes | yes | Generic CLI and MCP expose failure reason and category. |
 | `block_attempt` | yes | yes | yes | Generic CLI and MCP expose blocker context; Codex block can attach proof artifacts atomically. |
 | `list_tickets` | yes | yes | yes | List supports workspace, project, status, type, offset, and limit where implemented. |
 | `get_ticket` | yes | yes | yes | CLI also supports `--kind attempt`; the contract operation is ticket-focused. |
 | `attach_artifact` | yes | yes | yes | Registers artifact metadata for tickets and attempts. |
-| `decompose_ticket` | yes | no | yes | REST route registration and MCP handler exist; generic CLI decomposition is not implemented yet. |
+| `decompose_ticket` | yes | no | yes | REST and MCP call the shared decomposition service; generic CLI decomposition is not implemented yet. |
 | `register_agent_capabilities` | no | no | yes | MCP is the implemented adapter for capability registration today. |
 
-Important boundary: REST routes currently produce OpenAPI metadata and placeholder 501 handlers. The parity tests prove route and operation ID consistency, not live REST handler execution.
+REST create, propose, list, get, update, decomposition, and artifact metadata routes are executable typed handlers protected by the API bearer/header token boundary. The lifecycle endpoints remain a separate packet. `TestRESTResourceWorkflow` proves a PostgreSQL-backed HTTP create/list/update/artifact workflow; parity tests continue to verify operation IDs.
 
 ## Parity Coverage
 

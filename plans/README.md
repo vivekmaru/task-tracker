@@ -18,7 +18,7 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 | 008 | vds.8 | Webhook security and fencing | P0 | L | 003, 007 | DONE |
 | 009 | vds.9 | Migration and sqlc integrity | P0 | M | 003 | DONE |
 | 010 | vds.10 | Relational scope integrity | P0 | L | 009 | DONE |
-| 011 | vds.11 | Typed REST resource routes | P0 | L | 007, 009 | TODO |
+| 011 | vds.11 | Typed REST resource routes | P0 | L | 007, 009 | DONE |
 | 012 | vds.12 | REST execution lifecycle | P0 | L | 004, 006, 011 | TODO |
 | 013 | vds.13 | MCP stdio server | P1 | M | 012 | TODO |
 | 014 | vds.14 | Production server envelope | P0 | M | 007 | TODO |
