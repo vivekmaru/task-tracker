@@ -389,6 +389,8 @@ func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
 		ProjectID:   req.ProjectID,
 		Status:      req.Status,
 		Type:        req.Type,
+		Offset:      req.Offset,
+		Limit:       req.Limit,
 	}))
 }
 
@@ -507,6 +509,8 @@ func (h Handler) renderArtifactList(w http.ResponseWriter, r *http.Request) {
 		WorkspaceIDText: uuidText(req.WorkspaceID),
 		ProjectIDText:   uuidText(req.ProjectID),
 		TicketIDText:    uuidText(req.TicketID),
+		Offset:          req.Offset,
+		Limit:           req.Limit,
 	}))
 }
 
@@ -995,6 +999,8 @@ type ticketListView struct {
 	Status      string
 	Type        string
 	Message     string
+	Offset      int32
+	Limit       int32
 }
 
 type ticketDetailView struct {
@@ -1010,6 +1016,8 @@ type searchView struct {
 	ProjectIDText   string
 	Query           string
 	Message         string
+	Offset          int32
+	Limit           int32
 }
 
 type eventLedgerView struct {
@@ -1030,6 +1038,8 @@ type artifactListView struct {
 	ProjectIDText   string
 	TicketIDText    string
 	Message         string
+	Offset          int32
+	Limit           int32
 }
 
 type proposedListView struct {
@@ -1045,6 +1055,7 @@ type ticketTimeline struct {
 	Checkpoints []db.AttemptCheckpoint
 	Events      []db.TicketEvent
 	Artifacts   []db.Artifact
+	Errors      []string
 }
 
 type workspaceIndexView struct {
@@ -1058,23 +1069,32 @@ type workspaceDetailView struct {
 }
 
 func loadTimeline(ctx context.Context, runtime Runtime, ticketID pgtype.UUID) (ticketTimeline, error) {
+	timeline := ticketTimeline{}
 	attempts, err := runtime.ListAttemptsByTicket(ctx, ticketID)
 	if err != nil {
-		return ticketTimeline{}, err
+		timeline.Errors = append(timeline.Errors, "Attempts could not be loaded. Refresh this page to retry.")
+	} else {
+		timeline.Attempts = attempts
 	}
 	events, err := runtime.ListTicketEventsByTicket(ctx, ticketID)
 	if err != nil {
-		return ticketTimeline{}, err
+		timeline.Errors = append(timeline.Errors, "Event history could not be loaded. Refresh this page to retry.")
+	} else {
+		timeline.Events = events
 	}
 	artifacts, err := runtime.ListArtifactsByTicket(ctx, ticketID)
 	if err != nil {
-		return ticketTimeline{}, err
+		timeline.Errors = append(timeline.Errors, "Proof artifacts could not be loaded. Refresh this page to retry.")
+	} else {
+		timeline.Artifacts = artifacts
 	}
-	return ticketTimeline{
-		Attempts:  attempts,
-		Events:    events,
-		Artifacts: artifacts,
-	}, nil
+	checkpoints, err := runtime.ListAttemptCheckpointsByTicket(ctx, ticketID)
+	if err != nil {
+		timeline.Errors = append(timeline.Errors, "Checkpoints could not be loaded. Refresh this page to retry.")
+	} else {
+		timeline.Checkpoints = checkpoints
+	}
+	return timeline, nil
 }
 
 func listEventsRequestFromQuery(r *http.Request) (services.ListEventsRequest, error) {
@@ -1377,6 +1397,11 @@ func ticketListPage(view ticketListView) templ.Component {
 			writeTicketCard(w, ticket)
 		}
 		fmt.Fprint(w, `</section>`)
+		limit := view.Limit
+		if limit <= 0 {
+			limit = defaultTicketListLimit
+		}
+		writeOffsetPager(w, ticketListPagePath(view, view.Offset-limit), ticketListPagePath(view, view.Offset+limit), view.Offset, len(view.Tickets), limit)
 	})
 }
 
@@ -1464,6 +1489,11 @@ func artifactListPage(view artifactListView) templ.Component {
 			writeArtifactCard(w, artifact)
 		}
 		fmt.Fprint(w, `</section>`)
+		limit := view.Limit
+		if limit <= 0 {
+			limit = 100
+		}
+		writeOffsetPager(w, artifactListPagePath(view, view.Offset-limit), artifactListPagePath(view, view.Offset+limit), view.Offset, len(view.Artifacts), limit)
 	})
 }
 
@@ -1813,10 +1843,19 @@ func writeTicketActions(w io.Writer, ticket db.Ticket) {
 }
 
 func writeTicketActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
-	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"><label><span>Reason</span><input name="reason" placeholder="%s"></label><button type="submit">%s</button></form>`,
+	class, confirmation, required := "", "", ""
+	if action == "archive" {
+		class = ` class="destructive"`
+		confirmation = ` onsubmit="return confirm('Archive this ticket? This removes it from the active queue.');"`
+		required = ` required`
+	}
+	fmt.Fprintf(w, `<form method="post" action="/tickets/%s/%s" hx-boost="false"%s><label><span>Reason</span><input name="reason" placeholder="%s"%s></label><button type="submit"%s>%s</button></form>`,
 		esc(uuidText(ticketID)),
 		esc(action),
+		confirmation,
 		esc(placeholder),
+		required,
+		class,
 		esc(label),
 	)
 }
@@ -1929,11 +1968,46 @@ func isProposedTicket(ticket db.Ticket) bool {
 }
 
 func writeTimeline(w io.Writer, view ticketDetailView) {
-	if view.TimelineErr != nil {
-		fmt.Fprintf(w, `<article class="panel warning"><h2>Timeline unavailable</h2><p>%s</p></article>`, esc(view.TimelineErr.Error()))
-		return
+	for _, message := range view.Timeline.Errors {
+		fmt.Fprintf(w, `<article class="panel warning"><h2>Inspection section unavailable</h2><p>%s</p></article>`, esc(message))
 	}
-	fmt.Fprint(w, `<article class="panel"><h2>Attempts</h2>`)
+	fmt.Fprint(w, `<article class="panel"><h2>Current attempt</h2>`)
+	current := db.Attempt{}
+	for _, attempt := range view.Timeline.Attempts {
+		if attempt.Status == services.AttemptStatusRunning {
+			current = attempt
+			break
+		}
+	}
+	if current.ID.Valid {
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s / %s</span><p>Lease expires %s</p>`, esc(current.AgentID), esc(current.Harness), esc(current.Model), esc(createdAtText(current.LeaseExpiresAt)))
+		if current.CurrentSummary.Valid {
+			fmt.Fprintf(w, `<p>%s</p>`, esc(current.CurrentSummary.String))
+		}
+		if current.Blocker != nil && string(current.Blocker) != "{}" {
+			fmt.Fprintf(w, `<p class="warning">Blocker: %s</p>`, esc(formattedMetadata(current.Blocker)))
+		}
+		fmt.Fprint(w, `</div>`)
+	} else {
+		fmt.Fprint(w, `<p class="empty-text">No running attempt currently owns this ticket.</p>`)
+	}
+	fmt.Fprint(w, `<h2>Latest checkpoint</h2>`)
+	if len(view.Timeline.Checkpoints) == 0 {
+		fmt.Fprint(w, `<p class="empty-text">No checkpoints recorded yet.</p>`)
+	} else {
+		checkpoint := view.Timeline.Checkpoints[len(view.Timeline.Checkpoints)-1]
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span>`, esc(checkpoint.Summary), esc(createdAtText(checkpoint.CreatedAt)))
+		writeList(w, "Files touched", checkpoint.FilesTouched, "")
+		writeList(w, "Commands", checkpoint.CommandsRun, "$ ")
+		if checkpoint.NextStep.Valid {
+			fmt.Fprintf(w, `<p>Next: %s</p>`, esc(checkpoint.NextStep.String))
+		}
+		if checkpoint.Risk.Valid {
+			fmt.Fprintf(w, `<p>Risk: %s</p>`, esc(checkpoint.Risk.String))
+		}
+		fmt.Fprint(w, `</div>`)
+	}
+	fmt.Fprint(w, `<h2>Attempts</h2>`)
 	if len(view.Timeline.Attempts) == 0 {
 		fmt.Fprint(w, `<p class="empty-text">No attempts recorded yet.</p>`)
 	}
@@ -2157,6 +2231,57 @@ func artifactListPathForTicket(ticket db.Ticket) string {
 	query.Set("project_id", uuidText(ticket.ProjectID))
 	query.Set("ticket_id", uuidText(ticket.ID))
 	return "/artifacts?" + query.Encode()
+}
+
+func ticketListPagePath(view ticketListView, offset int32) string {
+	if offset < 0 {
+		offset = 0
+	}
+	values := url.Values{"workspace_id": {uuidText(view.WorkspaceID)}, "project_id": {uuidText(view.ProjectID)}}
+	if view.Status != "" {
+		values.Set("status", view.Status)
+	}
+	if view.Type != "" {
+		values.Set("type", view.Type)
+	}
+	if view.Limit > 0 {
+		values.Set("limit", strconv.FormatInt(int64(view.Limit), 10))
+	}
+	if offset > 0 {
+		values.Set("offset", strconv.FormatInt(int64(offset), 10))
+	}
+	return "/tickets?" + values.Encode()
+}
+
+func artifactListPagePath(view artifactListView, offset int32) string {
+	if offset < 0 {
+		offset = 0
+	}
+	values := url.Values{"workspace_id": {view.WorkspaceIDText}, "project_id": {view.ProjectIDText}}
+	if view.TicketIDText != "" {
+		values.Set("ticket_id", view.TicketIDText)
+	}
+	if view.Limit > 0 {
+		values.Set("limit", strconv.FormatInt(int64(view.Limit), 10))
+	}
+	if offset > 0 {
+		values.Set("offset", strconv.FormatInt(int64(offset), 10))
+	}
+	return "/artifacts?" + values.Encode()
+}
+
+func writeOffsetPager(w io.Writer, previous, next string, offset int32, returned int, limit int32) {
+	if offset <= 0 && int32(returned) < limit {
+		return
+	}
+	fmt.Fprint(w, `<p class="pager" aria-label="Pagination">`)
+	if offset > 0 {
+		fmt.Fprintf(w, `<a class="button secondary" href="%s">Previous</a>`, esc(previous))
+	}
+	if int32(returned) >= limit {
+		fmt.Fprintf(w, `<a class="button secondary" href="%s">Next</a>`, esc(next))
+	}
+	fmt.Fprint(w, `</p>`)
 }
 
 func uuidText(id pgtype.UUID) string {
