@@ -13,3 +13,7 @@
 ## 2026-06-26 - Placeholder UX in Form Controls
 **Learning:** When adding text guidance inside an input field, it was mistakenly rendered as the `value` attribute instead of the `placeholder` attribute. This results in poor UX where users must manually delete the descriptive text before they can enter their own input, which affects the smoothness of interacting with forms.
 **Action:** Always verify that input hints are set using the `placeholder` attribute instead of `value`. Check custom form generation functions (`writeTicketActionForm`, `writeProposedActionForm`) for this pattern.
+
+## 2025-05-23 - Add confirmation dialog for proposed work rejection/archiving
+**Learning:** Destructive actions generated via helper functions (like `writeProposedActionForm`) did not have the same safety nets (confirmation dialogs and visual indicators) as similar actions generated elsewhere (like `writeTicketActionForm`). This inconsistency can lead to accidental data loss in the triage queue.
+**Action:** When adding or maintaining UI generation helpers, ensure that all destructive branches consistently apply `class="destructive"` and an `onsubmit` confirmation dialog.
