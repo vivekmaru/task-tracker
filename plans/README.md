@@ -58,7 +58,7 @@ plans below when running the full path to ready.
 
 | Plan | Beads | Packet | Priority | Size | Depends on | Status |
 |---|---|---|---|---|---|---|
-| 025 | 0v5, sij, 919, 4lh, nq0, cvd, yqd | Ready-state program (packets 1-7) | P0 | L | — | IN PROGRESS (packets 1-3 done) |
+| 025 | 0v5, sij, 919, 4lh, nq0, cvd, yqd | Ready-state program (packets 1-7) | P0 | L | — | IN PROGRESS (packets 1-4 done) |
 
 Probe defects folded into 025: web blocker reason not rendered (4lh), ticket
 action forms overlap (nq0), CLI positional-arg flag drops + help + category

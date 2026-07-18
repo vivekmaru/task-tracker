@@ -334,12 +334,49 @@ func validateCheckpointRequest(req CheckpointRequest) []string {
 	return problems
 }
 
+// FailureCategories are the accepted attempt failure/blocker categories. They
+// mirror the attempts_failure_category_check constraint in
+// sql/migrations/0001_initial_schema.sql; validating here turns an invalid
+// value into a clear ValidationError instead of a raw SQLSTATE 23514 error.
+var FailureCategories = []string{
+	"task_failed",
+	"blocked",
+	"needs_human",
+	"environment_failed",
+	"permission_required",
+	"dependency_missing",
+	"unclear_requirements",
+}
+
+// ValidateFailureCategory returns a ValidationError when category is set but is
+// not one of FailureCategories. An empty category is allowed (it is optional).
+// CLI and other entrypoints call this before the DB write for a friendly error.
+func ValidateFailureCategory(category string) error {
+	if problems := validateFailureCategory(strings.TrimSpace(category)); len(problems) > 0 {
+		return ValidationError{Problems: problems}
+	}
+	return nil
+}
+
+func validateFailureCategory(category string) []string {
+	if category == "" {
+		return nil
+	}
+	for _, valid := range FailureCategories {
+		if category == valid {
+			return nil
+		}
+	}
+	return []string{fmt.Sprintf("failure_category must be one of: %s", strings.Join(FailureCategories, ", "))}
+}
+
 func validateFailAttemptRequest(req FailAttemptRequest) []string {
 	var problems []string
 	problems = append(problems, validateAttemptID(req.AttemptID)...)
 	if req.FailureReason == "" {
 		problems = append(problems, "failure_reason is required")
 	}
+	problems = append(problems, validateFailureCategory(req.FailureCategory)...)
 	return problems
 }
 
@@ -349,6 +386,7 @@ func validateBlockAttemptRequest(req BlockAttemptRequest) []string {
 	if req.BlockerReason == "" {
 		problems = append(problems, "blocker_reason is required")
 	}
+	problems = append(problems, validateFailureCategory(req.FailureCategory)...)
 	return problems
 }
 
