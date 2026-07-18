@@ -432,9 +432,25 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 	ticketID := testUUID(3)
 	attemptID := testUUID(4)
 	runtime := &fakeRuntime{
+		ticket: db.Ticket{ID: ticketID, Title: "Refactor auth"},
+		// The service returns events in ascending sequence; the web ledger
+		// reverses them for a newest-first display.
 		eventFeedResult: services.ListEventsResult{
 			NextCursor: "cursor-2",
 			Events: []db.TicketEvent{
+				{
+					ID:            testUUID(29),
+					WorkspaceID:   workspaceID,
+					ProjectID:     projectID,
+					TicketID:      ticketID,
+					AttemptID:     attemptID,
+					Type:          services.EventTicketReady,
+					ActorType:     services.ActorAgent,
+					ActorID:       pgtype.Text{String: "codex", Valid: true},
+					Data:          []byte(`{"summary":"older event"}`),
+					EventSequence: 41,
+					CreatedAt:     pgtype.Timestamptz{Time: time.Date(2026, 5, 26, 7, 0, 0, 0, time.UTC), Valid: true},
+				},
 				{
 					ID:            testUUID(30),
 					WorkspaceID:   workspaceID,
@@ -444,7 +460,7 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 					Type:          services.EventTicketReady,
 					ActorType:     services.ActorAgent,
 					ActorID:       pgtype.Text{String: "codex", Valid: true},
-					Data:          []byte(`{"summary":"claimed by codex"}`),
+					Data:          []byte(`{"summary":"newer event"}`),
 					EventSequence: 42,
 					CreatedAt:     pgtype.Timestamptz{Time: time.Date(2026, 5, 26, 8, 0, 0, 0, time.UTC), Valid: true},
 				},
@@ -466,7 +482,8 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 		"Activity",
 		services.EventTicketReady,
 		"codex",
-		"claimed by codex",
+		"newer event",
+		"Refactor auth",
 		"/tickets/" + uuidString(ticketID),
 		"/attempts/" + uuidString(attemptID),
 		"cursor-2",
@@ -475,6 +492,9 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected event ledger to contain %q, got:\n%s", want, body)
 		}
+	}
+	if strings.Index(body, "newer event") > strings.Index(body, "older event") {
+		t.Fatalf("expected newest-first ordering, got older event before newer:\n%s", body)
 	}
 	if runtime.eventFeedReq.WorkspaceID != workspaceID || runtime.eventFeedReq.ProjectID != projectID {
 		t.Fatalf("unexpected event scope: %#v", runtime.eventFeedReq)
