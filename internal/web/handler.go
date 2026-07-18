@@ -108,6 +108,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(htmxAsset)
 		return
 	}
+	if r.URL.Path == "/" {
+		// Send the bare root to the workspace index, which itself bounces to
+		// /login when the request is unauthenticated.
+		http.Redirect(w, r, "/workspaces", http.StatusSeeOther)
+		return
+	}
 	if h.auth.enabled() {
 		switch r.URL.Path {
 		case "/login":

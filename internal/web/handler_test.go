@@ -62,6 +62,28 @@ func TestTicketListRendersRowsAndStableDetailLinks(t *testing.T) {
 	}
 }
 
+func TestRootRedirectsToWorkspaces(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.Handler
+	}{
+		{"no auth", NewHandler(&fakeRuntime{})},
+		{"with auth", NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			tc.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Location"); got != "/workspaces" {
+				t.Fatalf("expected redirect to /workspaces, got %q", got)
+			}
+		})
+	}
+}
+
 func TestAuthenticatedHandlerRedirectsUnauthenticatedWebRequests(t *testing.T) {
 	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
 	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
