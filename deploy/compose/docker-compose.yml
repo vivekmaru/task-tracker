@@ -1,0 +1,112 @@
+# Production compose stack for Forge: Postgres + one-shot migrate + server +
+# worker, all behind a Caddy reverse proxy that terminates HTTPS.
+#
+# Config comes entirely from the environment (see .env.example). Copy it to
+# .env and fill in real values before `docker compose up -d`.
+#
+# Note: the Forge image is distroless (no shell, no curl), so the server and
+# worker containers cannot run an in-container HTTP healthcheck. Startup order
+# is enforced with depends_on conditions instead, and Caddy retries its upstream
+# until the server is listening. Verify health from the host with
+# `curl -fsS https://<domain>/livez` (or http://localhost/livez for the LAN
+# variant).
+
+name: forge
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-forge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-forge}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forge} -d ${POSTGRES_DB:-forge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # One-shot: apply migrations before the long-lived processes start. The
+  # runbook (docs/release-and-recovery.md) prefers explicit migration on
+  # upgrade; this service handles the initial install and idempotent re-runs.
+  migrate:
+    image: ${FORGE_IMAGE:-forge:latest}
+    build:
+      context: ../..
+    # The distroless image intentionally ships only the /forge binary, not the
+    # sql/migrations directory, so the migration files are mounted in from the
+    # repo (or a release tarball) and pointed at with --dir. See
+    # docs/deployment.md "Supplying migrations".
+    command: ["migrate", "--dir", "/migrations"]
+    environment:
+      FORGE_DATABASE_URL: ${FORGE_DATABASE_URL:?set FORGE_DATABASE_URL in .env}
+    volumes:
+      - ../../sql/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    image: ${FORGE_IMAGE:-forge:latest}
+    build:
+      context: ../..
+    command: ["server"]
+    environment:
+      FORGE_DATABASE_URL: ${FORGE_DATABASE_URL:?set FORGE_DATABASE_URL in .env}
+      # Bind to all interfaces so Caddy (a separate container) can reach it.
+      FORGE_HTTP_ADDR: 0.0.0.0:3017
+      FORGE_ADMIN_TOKEN: ${FORGE_ADMIN_TOKEN:?set FORGE_ADMIN_TOKEN in .env}
+      # Caddy terminates HTTPS in front of the server, so cookies must be secure.
+      FORGE_AUTH_COOKIE_SECURE: "true"
+      FORGE_ARTIFACT_ROOT: /var/lib/forge/artifacts
+    volumes:
+      - artifact-data:/var/lib/forge/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    image: ${FORGE_IMAGE:-forge:latest}
+    build:
+      context: ../..
+    command: ["worker"]
+    environment:
+      FORGE_DATABASE_URL: ${FORGE_DATABASE_URL:?set FORGE_DATABASE_URL in .env}
+      FORGE_ARTIFACT_ROOT: /var/lib/forge/artifacts
+    volumes:
+      - artifact-data:/var/lib/forge/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    environment:
+      FORGE_DOMAIN: ${FORGE_DOMAIN:?set FORGE_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      server:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  artifact-data:
+  caddy-data:
+  caddy-config:

@@ -418,6 +418,8 @@ See [Phase 2 Closeout](docs/phase-2-closeout.md) for the REST, CLI, and MCP pari
 
 For local coding-agent integration, see [MCP stdio lifecycle](docs/mcp-lifecycle.md).
 
+See [Deployment](docs/deployment.md) for taking Forge to production: the Docker Compose stack, hardened systemd units, reverse-proxy TLS, and scheduled backups in [`deploy/`](deploy).
+
 Run the release-candidate pilot with `scripts/production-acceptance.sh`; it
 requires disposable test and recovery database URLs and writes a redacted
 [acceptance report](docs/production-acceptance-report.md).

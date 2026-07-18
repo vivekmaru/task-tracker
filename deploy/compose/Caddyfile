@@ -1,0 +1,16 @@
+# Caddy reverse proxy for Forge. Caddy owns HTTPS; the Forge server speaks plain
+# HTTP on its internal port. This is the only TLS terminator in the stack — the
+# server has no in-process TLS by design.
+
+{$FORGE_DOMAIN} {
+	# Automatic HTTPS via Let's Encrypt for a public domain.
+	reverse_proxy server:3017
+}
+
+# LAN / internal variant (no public domain, self-signed internal TLS): replace
+# the block above with the one below and set FORGE_DOMAIN=localhost.
+#
+# localhost {
+# 	tls internal
+# 	reverse_proxy server:3017
+# }
