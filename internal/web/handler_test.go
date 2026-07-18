@@ -84,6 +84,25 @@ func TestRootRedirectsToWorkspaces(t *testing.T) {
 	}
 }
 
+func TestActorLabelDropsEmptyHalf(t *testing.T) {
+	cases := []struct {
+		primary   string
+		secondary string
+		want      string
+	}{
+		{"codex", "gpt-5", "codex / gpt-5"},
+		{"codex", "", "codex"},
+		{"human", "", "human"},
+		{"", "web", "web"},
+		{"", "", ""},
+	}
+	for _, tc := range cases {
+		if got := actorLabel(tc.primary, tc.secondary); got != tc.want {
+			t.Fatalf("actorLabel(%q, %q) = %q, want %q", tc.primary, tc.secondary, got, tc.want)
+		}
+	}
+}
+
 func TestFaviconServedWithoutAuth(t *testing.T) {
 	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
 	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)

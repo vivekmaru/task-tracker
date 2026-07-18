@@ -1566,11 +1566,10 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 
 func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Component {
 	return layout("Attempt Detail", func(w io.Writer) {
-		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Attempt Detail</h1><p>%s/%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Attempt Detail</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
 			esc(attempt.Status),
 			esc(uuidText(attempt.ID)),
-			esc(attempt.AgentID),
-			esc(attempt.Model),
+			esc(actorLabel(attempt.AgentID, attempt.Model)),
 			esc(uuidText(attempt.TicketID)),
 		)
 		fmt.Fprint(w, `<section class="detail-grid"><article class="panel"><h2>Context</h2>`)
@@ -1914,7 +1913,7 @@ func writeEventCard(w io.Writer, event db.TicketEvent) {
 		esc(event.Type),
 		esc(createdAtText(event.CreatedAt)),
 	)
-	fmt.Fprintf(w, `<p class="event-meta">%s / %s</p>`, esc(event.ActorType), esc(textValue(event.ActorID)))
+	fmt.Fprintf(w, `<p class="event-meta">%s</p>`, esc(actorLabel(event.ActorType, textOrEmpty(event.ActorID))))
 	if summary := timelineReason(event.Data); summary != "" {
 		fmt.Fprintf(w, `<p>%s</p>`, esc(summary))
 	}
@@ -1992,7 +1991,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		}
 	}
 	if current.ID.Valid {
-		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s / %s</span><p>Lease expires %s</p>`, esc(current.AgentID), esc(current.Harness), esc(current.Model), esc(createdAtText(current.LeaseExpiresAt)))
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span><p>Lease expires %s</p>`, esc(current.AgentID), esc(actorLabel(current.Harness, current.Model)), esc(createdAtText(current.LeaseExpiresAt)))
 		if current.CurrentSummary.Valid {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(current.CurrentSummary.String))
 		}
@@ -2024,7 +2023,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		fmt.Fprint(w, `<p class="empty-text">No attempts recorded yet.</p>`)
 	}
 	for _, attempt := range view.Timeline.Attempts {
-		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s/%s</span>`, esc(attempt.Status), esc(attempt.AgentID), esc(attempt.Model))
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span>`, esc(attempt.Status), esc(actorLabel(attempt.AgentID, attempt.Model)))
 		if attempt.CurrentSummary.Valid {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(attempt.CurrentSummary.String))
 		}
@@ -2036,7 +2035,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		fmt.Fprint(w, `<p class="empty-text">No ticket events recorded.</p>`)
 	}
 	for _, event := range view.Timeline.Events {
-		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s/%s</span>`, esc(event.Type), esc(event.ActorType), esc(textValue(event.ActorID)))
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span>`, esc(event.Type), esc(actorLabel(event.ActorType, textOrEmpty(event.ActorID))))
 		if reason := timelineReason(event.Data); reason != "" {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(reason))
 		}
@@ -2210,6 +2209,29 @@ func textValue(value pgtype.Text) string {
 		return "-"
 	}
 	return value.String
+}
+
+func textOrEmpty(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+// actorLabel joins an actor/agent pair (e.g. type + id, or agent + model) with
+// " / ", dropping an empty half so labels never render a dangling slash like
+// "human/-" or "codex/".
+func actorLabel(primary, secondary string) string {
+	primary = strings.TrimSpace(primary)
+	secondary = strings.TrimSpace(secondary)
+	switch {
+	case primary != "" && secondary != "":
+		return primary + " / " + secondary
+	case primary != "":
+		return primary
+	default:
+		return secondary
+	}
 }
 
 func createdAtText(value pgtype.Timestamptz) string {
