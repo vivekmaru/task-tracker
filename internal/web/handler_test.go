@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,6 +135,80 @@ func TestAttemptDetailRendersMetricsAndCheckpoints(t *testing.T) {
 	if strings.Contains(body, "other attempt checkpoint") {
 		t.Fatalf("expected checkpoints to be filtered to the attempt, got:\n%s", body)
 	}
+}
+
+func TestLoginFailureThrottle(t *testing.T) {
+	fixed := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	postLogin := func(handler http.Handler, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("admin_token="+token))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("blocks after limit even with correct token", func(t *testing.T) {
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token", Now: func() time.Time { return fixed }})
+		for i := 0; i < loginFailureLimit; i++ {
+			if rec := postLogin(handler, "wrong"); rec.Code != http.StatusUnauthorized {
+				t.Fatalf("attempt %d: expected 401, got %d", i, rec.Code)
+			}
+		}
+		rec := postLogin(handler, "secret-token")
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 after limit even with correct token, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "Too many failed login attempts") {
+			t.Fatalf("expected throttle message, got:\n%s", rec.Body.String())
+		}
+	})
+
+	t.Run("window expiry restores access", func(t *testing.T) {
+		var mu sync.Mutex
+		clock := fixed
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{
+			AdminToken: "secret-token",
+			Now:        func() time.Time { mu.Lock(); defer mu.Unlock(); return clock },
+		})
+		for i := 0; i < loginFailureLimit; i++ {
+			postLogin(handler, "wrong")
+		}
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 before window expiry, got %d", rec.Code)
+		}
+		mu.Lock()
+		clock = clock.Add(loginFailureWindow + time.Second)
+		mu.Unlock()
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected login success after window expiry, got %d", rec.Code)
+		}
+	})
+
+	t.Run("success under limit is unaffected", func(t *testing.T) {
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token", Now: func() time.Time { return fixed }})
+		for i := 0; i < loginFailureLimit-1; i++ {
+			postLogin(handler, "wrong")
+		}
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected login success under limit, got %d", rec.Code)
+		}
+	})
+
+	t.Run("concurrent failures do not race", func(t *testing.T) {
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token", Now: func() time.Time { return fixed }})
+		var wg sync.WaitGroup
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				postLogin(handler, "wrong")
+			}()
+		}
+		wg.Wait()
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 after concurrent failures exceed the limit, got %d", rec.Code)
+		}
+	})
 }
 
 func TestActorLabelDropsEmptyHalf(t *testing.T) {

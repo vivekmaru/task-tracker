@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/a-h/templ"
@@ -64,16 +65,56 @@ type Runtime interface {
 }
 
 type Handler struct {
-	runtime Runtime
-	auth    AuthOptions
+	runtime  Runtime
+	auth     AuthOptions
+	throttle *loginThrottle
 }
 
 func NewHandler(runtime Runtime) http.Handler {
-	return Handler{runtime: runtime}
+	return Handler{runtime: runtime, throttle: &loginThrottle{}}
 }
 
 func NewHandlerWithAuth(runtime Runtime, auth AuthOptions) http.Handler {
-	return Handler{runtime: runtime, auth: auth.normalized()}
+	return Handler{runtime: runtime, auth: auth.normalized(), throttle: &loginThrottle{}}
+}
+
+// loginThrottle is a process-wide fixed-window failure counter for the human
+// login form. It is keyed globally (not per-IP) because the server commonly
+// sits behind a reverse proxy where an unauthenticated X-Forwarded-For would be
+// spoofable; a global limit is safe for a single-operator product.
+type loginThrottle struct {
+	mu          sync.Mutex
+	windowStart time.Time
+	failures    int
+}
+
+const (
+	loginFailureLimit  = 10
+	loginFailureWindow = time.Minute
+)
+
+// overLimit reports whether the current window has already reached the failure
+// limit, rolling the window forward when it has expired. It never counts an
+// attempt itself — only recordFailure does.
+func (t *loginThrottle) overLimit(now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rollWindow(now)
+	return t.failures >= loginFailureLimit
+}
+
+func (t *loginThrottle) recordFailure(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rollWindow(now)
+	t.failures++
+}
+
+func (t *loginThrottle) rollWindow(now time.Time) {
+	if now.Sub(t.windowStart) >= loginFailureWindow {
+		t.windowStart = now
+		t.failures = 0
+	}
 }
 
 type AuthOptions struct {
@@ -217,7 +258,15 @@ func (h Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		next := sanitizeNext(r.FormValue("next"))
+		now := h.auth.now()
+		if h.throttle != nil && h.throttle.overLimit(now) {
+			renderComponent(r.Context(), w, http.StatusTooManyRequests, loginPage(next, "Too many failed login attempts. Try again shortly."))
+			return
+		}
 		if !constantTimeTokenEqual(r.FormValue("admin_token"), h.auth.AdminToken) {
+			if h.throttle != nil {
+				h.throttle.recordFailure(now)
+			}
 			renderComponent(r.Context(), w, http.StatusUnauthorized, loginPage(next, "Invalid admin token."))
 			return
 		}
