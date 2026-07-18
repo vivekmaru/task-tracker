@@ -108,6 +108,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(htmxAsset)
 		return
 	}
+	if r.URL.Path == "/favicon.ico" {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = w.Write(faviconAsset)
+		return
+	}
 	if r.URL.Path == "/" {
 		// Send the bare root to the workspace index, which itself bounces to
 		// /login when the request is unauthenticated.
@@ -1727,7 +1733,7 @@ type pageContext struct {
 
 func layoutWithPage(page pageContext, body func(io.Writer)) templ.Component {
 	return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
-		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="/assets/htmx-2.0.4.min.js" defer></script><style>%s</style></head><body hx-boost="true"><a class="skip-link" href="#main-content">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a>`, esc(page.Title), pageCSS()+accessibilityCSS())
+		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="/favicon.ico" type="image/svg+xml"><title>%s</title><script src="/assets/htmx-2.0.4.min.js" defer></script><style>%s</style></head><body hx-boost="true"><a class="skip-link" href="#main-content">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a>`, esc(page.Title), pageCSS()+accessibilityCSS())
 		if err := scopedNavigation(scopedNavigationItems(page)).Render(context.Background(), w); err != nil {
 			return err
 		}

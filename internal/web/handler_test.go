@@ -84,6 +84,24 @@ func TestRootRedirectsToWorkspaces(t *testing.T) {
 	}
 }
 
+func TestFaviconServedWithoutAuth(t *testing.T) {
+	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
+	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected favicon status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+		t.Fatalf("expected svg content type, got %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), "<svg") {
+		t.Fatalf("expected svg body, got %q", rec.Body.String())
+	}
+}
+
 func TestAuthenticatedHandlerRedirectsUnauthenticatedWebRequests(t *testing.T) {
 	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
 	req := httptest.NewRequest(http.MethodGet, "/tickets?workspace_id="+uuidString(testUUID(1))+"&project_id="+uuidString(testUUID(2)), nil)
