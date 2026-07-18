@@ -31,6 +31,30 @@ These are agent-sized branches/PRs, not calendar-week phases. Independent packet
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: reason`, `REJECTED: rationale`.
 
+## Reconcile 2026-07-18 (commit `9f8d948`)
+
+Plans 001-020 verified DONE on current HEAD: `go build`, `go vet`, `go test ./...` (420 tests), and `go test -tags=integration ./internal/integration` (20 tests against real PostgreSQL) all pass; epic `agent-task-tracker-vds` closed 20/20. One DONE caveat: the GitHub Actions `browser` job is red on `main` (the `forge_browser` database is never created before `forge server` boots — see plan 021), so plan 018's browser gate passes locally but not in CI.
+
+## Production launch wave (2026-07-18 audit)
+
+Written non-interactively from the follow-up audit; top findings by leverage were planned by default. Beads issues are the durable task source.
+
+| Plan | Beads | Packet | Priority | Size | Depends on | Status |
+|---|---|---|---|---|---|---|
+| 021 | 0v5 | Fix browser CI bootstrap and cover core web workflows | P0 | M | — | TODO |
+| 022 | sij | Login failure throttle and session revocation docs | P2 | S | — | TODO |
+| 023 | 919 | Production deployment packet (compose/systemd/TLS/backups) | P1 | M | — | TODO |
+| 024 | dxl | Production dogfood pilot and go/no-go verdict | P0 | L | 023 (and 021 for an honest release gate) | TODO |
+
+Recommended order: 021 → 023 → 022 (anytime) → 024.
+
+### Additional findings considered and rejected (2026-07-18)
+
+- Prometheus/OTel metrics endpoint: `/livez`, `/readyz`, structured logs, and the webhook observability export cover v0.1 single-tenant needs; revisit only if the dogfood pilot (024) shows an operational gap.
+- Server-side session store/revocation: stateless HMAC sessions are acceptable for the trusted single-operator model; token rotation is the documented revocation path (plan 022 documents it).
+- API rate limiting on `/api/v1`: trusted single-tenant bearer boundary; deferred with RBAC.
+- Web/TUI visual polish push: README self-identifies the gap, but it is product iteration, not a production blocker; let pilot friction drive it.
+
 ## Practical execution waves
 
 With multiple isolated branches/worktrees, the maximum useful concurrency is:
