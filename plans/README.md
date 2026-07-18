@@ -48,6 +48,23 @@ Written non-interactively from the follow-up audit; top findings by leverage wer
 
 Recommended order: 021 → 023 → 022 (anytime) → 024.
 
+### Ready-state program (2026-07-18 UI probe)
+
+A hands-on probe (CLI as agent; web + TUI as human) confirmed the execution
+core and found surface defects. `plans/025-ready-state-program.md` is the
+single handover program for an executor agent: it sequences 021/022/023 with
+four new probe-driven packets. Execute 025 instead of picking individual
+plans below when running the full path to ready.
+
+| Plan | Beads | Packet | Priority | Size | Depends on | Status |
+|---|---|---|---|---|---|---|
+| 025 | 0v5, sij, 919, 4lh, nq0, cvd, yqd | Ready-state program (packets 1-7) | P0 | L | — | TODO |
+
+Probe defects folded into 025: web blocker reason not rendered (4lh), ticket
+action forms overlap (nq0), CLI positional-arg flag drops + help + category
+errors (cvd), polish cluster incl. root-route 404, favicon, activity feed
+attribution, attempt metrics (yqd).
+
 ### Additional findings considered and rejected (2026-07-18)
 
 - Prometheus/OTel metrics endpoint: `/livez`, `/readyz`, structured logs, and the webhook observability export cover v0.1 single-tenant needs; revisit only if the dogfood pilot (024) shows an operational gap.
