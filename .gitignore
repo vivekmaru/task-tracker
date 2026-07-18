@@ -8,3 +8,4 @@ personal-track.md
 ui-tests/node_modules/
 ui-tests/test-results/
 ui-tests/playwright-report/
+ui-tests/.fixture.json
