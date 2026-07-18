@@ -765,6 +765,11 @@ func TestTicketDetailRendersContextAndTimeline(t *testing.T) {
 			t.Fatalf("expected ticket detail to contain %q, got:\n%s", want, body)
 		}
 	}
+	// The "Created by" meta line must not render a dangling slash when the
+	// creator id half is empty (actor-label fix).
+	if strings.Contains(body, services.ActorHuman+"/-") {
+		t.Fatalf("expected no dangling slash in Created by, got:\n%s", body)
+	}
 	if runtime.detailTicketID != ticketID {
 		t.Fatalf("expected detail loaders to use ticket id, got %#v", runtime.detailTicketID)
 	}

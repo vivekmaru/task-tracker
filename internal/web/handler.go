@@ -1650,7 +1650,7 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 		fmt.Fprint(w, `<section class="detail-grid">`)
 		fmt.Fprint(w, `<article class="panel"><h2>Context</h2>`)
 		writeMeta(w, "Ticket ID", uuidText(ticket.ID))
-		writeMeta(w, "Created by", ticket.CreatedBy+"/"+textValue(ticket.CreatedByID))
+		writeMeta(w, "Created by", actorLabel(ticket.CreatedBy, textOrEmpty(ticket.CreatedByID)))
 		writeList(w, "Tags", ticket.Tags, "")
 		writeList(w, "Acceptance", ticket.AcceptanceCriteria, "")
 		writeList(w, "Verification", decodeStringArray(ticket.VerificationCommands), "$ ")
@@ -1781,7 +1781,7 @@ func proposedDetailPage(ticket db.Ticket) templ.Component {
 		fmt.Fprint(w, `<section class="panel"><h2>Context</h2>`)
 		writeMeta(w, "Proposed link", "/proposed/"+uuidText(ticket.ID))
 		writeMeta(w, "Ticket link", "/tickets/"+uuidText(ticket.ID))
-		writeMeta(w, "Source", ticket.CreatedBy+"/"+textValue(ticket.CreatedByID))
+		writeMeta(w, "Source", actorLabel(ticket.CreatedBy, textOrEmpty(ticket.CreatedByID)))
 		if ticket.CreationReason.Valid {
 			writeMeta(w, "Reason", ticket.CreationReason.String)
 		}
@@ -1957,7 +1957,7 @@ func writeProposedCard(w io.Writer, item services.ProposedTicketTriageItem) {
 	if item.CreationReason != "" {
 		fmt.Fprintf(w, `<p>%s</p>`, esc(item.CreationReason))
 	}
-	writeMeta(w, "Source", ticket.CreatedBy+"/"+item.CreatedByID)
+	writeMeta(w, "Source", actorLabel(ticket.CreatedBy, item.CreatedByID))
 	if item.SourceAttemptID.Valid {
 		writeMeta(w, "Attempt", "/attempts/"+uuidText(item.SourceAttemptID))
 	}
