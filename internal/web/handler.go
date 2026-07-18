@@ -1984,8 +1984,8 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		if current.CurrentSummary.Valid {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(current.CurrentSummary.String))
 		}
-		if current.Blocker != nil && string(current.Blocker) != "{}" {
-			fmt.Fprintf(w, `<p class="warning">Blocker: %s</p>`, esc(formattedMetadata(current.Blocker)))
+		if reason := blockerReason(current.Blocker); reason != "" {
+			fmt.Fprintf(w, `<p class="warning">Blocker: %s</p>`, esc(reason))
 		}
 		fmt.Fprint(w, `</div>`)
 	} else {
@@ -2016,6 +2016,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		if attempt.CurrentSummary.Valid {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(attempt.CurrentSummary.String))
 		}
+		writeAttemptFailureReason(w, attempt)
 		fmt.Fprint(w, `</div>`)
 	}
 	fmt.Fprint(w, `<h2>Events</h2>`)
@@ -2074,6 +2075,39 @@ func decodeStringArray(raw []byte) []string {
 		return nil
 	}
 	return values
+}
+
+// writeAttemptFailureReason renders the human-readable failure category and
+// blocker/failure reason for a blocked or failed attempt, mirroring the TUI
+// detail view's "Failure: <reason> (<category>)" and "Blocker: <reason>" lines
+// (see internal/tui/detail.go writeAttemptNotes). The data already rides on the
+// db.Attempt rows in the ticket-detail view model.
+func writeAttemptFailureReason(w io.Writer, attempt db.Attempt) {
+	if attempt.Status != services.AttemptStatusBlocked && attempt.Status != services.AttemptStatusFailed {
+		return
+	}
+	if attempt.FailureReason.Valid {
+		if attempt.FailureCategory.Valid {
+			fmt.Fprintf(w, `<p class="warning">Failure: %s (%s)</p>`, esc(attempt.FailureReason.String), esc(attempt.FailureCategory.String))
+		} else {
+			fmt.Fprintf(w, `<p class="warning">Failure: %s</p>`, esc(attempt.FailureReason.String))
+		}
+	} else if attempt.FailureCategory.Valid {
+		fmt.Fprintf(w, `<p class="warning">Failure category: %s</p>`, esc(attempt.FailureCategory.String))
+	}
+	if reason := blockerReason(attempt.Blocker); reason != "" {
+		fmt.Fprintf(w, `<p class="warning">Blocker: %s</p>`, esc(reason))
+	}
+}
+
+// blockerReason extracts the human-readable reason from an attempt's blocker
+// JSON, returning "" for an empty or "{}" blocker so callers never surface raw
+// braces.
+func blockerReason(raw []byte) string {
+	if len(raw) == 0 || string(raw) == "{}" {
+		return ""
+	}
+	return timelineReason(raw)
 }
 
 func timelineReason(raw []byte) string {

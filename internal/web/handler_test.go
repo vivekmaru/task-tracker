@@ -564,6 +564,53 @@ func TestTicketDetailRendersContextAndTimeline(t *testing.T) {
 	}
 }
 
+func TestTicketDetailRendersBlockerReason(t *testing.T) {
+	ticketID := testUUID(51)
+	attemptID := testUUID(52)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Blocked ticket",
+			Type:        services.TicketTypeFeature,
+			Status:      services.TicketStatusBlocked,
+			Priority:    2,
+			CreatedBy:   services.ActorHuman,
+		},
+		attempts: []db.Attempt{
+			{
+				ID:              attemptID,
+				TicketID:        ticketID,
+				Status:          services.AttemptStatusBlocked,
+				AgentID:         "codex",
+				Model:           "gpt-5",
+				FailureReason:   pgtype.Text{String: "waiting on staging secrets", Valid: true},
+				FailureCategory: pgtype.Text{String: "needs_human", Valid: true},
+				Blocker:         []byte(`{"reason":"operator must provision the staging token"}`),
+			},
+		},
+	}
+	handler := NewHandler(runtime)
+
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Failure: waiting on staging secrets (needs_human)",
+		"Blocker: operator must provision the staging token",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected blocked ticket detail to contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
 func TestTicketDetailRendersShareableDeepLinks(t *testing.T) {
 	ticketID := testUUID(31)
 	attemptID := testUUID(32)
