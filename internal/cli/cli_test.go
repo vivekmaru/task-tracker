@@ -2925,6 +2925,10 @@ func (f *fakeRuntime) GetAttempt(context.Context, pgtype.UUID) (db.Attempt, erro
 	return f.attempt, f.attemptErr
 }
 
+func (f *fakeRuntime) GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error) {
+	return db.AttemptMetric{}, nil
+}
+
 func (f *fakeRuntime) ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error) {
 	return nil, nil
 }

@@ -84,6 +84,58 @@ func TestRootRedirectsToWorkspaces(t *testing.T) {
 	}
 }
 
+func TestAttemptDetailRendersMetricsAndCheckpoints(t *testing.T) {
+	ticketID := testUUID(61)
+	attemptID := testUUID(62)
+	otherAttemptID := testUUID(63)
+	mustNumeric := func(s string) pgtype.Numeric {
+		var n pgtype.Numeric
+		if err := n.Scan(s); err != nil {
+			t.Fatalf("scan numeric %q: %v", s, err)
+		}
+		return n
+	}
+	runtime := &fakeRuntime{
+		attempt: db.Attempt{
+			ID:       attemptID,
+			TicketID: ticketID,
+			Status:   services.AttemptStatusRunning,
+			AgentID:  "codex",
+			Model:    "gpt-5",
+		},
+		attemptMetrics: db.AttemptMetric{
+			AttemptID:       attemptID,
+			TokensIn:        1200,
+			TokensOut:       340,
+			CostUsd:         mustNumeric("0.0123"),
+			DurationSeconds: mustNumeric("2.5"),
+		},
+		checkpoints: []db.AttemptCheckpoint{
+			{AttemptID: attemptID, Summary: "did the thing", CommandsRun: []string{"go test ./..."}},
+			{AttemptID: otherAttemptID, Summary: "other attempt checkpoint"},
+		},
+	}
+	handler := NewHandler(runtime)
+
+	req := httptest.NewRequest(http.MethodGet, "/attempts/"+uuidString(attemptID), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected attempt detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Metrics", "1200", "340", "$0.0123", "2.500s", "Checkpoints", "did the thing", "go test ./..."} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected attempt detail to contain %q, got:\n%s", want, body)
+		}
+	}
+	// Only this attempt's checkpoint should render, not another attempt's.
+	if strings.Contains(body, "other attempt checkpoint") {
+		t.Fatalf("expected checkpoints to be filtered to the attempt, got:\n%s", body)
+	}
+}
+
 func TestActorLabelDropsEmptyHalf(t *testing.T) {
 	cases := []struct {
 		primary   string
@@ -1739,6 +1791,8 @@ type fakeRuntime struct {
 	ticket                    db.Ticket
 	attempt                   db.Attempt
 	attempts                  []db.Attempt
+	attemptMetrics            db.AttemptMetric
+	attemptMetricsErr         error
 	checkpoints               []db.AttemptCheckpoint
 	checkpointsErr            error
 	events                    []db.TicketEvent
@@ -1895,6 +1949,10 @@ func (f *fakeRuntime) ListArtifacts(_ context.Context, req services.ListArtifact
 func (f *fakeRuntime) GetAttempt(_ context.Context, id pgtype.UUID) (db.Attempt, error) {
 	f.detailTicketID = id
 	return f.attempt, nil
+}
+
+func (f *fakeRuntime) GetAttemptMetrics(_ context.Context, id pgtype.UUID) (db.AttemptMetric, error) {
+	return f.attemptMetrics, f.attemptMetricsErr
 }
 
 func (f *fakeRuntime) ListArtifactsByAttempt(_ context.Context, id pgtype.UUID) ([]db.Artifact, error) {

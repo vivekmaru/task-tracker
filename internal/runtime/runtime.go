@@ -299,6 +299,10 @@ func (r *Runtime) GetAttempt(ctx context.Context, id pgtype.UUID) (db.Attempt, e
 	return r.Queries.GetAttempt(ctx, id)
 }
 
+func (r *Runtime) GetAttemptMetrics(ctx context.Context, id pgtype.UUID) (db.AttemptMetric, error) {
+	return r.Queries.GetAttemptMetrics(ctx, id)
+}
+
 func (r *Runtime) ListAttemptsByTicket(ctx context.Context, ticketID pgtype.UUID) ([]db.Attempt, error) {
 	return r.Queries.ListAttemptsByTicket(ctx, ticketID)
 }

@@ -105,6 +105,7 @@ type RuntimeHandle interface {
 	RelatedWork(context.Context, services.RelatedWorkRequest) ([]services.RelatedWorkResult, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)

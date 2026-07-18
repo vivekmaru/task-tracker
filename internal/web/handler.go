@@ -45,6 +45,7 @@ type Runtime interface {
 	ArchiveProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
@@ -705,7 +706,28 @@ func (h Handler) renderAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt artifacts", err.Error())
 		return
 	}
-	renderComponent(r.Context(), w, http.StatusOK, attemptDetailPage(attempt, artifacts))
+	ticketCheckpoints, err := h.runtime.ListAttemptCheckpointsByTicket(r.Context(), attempt.TicketID)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt checkpoints", err.Error())
+		return
+	}
+	checkpoints := make([]db.AttemptCheckpoint, 0, len(ticketCheckpoints))
+	for _, checkpoint := range ticketCheckpoints {
+		if checkpoint.AttemptID == attemptID {
+			checkpoints = append(checkpoints, checkpoint)
+		}
+	}
+	// Metrics are optional: an attempt that never reported them has no row.
+	metrics, err := h.runtime.GetAttemptMetrics(r.Context(), attemptID)
+	hasMetrics := true
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt metrics", err.Error())
+			return
+		}
+		hasMetrics = false
+	}
+	renderComponent(r.Context(), w, http.StatusOK, attemptDetailPage(attempt, artifacts, checkpoints, metrics, hasMetrics))
 }
 
 func (h Handler) renderArtifactRoute(w http.ResponseWriter, r *http.Request) {
@@ -1594,7 +1616,7 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 	})
 }
 
-func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Component {
+func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact, checkpoints []db.AttemptCheckpoint, metrics db.AttemptMetric, hasMetrics bool) templ.Component {
 	return layout("Attempt Detail", func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Attempt Detail</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
 			esc(attempt.Status),
@@ -1611,6 +1633,19 @@ func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Compon
 		if attempt.NextStep.Valid {
 			writeMeta(w, "Next", attempt.NextStep.String)
 		}
+		fmt.Fprint(w, `</article><article class="panel"><h2>Metrics</h2>`)
+		if !hasMetrics {
+			fmt.Fprint(w, `<p class="empty-text">No metrics reported for this attempt.</p>`)
+		} else {
+			writeMeta(w, "Tokens in", strconv.FormatInt(metrics.TokensIn, 10))
+			writeMeta(w, "Tokens out", strconv.FormatInt(metrics.TokensOut, 10))
+			if cost, ok := numericFloat(metrics.CostUsd); ok {
+				writeMeta(w, "Cost", fmt.Sprintf("$%.4f", cost))
+			}
+			if duration, ok := numericFloat(metrics.DurationSeconds); ok {
+				writeMeta(w, "Duration", fmt.Sprintf("%.3fs", duration))
+			}
+		}
 		fmt.Fprint(w, `</article><article class="panel"><h2>Artifacts</h2>`)
 		if len(artifacts) == 0 {
 			fmt.Fprint(w, `<p class="empty-text">No artifacts recorded for this attempt.</p>`)
@@ -1621,6 +1656,22 @@ func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Compon
 				esc(uuidText(artifact.ID)),
 				esc(uuidText(artifact.ID)),
 			)
+		}
+		fmt.Fprint(w, `</article><article class="panel"><h2>Checkpoints</h2>`)
+		if len(checkpoints) == 0 {
+			fmt.Fprint(w, `<p class="empty-text">No checkpoints recorded for this attempt.</p>`)
+		}
+		for _, checkpoint := range checkpoints {
+			fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span>`, esc(checkpoint.Summary), esc(createdAtText(checkpoint.CreatedAt)))
+			writeList(w, "Files touched", checkpoint.FilesTouched, "")
+			writeList(w, "Commands", checkpoint.CommandsRun, "$ ")
+			if checkpoint.NextStep.Valid {
+				fmt.Fprintf(w, `<p>Next: %s</p>`, esc(checkpoint.NextStep.String))
+			}
+			if checkpoint.Risk.Valid {
+				fmt.Fprintf(w, `<p>Risk: %s</p>`, esc(checkpoint.Risk.String))
+			}
+			fmt.Fprint(w, `</div>`)
 		}
 		fmt.Fprint(w, `</article></section>`)
 	})
@@ -2253,6 +2304,17 @@ func textOrEmpty(value pgtype.Text) string {
 		return ""
 	}
 	return value.String
+}
+
+func numericFloat(value pgtype.Numeric) (float64, bool) {
+	if !value.Valid {
+		return 0, false
+	}
+	float, err := value.Float64Value()
+	if err != nil || !float.Valid {
+		return 0, false
+	}
+	return float.Float64, true
 }
 
 // actorLabel joins an actor/agent pair (e.g. type + id, or agent + model) with
