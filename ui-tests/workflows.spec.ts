@@ -99,6 +99,41 @@ test('search finds the fixture ticket by its token', async ({ page }) => {
   await expect(page.locator(`a[href="/tickets/${fixture.ticketId}"]`)).toBeVisible();
 });
 
+test('ticket action forms lay out without buttons overflowing their form', async ({ page }) => {
+  const fixture = loadFixture();
+  await login(page, fixture.adminToken);
+
+  for (const width of [1200, 900]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/tickets/${fixture.ticketId}`);
+
+    const forms = page.locator('.ticket-actions form');
+    const formCount = await forms.count();
+    // A completed ticket exposes Reopen / Request review / Archive.
+    expect(formCount).toBeGreaterThanOrEqual(2);
+
+    for (let i = 0; i < formCount; i++) {
+      const form = forms.nth(i);
+      const button = form.getByRole('button');
+      const formBox = await form.boundingBox();
+      const buttonBox = await button.boundingBox();
+      expect(formBox, `form ${i} has a box`).not.toBeNull();
+      expect(buttonBox, `button ${i} has a box`).not.toBeNull();
+      if (!formBox || !buttonBox) continue;
+      // The button must stay within its own form's column (a few px tolerance)
+      // rather than overflowing into a sibling form as it did at 89px columns.
+      const tolerance = 2;
+      expect(buttonBox.x).toBeGreaterThanOrEqual(formBox.x - tolerance);
+      expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(formBox.x + formBox.width + tolerance);
+    }
+  }
+
+  // Full labels render for the completed-ticket actions.
+  await expect(page.getByRole('button', { name: 'Reopen' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Request review' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Archive' })).toBeVisible();
+});
+
 test('core operator pages have no serious axe violations', async ({ page }) => {
   const fixture = loadFixture();
   await login(page, fixture.adminToken);
