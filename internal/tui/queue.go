@@ -176,13 +176,16 @@ func (m QueueModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filtering = false
 				m.filter = ""
 				m.status = "Filter cleared"
+				m.selected = m.firstVisibleIndex()
 			case "backspace":
 				if len(m.filter) > 0 {
 					m.filter = m.filter[:len(m.filter)-1]
+					m.selected = m.firstVisibleIndex()
 				}
 			default:
 				if len(msg.Runes) > 0 {
 					m.filter += string(msg.Runes)
+					m.selected = m.firstVisibleIndex()
 				}
 			}
 			return m, nil
@@ -310,6 +313,23 @@ func (m QueueModel) View() string {
 type visibleTicket struct {
 	index  int
 	ticket db.Ticket
+}
+
+// firstVisibleIndex returns the index of the first ticket matching the current
+// filter, so selection can follow the filter instead of stranding the preview
+// on a ticket that is no longer visible. It falls back to 0 (empty filter or no
+// match).
+func (m QueueModel) firstVisibleIndex() int {
+	filter := strings.ToLower(strings.TrimSpace(m.filter))
+	if filter == "" {
+		return 0
+	}
+	for i, ticket := range m.tickets {
+		if strings.Contains(strings.ToLower(ticket.Title+" "+ticket.Status+" "+ticket.Type), filter) {
+			return i
+		}
+	}
+	return 0
 }
 
 func (m QueueModel) visibleTickets() []visibleTicket {

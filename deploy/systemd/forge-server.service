@@ -1,0 +1,36 @@
+[Unit]
+Description=Forge server (HTTP API + human web UI)
+Documentation=https://github.com/vivekmaru/task-tracker/blob/main/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=forge
+Group=forge
+EnvironmentFile=/etc/forge/forge.env
+# The runbook (docs/release-and-recovery.md) prefers running migrations
+# explicitly during an upgrade, before swapping binaries. Uncomment to migrate
+# on start for a single-node install where that trade-off is acceptable:
+# ExecStartPre=/usr/local/bin/forge migrate
+ExecStart=/usr/local/bin/forge server
+Restart=on-failure
+RestartSec=5
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+# Allow writes only to the local artifact store; everything else is read-only.
+ReadWritePaths=/var/lib/forge/artifacts
+
+[Install]
+WantedBy=multi-user.target

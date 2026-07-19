@@ -50,6 +50,12 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
       - uses: oven-sh/setup-bun@v2
+      - name: Prepare browser database
+        run: |
+          PGPASSWORD=postgres createdb -h localhost -U postgres forge_browser
+          go run ./cmd/forge migrate
+        env:
+          FORGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/forge_browser?sslmode=disable
       - run: bun install --frozen-lockfile
         working-directory: ui-tests
       - run: bunx playwright install --with-deps chromium

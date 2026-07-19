@@ -102,6 +102,37 @@ func TestHealthEndpointsAreUnauthenticatedAndReadinessIsDistinct(t *testing.T) {
 	}
 }
 
+func TestRootAndFaviconAreDispatchedByRouter(t *testing.T) {
+	// Drive the real router (not the bare web handler) so route registration
+	// gaps are caught: / and /favicon.ico must be mounted, and unknown paths
+	// must still 404 rather than being funneled through the auth gate.
+	router := NewRouterWithRuntimeAndAuth(&fakeReadyRuntime{}, web.AuthOptions{AdminToken: "operator-token"})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("GET / expected 303, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/workspaces" {
+		t.Fatalf("GET / expected redirect to /workspaces, got %q", got)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /favicon.ico expected 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Fatalf("GET /favicon.ico expected svg content type, got %q", ct)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/definitely-not-a-route", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /unknown expected 404, got %d", rec.Code)
+	}
+}
+
 func TestObservabilitySubscriptionAPICreatesAndLists(t *testing.T) {
 	rt := &fakeObservabilityRuntime{
 		subscription: db.WebhookSubscription{

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/vivek/agent-task-tracker/internal/db"
 	"github.com/vivek/agent-task-tracker/internal/services"
@@ -83,6 +84,46 @@ func TestQueueModelMovesSelectionWithinBounds(t *testing.T) {
 	if model.SelectedIndex() != 0 {
 		t.Fatalf("selection should stop at first item, got %d", model.SelectedIndex())
 	}
+}
+
+func TestQueueModelFilterResetsSelectionToFirstMatch(t *testing.T) {
+	model := NewQueueModel([]db.Ticket{
+		{Title: "Alpha", Status: services.TicketStatusTodo},
+		{Title: "Beta", Status: services.TicketStatusTodo},
+		{Title: "Gamma", Status: services.TicketStatusTodo},
+	})
+	// Select the last ticket, which the filter below will exclude.
+	model = model.MoveDown()
+	model = model.MoveDown()
+	if model.SelectedIndex() != 2 {
+		t.Fatalf("precondition: expected selection 2, got %d", model.SelectedIndex())
+	}
+
+	model = updateQueue(t, model, keyRunes("/"))
+	for _, r := range "alpha" {
+		model = updateQueue(t, model, keyRunes(string(r)))
+	}
+
+	if model.SelectedIndex() != 0 {
+		t.Fatalf("expected selection to follow filter to first match (0), got %d", model.SelectedIndex())
+	}
+	if view := model.View(); !strings.Contains(view, "Alpha") {
+		t.Fatalf("expected preview to show the matching ticket, got:\n%s", view)
+	}
+}
+
+func updateQueue(t *testing.T, m QueueModel, msg tea.Msg) QueueModel {
+	t.Helper()
+	next, _ := m.Update(msg)
+	q, ok := next.(QueueModel)
+	if !ok {
+		t.Fatalf("expected QueueModel, got %T", next)
+	}
+	return q
+}
+
+func keyRunes(s string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
 func TestQueueModelRendersEmptyState(t *testing.T) {

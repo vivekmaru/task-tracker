@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,7 @@ type RuntimeHandle interface {
 	RelatedWork(context.Context, services.RelatedWorkRequest) ([]services.RelatedWorkResult, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
@@ -1054,11 +1056,16 @@ func runHeartbeatCommand(ctx context.Context, args []string, stdout, stderr io.W
 	var attemptID, lease string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&lease, "lease", "30m", "lease duration")
-	if !parseFlags(flags, args) {
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	duration, err := time.ParseDuration(lease)
 	if err != nil {
@@ -1092,11 +1099,16 @@ func runCheckpointCommand(ctx context.Context, args []string, stdout, stderr io.
 	flags.Var(&commands, "command", "command run")
 	flags.StringVar(&nextStep, "next", "", "next step")
 	flags.StringVar(&risk, "risk", "", "risk")
-	if !parseFlags(flags, args) {
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
@@ -1128,11 +1140,16 @@ func runCompleteCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	var attemptID, summary string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&summary, "summary", "", "output summary")
-	if !parseFlags(flags, args) {
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
@@ -1161,15 +1178,24 @@ func runFailCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	var attemptID, reason, category string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "failure reason")
-	flags.StringVar(&category, "category", "", "failure category")
-	if !parseFlags(flags, args) {
+	flags.StringVar(&category, "category", "", "failure category (one of: "+strings.Join(services.FailureCategories, ", ")+")")
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	metricsReq, err := metrics.request(flags)
 	if err != nil {
+		fmt.Fprintf(stderr, "fail argument error: %v\n", err)
+		return 2
+	}
+	if err := services.ValidateFailureCategory(category); err != nil {
 		fmt.Fprintf(stderr, "fail argument error: %v\n", err)
 		return 2
 	}
@@ -1195,15 +1221,24 @@ func runBlockCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	var attemptID, reason, category string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "blocker reason")
-	flags.StringVar(&category, "category", "", "failure category")
-	if !parseFlags(flags, args) {
+	flags.StringVar(&category, "category", "", "failure category (one of: "+strings.Join(services.FailureCategories, ", ")+")")
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	metricsReq, err := metrics.request(flags)
 	if err != nil {
+		fmt.Fprintf(stderr, "block argument error: %v\n", err)
+		return 2
+	}
+	if err := services.ValidateFailureCategory(category); err != nil {
 		fmt.Fprintf(stderr, "block argument error: %v\n", err)
 		return 2
 	}
@@ -1233,11 +1268,16 @@ func runCancelCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	var attemptID, reason string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "cancel reason")
-	if !parseFlags(flags, args) {
+	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if attemptID == "" && flags.NArg() > 0 {
-		attemptID = flags.Arg(0)
+	if attemptID == "" {
+		if positionalAttemptID != "" {
+			attemptID = positionalAttemptID
+		} else if flags.NArg() > 0 {
+			attemptID = flags.Arg(0)
+		}
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
@@ -1864,7 +1904,7 @@ func runCodexBlockCommand(ctx context.Context, args []string, stdout, stderr io.
 	var attemptID, reason, category string
 	flags.StringVar(&attemptID, "attempt-id", "", "attempt id")
 	flags.StringVar(&reason, "reason", "", "blocker reason")
-	flags.StringVar(&category, "category", "", "failure category")
+	flags.StringVar(&category, "category", "", "failure category (one of: "+strings.Join(services.FailureCategories, ", ")+")")
 	positionalAttemptID, parseArgs := splitAttemptIDArg(args, flags)
 	if !parseFlags(flags, parseArgs) {
 		return 2
@@ -2430,7 +2470,47 @@ func (l *stringList) Set(value string) error {
 func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	flags.Usage = func() { printFlagUsage(flags.Output(), name, flags) }
 	return flags
+}
+
+// printFlagUsage renders a subcommand's usage line, description, and full flag
+// table. It is wired as each FlagSet's Usage, so `<command> --help` and flag
+// errors both surface the real flags instead of a hand-maintained list.
+func printFlagUsage(w io.Writer, name string, flags *flag.FlagSet) {
+	fmt.Fprintf(w, "Usage:\n  forge %s [flags]\n", name)
+	if desc := commandDescription(name); desc != "" {
+		fmt.Fprintf(w, "\n%s\n", desc)
+	}
+	hasFlags := false
+	flags.VisitAll(func(*flag.Flag) { hasFlags = true })
+	if hasFlags {
+		fmt.Fprintln(w, "\nFlags:")
+		flags.PrintDefaults()
+	}
+}
+
+func commandDescription(name string) string {
+	for _, cmd := range commands {
+		if cmd.name == name {
+			return strings.TrimSuffix(cmd.description, ".")
+		}
+	}
+	return ""
+}
+
+// isLeafRuntimeCommand reports whether a runtime command owns a single flag set
+// (so its help can be rendered from that flag set) rather than dispatching to
+// subcommands with their own flag sets.
+func isLeafRuntimeCommand(name string) bool {
+	if !isRuntimeCommand(name) {
+		return false
+	}
+	switch name {
+	case "workspaces", "projects", "proposed", "analytics", "observability":
+		return false
+	}
+	return true
 }
 
 func parseFlags(flags *flag.FlagSet, args []string) bool {
@@ -2932,6 +3012,19 @@ func printCommandHelp(w io.Writer, name string) {
 	}
 	if name == "observability" {
 		printObservabilityHelp(w)
+		return
+	}
+	if isLeafRuntimeCommand(name) {
+		// Trigger the command's own flag set usage. Parsing --help returns
+		// flag.ErrHelp before the runtime is opened, so the printed flag table
+		// always matches the real flags instead of a hand-maintained duplicate.
+		var buf bytes.Buffer
+		runRuntimeCommand(name, []string{"--help"}, &buf, &buf, Dependencies{
+			OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+				return nil, errors.New("runtime must not open for help")
+			},
+		})
+		_, _ = io.Copy(w, &buf)
 		return
 	}
 	for _, cmd := range commands {

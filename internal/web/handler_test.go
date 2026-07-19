@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,191 @@ func TestTicketListRendersRowsAndStableDetailLinks(t *testing.T) {
 	}
 	if runtime.listReq.Status != services.TicketStatusTodo || runtime.listReq.Limit != 50 {
 		t.Fatalf("unexpected list filters: %#v", runtime.listReq)
+	}
+}
+
+func TestRootRedirectsToWorkspaces(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.Handler
+	}{
+		{"no auth", NewHandler(&fakeRuntime{})},
+		{"with auth", NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			tc.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Location"); got != "/workspaces" {
+				t.Fatalf("expected redirect to /workspaces, got %q", got)
+			}
+		})
+	}
+}
+
+func TestAttemptDetailRendersMetricsAndCheckpoints(t *testing.T) {
+	ticketID := testUUID(61)
+	attemptID := testUUID(62)
+	otherAttemptID := testUUID(63)
+	mustNumeric := func(s string) pgtype.Numeric {
+		var n pgtype.Numeric
+		if err := n.Scan(s); err != nil {
+			t.Fatalf("scan numeric %q: %v", s, err)
+		}
+		return n
+	}
+	runtime := &fakeRuntime{
+		attempt: db.Attempt{
+			ID:       attemptID,
+			TicketID: ticketID,
+			Status:   services.AttemptStatusRunning,
+			AgentID:  "codex",
+			Model:    "gpt-5",
+		},
+		attemptMetrics: db.AttemptMetric{
+			AttemptID:       attemptID,
+			TokensIn:        1200,
+			TokensOut:       340,
+			CostUsd:         mustNumeric("0.0123"),
+			DurationSeconds: mustNumeric("2.5"),
+		},
+		checkpoints: []db.AttemptCheckpoint{
+			{AttemptID: attemptID, Summary: "did the thing", CommandsRun: []string{"go test ./..."}},
+			{AttemptID: otherAttemptID, Summary: "other attempt checkpoint"},
+		},
+	}
+	handler := NewHandler(runtime)
+
+	req := httptest.NewRequest(http.MethodGet, "/attempts/"+uuidString(attemptID), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected attempt detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Metrics", "1200", "340", "$0.0123", "2.500s", "Checkpoints", "did the thing", "go test ./..."} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected attempt detail to contain %q, got:\n%s", want, body)
+		}
+	}
+	// Only this attempt's checkpoint should render, not another attempt's.
+	if strings.Contains(body, "other attempt checkpoint") {
+		t.Fatalf("expected checkpoints to be filtered to the attempt, got:\n%s", body)
+	}
+}
+
+func TestLoginFailureThrottle(t *testing.T) {
+	fixed := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	postLogin := func(handler http.Handler, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("admin_token="+token))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("blocks after limit even with correct token", func(t *testing.T) {
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token", Now: func() time.Time { return fixed }})
+		for i := 0; i < loginFailureLimit; i++ {
+			if rec := postLogin(handler, "wrong"); rec.Code != http.StatusUnauthorized {
+				t.Fatalf("attempt %d: expected 401, got %d", i, rec.Code)
+			}
+		}
+		rec := postLogin(handler, "secret-token")
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 after limit even with correct token, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "Too many failed login attempts") {
+			t.Fatalf("expected throttle message, got:\n%s", rec.Body.String())
+		}
+	})
+
+	t.Run("window expiry restores access", func(t *testing.T) {
+		var mu sync.Mutex
+		clock := fixed
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{
+			AdminToken: "secret-token",
+			Now:        func() time.Time { mu.Lock(); defer mu.Unlock(); return clock },
+		})
+		for i := 0; i < loginFailureLimit; i++ {
+			postLogin(handler, "wrong")
+		}
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 before window expiry, got %d", rec.Code)
+		}
+		mu.Lock()
+		clock = clock.Add(loginFailureWindow + time.Second)
+		mu.Unlock()
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected login success after window expiry, got %d", rec.Code)
+		}
+	})
+
+	t.Run("success under limit is unaffected", func(t *testing.T) {
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token", Now: func() time.Time { return fixed }})
+		for i := 0; i < loginFailureLimit-1; i++ {
+			postLogin(handler, "wrong")
+		}
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected login success under limit, got %d", rec.Code)
+		}
+	})
+
+	t.Run("concurrent failures do not race", func(t *testing.T) {
+		handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token", Now: func() time.Time { return fixed }})
+		var wg sync.WaitGroup
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				postLogin(handler, "wrong")
+			}()
+		}
+		wg.Wait()
+		if rec := postLogin(handler, "secret-token"); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 after concurrent failures exceed the limit, got %d", rec.Code)
+		}
+	})
+}
+
+func TestActorLabelDropsEmptyHalf(t *testing.T) {
+	cases := []struct {
+		primary   string
+		secondary string
+		want      string
+	}{
+		{"codex", "gpt-5", "codex / gpt-5"},
+		{"codex", "", "codex"},
+		{"human", "", "human"},
+		{"", "web", "web"},
+		{"", "", ""},
+	}
+	for _, tc := range cases {
+		if got := actorLabel(tc.primary, tc.secondary); got != tc.want {
+			t.Fatalf("actorLabel(%q, %q) = %q, want %q", tc.primary, tc.secondary, got, tc.want)
+		}
+	}
+}
+
+func TestFaviconServedWithoutAuth(t *testing.T) {
+	handler := NewHandlerWithAuth(&fakeRuntime{}, AuthOptions{AdminToken: "secret-token"})
+	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected favicon status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+		t.Fatalf("expected svg content type, got %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), "<svg") {
+		t.Fatalf("expected svg body, got %q", rec.Body.String())
 	}
 }
 
@@ -373,9 +559,25 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 	ticketID := testUUID(3)
 	attemptID := testUUID(4)
 	runtime := &fakeRuntime{
+		ticket: db.Ticket{ID: ticketID, Title: "Refactor auth"},
+		// The service returns events in ascending sequence; the web ledger
+		// reverses them for a newest-first display.
 		eventFeedResult: services.ListEventsResult{
 			NextCursor: "cursor-2",
 			Events: []db.TicketEvent{
+				{
+					ID:            testUUID(29),
+					WorkspaceID:   workspaceID,
+					ProjectID:     projectID,
+					TicketID:      ticketID,
+					AttemptID:     attemptID,
+					Type:          services.EventTicketReady,
+					ActorType:     services.ActorAgent,
+					ActorID:       pgtype.Text{String: "codex", Valid: true},
+					Data:          []byte(`{"summary":"older event"}`),
+					EventSequence: 41,
+					CreatedAt:     pgtype.Timestamptz{Time: time.Date(2026, 5, 26, 7, 0, 0, 0, time.UTC), Valid: true},
+				},
 				{
 					ID:            testUUID(30),
 					WorkspaceID:   workspaceID,
@@ -385,7 +587,7 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 					Type:          services.EventTicketReady,
 					ActorType:     services.ActorAgent,
 					ActorID:       pgtype.Text{String: "codex", Valid: true},
-					Data:          []byte(`{"summary":"claimed by codex"}`),
+					Data:          []byte(`{"summary":"newer event"}`),
 					EventSequence: 42,
 					CreatedAt:     pgtype.Timestamptz{Time: time.Date(2026, 5, 26, 8, 0, 0, 0, time.UTC), Valid: true},
 				},
@@ -407,7 +609,8 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 		"Activity",
 		services.EventTicketReady,
 		"codex",
-		"claimed by codex",
+		"newer event",
+		"Refactor auth",
 		"/tickets/" + uuidString(ticketID),
 		"/attempts/" + uuidString(attemptID),
 		"cursor-2",
@@ -416,6 +619,9 @@ func TestEventLedgerRendersRecentEventsAndKeepsScope(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected event ledger to contain %q, got:\n%s", want, body)
 		}
+	}
+	if strings.Index(body, "newer event") > strings.Index(body, "older event") {
+		t.Fatalf("expected newest-first ordering, got older event before newer:\n%s", body)
 	}
 	if runtime.eventFeedReq.WorkspaceID != workspaceID || runtime.eventFeedReq.ProjectID != projectID {
 		t.Fatalf("unexpected event scope: %#v", runtime.eventFeedReq)
@@ -559,8 +765,60 @@ func TestTicketDetailRendersContextAndTimeline(t *testing.T) {
 			t.Fatalf("expected ticket detail to contain %q, got:\n%s", want, body)
 		}
 	}
+	// The "Created by" meta line must not render a dangling slash when the
+	// creator id half is empty (actor-label fix).
+	if strings.Contains(body, services.ActorHuman+"/-") {
+		t.Fatalf("expected no dangling slash in Created by, got:\n%s", body)
+	}
 	if runtime.detailTicketID != ticketID {
 		t.Fatalf("expected detail loaders to use ticket id, got %#v", runtime.detailTicketID)
+	}
+}
+
+func TestTicketDetailRendersBlockerReason(t *testing.T) {
+	ticketID := testUUID(51)
+	attemptID := testUUID(52)
+	runtime := &fakeRuntime{
+		ticket: db.Ticket{
+			ID:          ticketID,
+			WorkspaceID: testUUID(1),
+			ProjectID:   testUUID(2),
+			Title:       "Blocked ticket",
+			Type:        services.TicketTypeFeature,
+			Status:      services.TicketStatusBlocked,
+			Priority:    2,
+			CreatedBy:   services.ActorHuman,
+		},
+		attempts: []db.Attempt{
+			{
+				ID:              attemptID,
+				TicketID:        ticketID,
+				Status:          services.AttemptStatusBlocked,
+				AgentID:         "codex",
+				Model:           "gpt-5",
+				FailureReason:   pgtype.Text{String: "waiting on staging secrets", Valid: true},
+				FailureCategory: pgtype.Text{String: "needs_human", Valid: true},
+				Blocker:         []byte(`{"reason":"operator must provision the staging token"}`),
+			},
+		},
+	}
+	handler := NewHandler(runtime)
+
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+uuidString(ticketID), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected detail status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Failure: waiting on staging secrets (needs_human)",
+		"Blocker: operator must provision the staging token",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected blocked ticket detail to contain %q, got:\n%s", want, body)
+		}
 	}
 }
 
@@ -1613,6 +1871,8 @@ type fakeRuntime struct {
 	ticket                    db.Ticket
 	attempt                   db.Attempt
 	attempts                  []db.Attempt
+	attemptMetrics            db.AttemptMetric
+	attemptMetricsErr         error
 	checkpoints               []db.AttemptCheckpoint
 	checkpointsErr            error
 	events                    []db.TicketEvent
@@ -1769,6 +2029,10 @@ func (f *fakeRuntime) ListArtifacts(_ context.Context, req services.ListArtifact
 func (f *fakeRuntime) GetAttempt(_ context.Context, id pgtype.UUID) (db.Attempt, error) {
 	f.detailTicketID = id
 	return f.attempt, nil
+}
+
+func (f *fakeRuntime) GetAttemptMetrics(_ context.Context, id pgtype.UUID) (db.AttemptMetric, error) {
+	return f.attemptMetrics, f.attemptMetricsErr
 }
 
 func (f *fakeRuntime) ListArtifactsByAttempt(_ context.Context, id pgtype.UUID) ([]db.Artifact, error) {

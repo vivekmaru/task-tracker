@@ -2536,6 +2536,139 @@ type noopRuntime struct {
 
 func (*noopRuntime) Close() {}
 
+func TestRunAttemptCommandsParseFlagsAfterPositionalAttemptID(t *testing.T) {
+	attempt := testUUID(5)
+	cases := []struct {
+		name   string
+		args   []string
+		verify func(t *testing.T, fake *fakeRuntime)
+	}{
+		{
+			name: "heartbeat",
+			args: []string{"heartbeat", uuidString(t, attempt), "--lease", "45m"},
+			verify: func(t *testing.T, f *fakeRuntime) {
+				if f.heartbeatReq.AttemptID != attempt || f.heartbeatReq.Lease != 45*time.Minute {
+					t.Fatalf("heartbeat dropped trailing flags: %#v", f.heartbeatReq)
+				}
+			},
+		},
+		{
+			name: "checkpoint",
+			args: []string{"checkpoint", uuidString(t, attempt), "--summary", "midway"},
+			verify: func(t *testing.T, f *fakeRuntime) {
+				if f.checkpointReq.AttemptID != attempt || f.checkpointReq.Summary != "midway" {
+					t.Fatalf("checkpoint dropped trailing flags: %#v", f.checkpointReq)
+				}
+			},
+		},
+		{
+			name: "complete",
+			args: []string{"complete", uuidString(t, attempt), "--summary", "shipped"},
+			verify: func(t *testing.T, f *fakeRuntime) {
+				if f.completeReq.AttemptID != attempt || f.completeReq.Output["summary"] != "shipped" {
+					t.Fatalf("complete dropped trailing flags: %#v", f.completeReq)
+				}
+			},
+		},
+		{
+			name: "fail",
+			args: []string{"fail", uuidString(t, attempt), "--reason", "boom", "--category", "task_failed"},
+			verify: func(t *testing.T, f *fakeRuntime) {
+				if f.failReq.AttemptID != attempt || f.failReq.FailureReason != "boom" || f.failReq.FailureCategory != "task_failed" {
+					t.Fatalf("fail dropped trailing flags: %#v", f.failReq)
+				}
+			},
+		},
+		{
+			name: "block",
+			args: []string{"block", uuidString(t, attempt), "--reason", "waiting", "--category", "needs_human"},
+			verify: func(t *testing.T, f *fakeRuntime) {
+				if f.blockReq.AttemptID != attempt || f.blockReq.BlockerReason != "waiting" || f.blockReq.FailureCategory != "needs_human" {
+					t.Fatalf("block dropped trailing flags: %#v", f.blockReq)
+				}
+			},
+		},
+		{
+			name: "cancel",
+			args: []string{"cancel", uuidString(t, attempt), "--reason", "abort"},
+			verify: func(t *testing.T, f *fakeRuntime) {
+				if f.cancelReq.AttemptID != attempt || f.cancelReq.Reason != "abort" {
+					t.Fatalf("cancel dropped trailing flags: %#v", f.cancelReq)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			fake := &fakeRuntime{}
+			code := RunWithDependencies(tc.args, &stdout, &stderr, Dependencies{OpenRuntime: fakeRuntimeOpener(fake)})
+			if code != 0 {
+				t.Fatalf("expected exit code 0, got %d; stderr=%q", code, stderr.String())
+			}
+			tc.verify(t, fake)
+		})
+	}
+}
+
+func TestRunLeafCommandHelpListsFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := RunWithDependencies([]string{"block", "--help"}, &stdout, &stderr, Dependencies{
+		OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+			t.Fatal("runtime should not open for help")
+			return nil, nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"forge block", "-reason", "-category"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected help to list %q, got %q", want, out)
+		}
+	}
+}
+
+func TestRunAttemptCommandsRejectInvalidCategory(t *testing.T) {
+	for _, command := range []string{"block", "fail"} {
+		t.Run(command, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			opened := false
+
+			code := RunWithDependencies([]string{
+				command, uuidString(t, testUUID(5)), "--reason", "x", "--category", "bogus",
+			}, &stdout, &stderr, Dependencies{
+				OpenRuntime: func(context.Context, config.Config) (RuntimeHandle, error) {
+					opened = true
+					return &fakeRuntime{}, nil
+				},
+			})
+
+			if code != 2 {
+				t.Fatalf("expected exit code 2, got %d; stderr=%q", code, stderr.String())
+			}
+			if opened {
+				t.Fatalf("runtime should not open for an invalid category")
+			}
+			out := stderr.String()
+			for _, want := range []string{"task_failed", "needs_human", "dependency_missing"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("expected error to name valid categories, got %q", out)
+				}
+			}
+			if strings.Contains(out, "SQLSTATE") || strings.Contains(out, "23514") {
+				t.Fatalf("category error leaked a raw SQL error: %q", out)
+			}
+		})
+	}
+}
+
 type fakeRuntime struct {
 	mu                           sync.Mutex
 	createReq                    services.CreateTicketRequest
@@ -2556,6 +2689,9 @@ type fakeRuntime struct {
 	blockCalls                   int
 	blockErr                     error
 	blockResult                  services.AttemptTransitionResult
+	failReq                      services.FailAttemptRequest
+	heartbeatReq                 services.HeartbeatRequest
+	cancelReq                    services.CancelAttemptRequest
 	attempt                      db.Attempt
 	attemptErr                   error
 	artifactReqs                 []services.RegisterArtifactRequest
@@ -2665,7 +2801,8 @@ func (f *fakeRuntime) ClaimNext(_ context.Context, req services.ClaimNextRequest
 	return f.claimResult, nil
 }
 
-func (f *fakeRuntime) Heartbeat(context.Context, services.HeartbeatRequest) (db.Attempt, error) {
+func (f *fakeRuntime) Heartbeat(_ context.Context, req services.HeartbeatRequest) (db.Attempt, error) {
+	f.heartbeatReq = req
 	return db.Attempt{}, nil
 }
 
@@ -2698,7 +2835,8 @@ func (f *fakeRuntime) CompleteWithArtifacts(_ context.Context, req services.Comp
 	return f.completeResult, artifacts, nil
 }
 
-func (f *fakeRuntime) Fail(context.Context, services.FailAttemptRequest) (services.AttemptTransitionResult, error) {
+func (f *fakeRuntime) Fail(_ context.Context, req services.FailAttemptRequest) (services.AttemptTransitionResult, error) {
+	f.failReq = req
 	return services.AttemptTransitionResult{}, nil
 }
 
@@ -2726,7 +2864,8 @@ func (f *fakeRuntime) BlockWithArtifacts(_ context.Context, req services.BlockAt
 	return f.blockResult, artifacts, nil
 }
 
-func (f *fakeRuntime) Cancel(context.Context, services.CancelAttemptRequest) (services.AttemptTransitionResult, error) {
+func (f *fakeRuntime) Cancel(_ context.Context, req services.CancelAttemptRequest) (services.AttemptTransitionResult, error) {
+	f.cancelReq = req
 	return services.AttemptTransitionResult{}, nil
 }
 
@@ -2784,6 +2923,10 @@ func (f *fakeRuntime) GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 
 func (f *fakeRuntime) GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error) {
 	return f.attempt, f.attemptErr
+}
+
+func (f *fakeRuntime) GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error) {
+	return db.AttemptMetric{}, nil
 }
 
 func (f *fakeRuntime) ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error) {

@@ -41,9 +41,9 @@ Written non-interactively from the follow-up audit; top findings by leverage wer
 
 | Plan | Beads | Packet | Priority | Size | Depends on | Status |
 |---|---|---|---|---|---|---|
-| 021 | 0v5 | Fix browser CI bootstrap and cover core web workflows | P0 | M | — | TODO |
-| 022 | sij | Login failure throttle and session revocation docs | P2 | S | — | TODO |
-| 023 | 919 | Production deployment packet (compose/systemd/TLS/backups) | P1 | M | — | TODO |
+| 021 | 0v5 | Fix browser CI bootstrap and cover core web workflows | P0 | M | — | DONE |
+| 022 | sij | Login failure throttle and session revocation docs | P2 | S | — | DONE |
+| 023 | 919 | Production deployment packet (compose/systemd/TLS/backups) | P1 | M | — | DONE |
 | 024 | dxl | Production dogfood pilot and go/no-go verdict | P0 | L | 023 (and 021 for an honest release gate) | TODO |
 
 Recommended order: 021 → 023 → 022 (anytime) → 024.
@@ -58,7 +58,7 @@ plans below when running the full path to ready.
 
 | Plan | Beads | Packet | Priority | Size | Depends on | Status |
 |---|---|---|---|---|---|---|
-| 025 | 0v5, sij, 919, 4lh, nq0, cvd, yqd | Ready-state program (packets 1-7) | P0 | L | — | TODO |
+| 025 | 0v5, sij, 919, 4lh, nq0, cvd, yqd | Ready-state program (packets 1-7) | P0 | L | — | DONE |
 
 Probe defects folded into 025: web blocker reason not rendered (4lh), ticket
 action forms overlap (nq0), CLI positional-arg flag drops + help + category

@@ -78,6 +78,8 @@ Equivalent config file:
 
 Run `forge init` without `--admin-token` to generate a 32-byte token in a mode-0600 config file; the command intentionally never prints that secret. Set `FORGE_AUTH_COOKIE_SECURE=true` or `"auth_cookie_secure": true` when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Non-loopback servers require secure cookies and reject the former development placeholder.
 
+Human web sessions are stateless HMACs derived from `admin_token`, so there is no server-side session store. Signing out clears the browser cookie but does not invalidate any cookies already issued — an outstanding cookie stays valid until it expires. To revoke every session immediately (for example after a leaked cookie or use on a shared machine), rotate `admin_token` in the config file or `FORGE_ADMIN_TOKEN` and restart `forge server`; this invalidates all existing cookies at once. Every `/api/v1` caller and script must switch to the new token at the same time, since the same token authenticates both surfaces. Repeated failed logins are rate-limited process-wide (10 failures per minute return `429 Too Many Requests`) as defense-in-depth for an internet-reachable deployment.
+
 Local artifact URLs under `local://artifacts/...` resolve inside `FORGE_ARTIFACT_ROOT`, so a proof registered as `local://artifacts/go-test-output.txt` can be inspected from the human `/artifacts/{id}` route and opened from `/artifacts/{id}/content` when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user's home directory.
 
 Set `FORGE_ARTIFACT_BACKEND=s3` or `"artifact_backend": "s3"` to store filesystem proofs in an S3-compatible bucket instead. The S3 backend uses the AWS SDK credential chain by default, or explicit static credentials when `FORGE_S3_ACCESS_KEY_ID` and `FORGE_S3_SECRET_ACCESS_KEY` are set. S3-compatible providers can be configured with `FORGE_S3_ENDPOINT`, `FORGE_S3_REGION`, `FORGE_S3_BUCKET`, `FORGE_S3_PREFIX`, and `FORGE_S3_USE_PATH_STYLE=true`. Equivalent JSON keys are `s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_access_key_id`, `s3_secret_access_key`, `s3_session_token`, and `s3_use_path_style`.
@@ -415,6 +417,8 @@ See [Harness Integration Examples](docs/harness-integration.md) for copy-pasteab
 See [Phase 2 Closeout](docs/phase-2-closeout.md) for the REST, CLI, and MCP parity matrix, closeout test commands, and current adapter boundaries.
 
 For local coding-agent integration, see [MCP stdio lifecycle](docs/mcp-lifecycle.md).
+
+See [Deployment](docs/deployment.md) for taking Forge to production: the Docker Compose stack, hardened systemd units, reverse-proxy TLS, and scheduled backups in [`deploy/`](deploy).
 
 Run the release-candidate pilot with `scripts/production-acceptance.sh`; it
 requires disposable test and recovery database URLs and writes a redacted

@@ -61,6 +61,11 @@ func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Hand
 		apiMux.ServeHTTP(w, r)
 	})))
 	webHandler := web.NewHandlerWithAuth(rt, auth)
+	// "/{$}" matches only the exact root (not a catch-all), so the web handler
+	// serves the root redirect and favicon while unknown paths keep 404ing via
+	// the mux instead of being funneled through the handler's auth gate.
+	mux.Handle("/{$}", webHandler)
+	mux.Handle("/favicon.ico", webHandler)
 	mux.Handle("/login", webHandler)
 	mux.Handle("/assets/", webHandler)
 	mux.Handle("/tickets", webHandler)

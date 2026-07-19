@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/a-h/templ"
@@ -45,6 +46,7 @@ type Runtime interface {
 	ArchiveProposedTicket(context.Context, services.ProposedTicketTriageRequest) (db.Ticket, error)
 	GetTicket(context.Context, pgtype.UUID) (db.Ticket, error)
 	GetAttempt(context.Context, pgtype.UUID) (db.Attempt, error)
+	GetAttemptMetrics(context.Context, pgtype.UUID) (db.AttemptMetric, error)
 	ListAttemptsByTicket(context.Context, pgtype.UUID) ([]db.Attempt, error)
 	ListAttemptCheckpointsByTicket(context.Context, pgtype.UUID) ([]db.AttemptCheckpoint, error)
 	ListTicketEventsByTicket(context.Context, pgtype.UUID) ([]db.TicketEvent, error)
@@ -63,16 +65,56 @@ type Runtime interface {
 }
 
 type Handler struct {
-	runtime Runtime
-	auth    AuthOptions
+	runtime  Runtime
+	auth     AuthOptions
+	throttle *loginThrottle
 }
 
 func NewHandler(runtime Runtime) http.Handler {
-	return Handler{runtime: runtime}
+	return Handler{runtime: runtime, throttle: &loginThrottle{}}
 }
 
 func NewHandlerWithAuth(runtime Runtime, auth AuthOptions) http.Handler {
-	return Handler{runtime: runtime, auth: auth.normalized()}
+	return Handler{runtime: runtime, auth: auth.normalized(), throttle: &loginThrottle{}}
+}
+
+// loginThrottle is a process-wide fixed-window failure counter for the human
+// login form. It is keyed globally (not per-IP) because the server commonly
+// sits behind a reverse proxy where an unauthenticated X-Forwarded-For would be
+// spoofable; a global limit is safe for a single-operator product.
+type loginThrottle struct {
+	mu          sync.Mutex
+	windowStart time.Time
+	failures    int
+}
+
+const (
+	loginFailureLimit  = 10
+	loginFailureWindow = time.Minute
+)
+
+// overLimit reports whether the current window has already reached the failure
+// limit, rolling the window forward when it has expired. It never counts an
+// attempt itself — only recordFailure does.
+func (t *loginThrottle) overLimit(now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rollWindow(now)
+	return t.failures >= loginFailureLimit
+}
+
+func (t *loginThrottle) recordFailure(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rollWindow(now)
+	t.failures++
+}
+
+func (t *loginThrottle) rollWindow(now time.Time) {
+	if now.Sub(t.windowStart) >= loginFailureWindow {
+		t.windowStart = now
+		t.failures = 0
+	}
 }
 
 type AuthOptions struct {
@@ -106,6 +148,18 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		_, _ = w.Write(htmxAsset)
+		return
+	}
+	if r.URL.Path == "/favicon.ico" {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = w.Write(faviconAsset)
+		return
+	}
+	if r.URL.Path == "/" {
+		// Send the bare root to the workspace index, which itself bounces to
+		// /login when the request is unauthenticated.
+		http.Redirect(w, r, "/workspaces", http.StatusSeeOther)
 		return
 	}
 	if h.auth.enabled() {
@@ -204,7 +258,15 @@ func (h Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		next := sanitizeNext(r.FormValue("next"))
+		now := h.auth.now()
+		if h.throttle != nil && h.throttle.overLimit(now) {
+			renderComponent(r.Context(), w, http.StatusTooManyRequests, loginPage(next, "Too many failed login attempts. Try again shortly."))
+			return
+		}
 		if !constantTimeTokenEqual(r.FormValue("admin_token"), h.auth.AdminToken) {
+			if h.throttle != nil {
+				h.throttle.recordFailure(now)
+			}
 			renderComponent(r.Context(), w, http.StatusUnauthorized, loginPage(next, "Invalid admin token."))
 			return
 		}
@@ -461,8 +523,15 @@ func (h Handler) renderEventLedger(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load event ledger", err.Error())
 		return
 	}
+	// Display newest-first to match the "Recent" framing. The service keeps its
+	// ascending order and cursor semantics; we only reverse a copy for display.
+	events := make([]db.TicketEvent, len(result.Events))
+	for i, event := range result.Events {
+		events[len(result.Events)-1-i] = event
+	}
 	renderComponent(r.Context(), w, http.StatusOK, eventLedgerPage(eventLedgerView{
-		Events:          result.Events,
+		Events:          events,
+		TicketTitles:    h.eventTicketTitles(r.Context(), events),
 		NextCursor:      result.NextCursor,
 		WorkspaceIDText: uuidText(req.WorkspaceID),
 		ProjectIDText:   uuidText(req.ProjectID),
@@ -471,6 +540,28 @@ func (h Handler) renderEventLedger(w http.ResponseWriter, r *http.Request) {
 		Cursor:          req.Cursor,
 		LimitText:       limitText(req.Limit),
 	}))
+}
+
+// eventTicketTitles resolves each distinct ticket referenced by the events to
+// its title so the ledger can attribute entries by name. A failed lookup is
+// skipped (the card falls back to a plain "Ticket" link).
+func (h Handler) eventTicketTitles(ctx context.Context, events []db.TicketEvent) map[string]string {
+	titles := make(map[string]string)
+	for _, event := range events {
+		if !event.TicketID.Valid {
+			continue
+		}
+		key := uuidText(event.TicketID)
+		if _, seen := titles[key]; seen {
+			continue
+		}
+		ticket, err := h.runtime.GetTicket(ctx, event.TicketID)
+		if err != nil {
+			continue
+		}
+		titles[key] = ticket.Title
+	}
+	return titles
 }
 
 func (h Handler) renderArtifactList(w http.ResponseWriter, r *http.Request) {
@@ -664,7 +755,28 @@ func (h Handler) renderAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt artifacts", err.Error())
 		return
 	}
-	renderComponent(r.Context(), w, http.StatusOK, attemptDetailPage(attempt, artifacts))
+	ticketCheckpoints, err := h.runtime.ListAttemptCheckpointsByTicket(r.Context(), attempt.TicketID)
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt checkpoints", err.Error())
+		return
+	}
+	checkpoints := make([]db.AttemptCheckpoint, 0, len(ticketCheckpoints))
+	for _, checkpoint := range ticketCheckpoints {
+		if checkpoint.AttemptID == attemptID {
+			checkpoints = append(checkpoints, checkpoint)
+		}
+	}
+	// Metrics are optional: an attempt that never reported them has no row.
+	metrics, err := h.runtime.GetAttemptMetrics(r.Context(), attemptID)
+	hasMetrics := true
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load attempt metrics", err.Error())
+			return
+		}
+		hasMetrics = false
+	}
+	renderComponent(r.Context(), w, http.StatusOK, attemptDetailPage(attempt, artifacts, checkpoints, metrics, hasMetrics))
 }
 
 func (h Handler) renderArtifactRoute(w http.ResponseWriter, r *http.Request) {
@@ -1022,6 +1134,7 @@ type searchView struct {
 
 type eventLedgerView struct {
 	Events          []db.TicketEvent
+	TicketTitles    map[string]string
 	NextCursor      string
 	WorkspaceIDText string
 	ProjectIDText   string
@@ -1457,7 +1570,7 @@ func eventLedgerPage(view eventLedgerView) templ.Component {
 		}
 		fmt.Fprint(w, `<section class="event-list" aria-label="Execution ledger events">`)
 		for _, event := range view.Events {
-			writeEventCard(w, event)
+			writeEventCard(w, event, view.TicketTitles[uuidText(event.TicketID)])
 		}
 		fmt.Fprint(w, `</section>`)
 		if view.NextCursor != "" {
@@ -1537,7 +1650,7 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 		fmt.Fprint(w, `<section class="detail-grid">`)
 		fmt.Fprint(w, `<article class="panel"><h2>Context</h2>`)
 		writeMeta(w, "Ticket ID", uuidText(ticket.ID))
-		writeMeta(w, "Created by", ticket.CreatedBy+"/"+textValue(ticket.CreatedByID))
+		writeMeta(w, "Created by", actorLabel(ticket.CreatedBy, textOrEmpty(ticket.CreatedByID)))
 		writeList(w, "Tags", ticket.Tags, "")
 		writeList(w, "Acceptance", ticket.AcceptanceCriteria, "")
 		writeList(w, "Verification", decodeStringArray(ticket.VerificationCommands), "$ ")
@@ -1552,13 +1665,12 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 	})
 }
 
-func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Component {
+func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact, checkpoints []db.AttemptCheckpoint, metrics db.AttemptMetric, hasMetrics bool) templ.Component {
 	return layout("Attempt Detail", func(w io.Writer) {
-		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Attempt Detail</h1><p>%s/%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Attempt Detail</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
 			esc(attempt.Status),
 			esc(uuidText(attempt.ID)),
-			esc(attempt.AgentID),
-			esc(attempt.Model),
+			esc(actorLabel(attempt.AgentID, attempt.Model)),
 			esc(uuidText(attempt.TicketID)),
 		)
 		fmt.Fprint(w, `<section class="detail-grid"><article class="panel"><h2>Context</h2>`)
@@ -1570,6 +1682,19 @@ func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Compon
 		if attempt.NextStep.Valid {
 			writeMeta(w, "Next", attempt.NextStep.String)
 		}
+		fmt.Fprint(w, `</article><article class="panel"><h2>Metrics</h2>`)
+		if !hasMetrics {
+			fmt.Fprint(w, `<p class="empty-text">No metrics reported for this attempt.</p>`)
+		} else {
+			writeMeta(w, "Tokens in", strconv.FormatInt(metrics.TokensIn, 10))
+			writeMeta(w, "Tokens out", strconv.FormatInt(metrics.TokensOut, 10))
+			if cost, ok := numericFloat(metrics.CostUsd); ok {
+				writeMeta(w, "Cost", fmt.Sprintf("$%.4f", cost))
+			}
+			if duration, ok := numericFloat(metrics.DurationSeconds); ok {
+				writeMeta(w, "Duration", fmt.Sprintf("%.3fs", duration))
+			}
+		}
 		fmt.Fprint(w, `</article><article class="panel"><h2>Artifacts</h2>`)
 		if len(artifacts) == 0 {
 			fmt.Fprint(w, `<p class="empty-text">No artifacts recorded for this attempt.</p>`)
@@ -1580,6 +1705,22 @@ func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact) templ.Compon
 				esc(uuidText(artifact.ID)),
 				esc(uuidText(artifact.ID)),
 			)
+		}
+		fmt.Fprint(w, `</article><article class="panel"><h2>Checkpoints</h2>`)
+		if len(checkpoints) == 0 {
+			fmt.Fprint(w, `<p class="empty-text">No checkpoints recorded for this attempt.</p>`)
+		}
+		for _, checkpoint := range checkpoints {
+			fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span>`, esc(checkpoint.Summary), esc(createdAtText(checkpoint.CreatedAt)))
+			writeList(w, "Files touched", checkpoint.FilesTouched, "")
+			writeList(w, "Commands", checkpoint.CommandsRun, "$ ")
+			if checkpoint.NextStep.Valid {
+				fmt.Fprintf(w, `<p>Next: %s</p>`, esc(checkpoint.NextStep.String))
+			}
+			if checkpoint.Risk.Valid {
+				fmt.Fprintf(w, `<p>Risk: %s</p>`, esc(checkpoint.Risk.String))
+			}
+			fmt.Fprint(w, `</div>`)
 		}
 		fmt.Fprint(w, `</article></section>`)
 	})
@@ -1640,7 +1781,7 @@ func proposedDetailPage(ticket db.Ticket) templ.Component {
 		fmt.Fprint(w, `<section class="panel"><h2>Context</h2>`)
 		writeMeta(w, "Proposed link", "/proposed/"+uuidText(ticket.ID))
 		writeMeta(w, "Ticket link", "/tickets/"+uuidText(ticket.ID))
-		writeMeta(w, "Source", ticket.CreatedBy+"/"+textValue(ticket.CreatedByID))
+		writeMeta(w, "Source", actorLabel(ticket.CreatedBy, textOrEmpty(ticket.CreatedByID)))
 		if ticket.CreationReason.Valid {
 			writeMeta(w, "Reason", ticket.CreationReason.String)
 		}
@@ -1721,7 +1862,7 @@ type pageContext struct {
 
 func layoutWithPage(page pageContext, body func(io.Writer)) templ.Component {
 	return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
-		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><script src="/assets/htmx-2.0.4.min.js" defer></script><style>%s</style></head><body hx-boost="true"><a class="skip-link" href="#main-content">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a>`, esc(page.Title), pageCSS()+accessibilityCSS())
+		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="/favicon.ico" type="image/svg+xml"><title>%s</title><script src="/assets/htmx-2.0.4.min.js" defer></script><style>%s</style></head><body hx-boost="true"><a class="skip-link" href="#main-content">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a>`, esc(page.Title), pageCSS()+accessibilityCSS())
 		if err := scopedNavigation(scopedNavigationItems(page)).Render(context.Background(), w); err != nil {
 			return err
 		}
@@ -1816,7 +1957,7 @@ func writeProposedCard(w io.Writer, item services.ProposedTicketTriageItem) {
 	if item.CreationReason != "" {
 		fmt.Fprintf(w, `<p>%s</p>`, esc(item.CreationReason))
 	}
-	writeMeta(w, "Source", ticket.CreatedBy+"/"+item.CreatedByID)
+	writeMeta(w, "Source", actorLabel(ticket.CreatedBy, item.CreatedByID))
 	if item.SourceAttemptID.Valid {
 		writeMeta(w, "Attempt", "/attempts/"+uuidText(item.SourceAttemptID))
 	}
@@ -1896,19 +2037,26 @@ func isTicketAction(action string) bool {
 	}
 }
 
-func writeEventCard(w io.Writer, event db.TicketEvent) {
+func writeEventCard(w io.Writer, event db.TicketEvent, ticketTitle string) {
 	fmt.Fprintf(w, `<article class="event-card"><div class="event-marker"><span>%d</span></div><div class="event-body"><div class="event-topline"><strong>%s</strong><span>%s</span></div>`,
 		event.EventSequence,
 		esc(event.Type),
 		esc(createdAtText(event.CreatedAt)),
 	)
-	fmt.Fprintf(w, `<p class="event-meta">%s / %s</p>`, esc(event.ActorType), esc(textValue(event.ActorID)))
+	fmt.Fprintf(w, `<p class="event-meta">%s</p>`, esc(actorLabel(event.ActorType, textOrEmpty(event.ActorID))))
+	if ticketTitle != "" {
+		fmt.Fprintf(w, `<p class="event-ticket">%s</p>`, esc(ticketTitle))
+	}
 	if summary := timelineReason(event.Data); summary != "" {
 		fmt.Fprintf(w, `<p>%s</p>`, esc(summary))
 	}
 	fmt.Fprint(w, `<div class="event-links">`)
 	if event.TicketID.Valid {
-		fmt.Fprintf(w, `<a class="copy-link" href="/tickets/%s">Ticket</a>`, esc(uuidText(event.TicketID)))
+		linkText := "Ticket"
+		if ticketTitle != "" {
+			linkText = ticketTitle
+		}
+		fmt.Fprintf(w, `<a class="copy-link" href="/tickets/%s">%s</a>`, esc(uuidText(event.TicketID)), esc(linkText))
 	}
 	if event.AttemptID.Valid {
 		fmt.Fprintf(w, `<a class="copy-link" href="/attempts/%s">Attempt</a>`, esc(uuidText(event.AttemptID)))
@@ -1980,12 +2128,12 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		}
 	}
 	if current.ID.Valid {
-		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s / %s</span><p>Lease expires %s</p>`, esc(current.AgentID), esc(current.Harness), esc(current.Model), esc(createdAtText(current.LeaseExpiresAt)))
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span><p>Lease expires %s</p>`, esc(current.AgentID), esc(actorLabel(current.Harness, current.Model)), esc(createdAtText(current.LeaseExpiresAt)))
 		if current.CurrentSummary.Valid {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(current.CurrentSummary.String))
 		}
-		if current.Blocker != nil && string(current.Blocker) != "{}" {
-			fmt.Fprintf(w, `<p class="warning">Blocker: %s</p>`, esc(formattedMetadata(current.Blocker)))
+		if reason := blockerReason(current.Blocker); reason != "" {
+			fmt.Fprintf(w, `<p class="warning">Blocker: %s</p>`, esc(reason))
 		}
 		fmt.Fprint(w, `</div>`)
 	} else {
@@ -2012,10 +2160,11 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		fmt.Fprint(w, `<p class="empty-text">No attempts recorded yet.</p>`)
 	}
 	for _, attempt := range view.Timeline.Attempts {
-		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s/%s</span>`, esc(attempt.Status), esc(attempt.AgentID), esc(attempt.Model))
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span>`, esc(attempt.Status), esc(actorLabel(attempt.AgentID, attempt.Model)))
 		if attempt.CurrentSummary.Valid {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(attempt.CurrentSummary.String))
 		}
+		writeAttemptFailureReason(w, attempt)
 		fmt.Fprint(w, `</div>`)
 	}
 	fmt.Fprint(w, `<h2>Events</h2>`)
@@ -2023,7 +2172,7 @@ func writeTimeline(w io.Writer, view ticketDetailView) {
 		fmt.Fprint(w, `<p class="empty-text">No ticket events recorded.</p>`)
 	}
 	for _, event := range view.Timeline.Events {
-		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s/%s</span>`, esc(event.Type), esc(event.ActorType), esc(textValue(event.ActorID)))
+		fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><span>%s</span>`, esc(event.Type), esc(actorLabel(event.ActorType, textOrEmpty(event.ActorID))))
 		if reason := timelineReason(event.Data); reason != "" {
 			fmt.Fprintf(w, `<p>%s</p>`, esc(reason))
 		}
@@ -2074,6 +2223,39 @@ func decodeStringArray(raw []byte) []string {
 		return nil
 	}
 	return values
+}
+
+// writeAttemptFailureReason renders the human-readable failure category and
+// blocker/failure reason for a blocked or failed attempt, mirroring the TUI
+// detail view's "Failure: <reason> (<category>)" and "Blocker: <reason>" lines
+// (see internal/tui/detail.go writeAttemptNotes). The data already rides on the
+// db.Attempt rows in the ticket-detail view model.
+func writeAttemptFailureReason(w io.Writer, attempt db.Attempt) {
+	if attempt.Status != services.AttemptStatusBlocked && attempt.Status != services.AttemptStatusFailed {
+		return
+	}
+	if attempt.FailureReason.Valid {
+		if attempt.FailureCategory.Valid {
+			fmt.Fprintf(w, `<p class="warning">Failure: %s (%s)</p>`, esc(attempt.FailureReason.String), esc(attempt.FailureCategory.String))
+		} else {
+			fmt.Fprintf(w, `<p class="warning">Failure: %s</p>`, esc(attempt.FailureReason.String))
+		}
+	} else if attempt.FailureCategory.Valid {
+		fmt.Fprintf(w, `<p class="warning">Failure category: %s</p>`, esc(attempt.FailureCategory.String))
+	}
+	if reason := blockerReason(attempt.Blocker); reason != "" {
+		fmt.Fprintf(w, `<p class="warning">Blocker: %s</p>`, esc(reason))
+	}
+}
+
+// blockerReason extracts the human-readable reason from an attempt's blocker
+// JSON, returning "" for an empty or "{}" blocker so callers never surface raw
+// braces.
+func blockerReason(raw []byte) string {
+	if len(raw) == 0 || string(raw) == "{}" {
+		return ""
+	}
+	return timelineReason(raw)
 }
 
 func timelineReason(raw []byte) string {
@@ -2164,6 +2346,40 @@ func textValue(value pgtype.Text) string {
 		return "-"
 	}
 	return value.String
+}
+
+func textOrEmpty(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func numericFloat(value pgtype.Numeric) (float64, bool) {
+	if !value.Valid {
+		return 0, false
+	}
+	float, err := value.Float64Value()
+	if err != nil || !float.Valid {
+		return 0, false
+	}
+	return float.Float64, true
+}
+
+// actorLabel joins an actor/agent pair (e.g. type + id, or agent + model) with
+// " / ", dropping an empty half so labels never render a dangling slash like
+// "human/-" or "codex/".
+func actorLabel(primary, secondary string) string {
+	primary = strings.TrimSpace(primary)
+	secondary = strings.TrimSpace(secondary)
+	switch {
+	case primary != "" && secondary != "":
+		return primary + " / " + secondary
+	case primary != "":
+		return primary
+	default:
+		return secondary
+	}
 }
 
 func createdAtText(value pgtype.Timestamptz) string {
@@ -2316,7 +2532,7 @@ func pluralize(count int, noun string) string {
 }
 
 func pageCSS() string {
-	return `:root{--background:#f8fafc;--foreground:#111827;--card:#fff;--card-foreground:#111827;--muted:#f1f5f9;--muted-foreground:#64748b;--border:#e2e8f0;--input:#cbd5e1;--primary:#111827;--primary-foreground:#fff;--secondary:#f8fafc;--accent:#eef2ff;--success:#15803d;--warning:#b45309;--destructive:#b91c1c;--ring:#64748b;--radius:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--foreground);background:var(--background)}*{box-sizing:border-box}body{margin:0}.app-shell{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:rgba(255,255,255,.82);backdrop-filter:blur(12px);padding:18px 12px}.brand{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;margin:0 8px 22px}.brand span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--primary);color:var(--primary-foreground);font-weight:700}.brand strong{font-size:14px;font-weight:600}.sidebar nav{display:grid;gap:4px}.sidebar nav a{color:var(--muted-foreground);text-decoration:none;padding:8px 10px;border-radius:7px;font-size:14px}.sidebar nav a:hover{background:var(--muted);color:var(--foreground)}.content{max-width:1160px;width:100%;padding:30px 24px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:30px;line-height:1.12;font-weight:600;letter-spacing:0}.page-head p{margin:0;color:var(--muted-foreground);max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:600;color:var(--muted-foreground);letter-spacing:0}.actions{display:flex;gap:8px;align-items:center}.button,button{border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);text-decoration:none;padding:8px 12px;border-radius:7px;font-weight:600;font-size:14px;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s,color .15s,opacity .15s,transform .1s}.button.secondary{background:var(--card);color:var(--foreground);border-color:var(--border)}.button:hover:not(:disabled),button:hover:not(:disabled){background:#374151;border-color:#374151}.button.secondary:hover:not(:disabled){background:var(--muted);border-color:var(--input)}.button:active:not(:disabled),button:active:not(:disabled){transform:scale(0.98)}.button:disabled,button:disabled{opacity:0.6;cursor:not-allowed}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:5px}.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}.filters form{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end}.filters span,.auth-panel span,.proposed-actions span{display:block;font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input,.proposed-actions input{width:100%;border:1px solid var(--input);border-radius:7px;padding:8px 9px;background:var(--card);color:var(--foreground);transition:border-color .15s}.filters input:focus,.auth-panel input:focus,.proposed-actions input:focus{border-color:var(--ring);outline:none}.auth-panel{max-width:380px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:var(--destructive);font-weight:600}.ticket-list,.event-list{display:grid;gap:10px;margin-top:16px}.ticket-card,.event-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;transition:border-color .15s,background .15s}.ticket-card:hover,.event-card:hover{border-color:var(--input);background:#fff}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:600}.summary,.meta span,.empty-text,.event-meta{color:var(--muted-foreground)}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:600;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:var(--foreground);font-weight:600}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.trust-strip{display:grid;grid-template-columns:1.3fr repeat(3,minmax(120px,.55fr));gap:10px;margin-bottom:16px}.trust-card{display:block;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;color:inherit;text-decoration:none}.trust-card span{display:block;color:var(--muted-foreground);font-size:12px;font-weight:600;text-transform:uppercase}.trust-card strong{display:block;margin-top:4px;font-weight:650}.trust-card p{margin:6px 0 0;color:var(--muted-foreground)}.trust-card.metric span{font-size:24px;color:var(--foreground);font-weight:650;text-transform:none}.trust-card.metric:hover{border-color:var(--input);background:#fff}.action-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}.action-grid form{display:grid;gap:10px;border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--secondary)}.timeline-item{border-top:1px solid var(--border);padding:12px 0}.timeline-item strong{display:block;font-weight:600}.timeline-item span{color:var(--muted-foreground);font-size:13px}.event-card{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}.event-marker span{display:grid;place-items:center;min-width:36px;height:28px;border-radius:999px;background:var(--muted);color:var(--muted-foreground);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.event-topline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.event-topline strong{font-weight:600}.event-topline span{color:var(--muted-foreground);font-size:12px}.event-body p{margin:6px 0 0}.event-links{display:flex;gap:10px;margin-top:8px}.copy-link{font-size:13px;color:#1d4ed8;text-decoration:none}.copy-link:hover{text-decoration:underline}.match-snippet{background:var(--muted);border-radius:7px;padding:10px}.warning{border-color:#f1c96b;background:#fff9eb}.empty{margin-top:16px}.pager{display:flex;gap:10px;align-items:center;margin:16px 0 0}.pager code{font-size:12px;color:var(--muted-foreground);overflow-wrap:anywhere}@media(max-width:860px){.app-shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}.sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr))}.content{padding:20px 14px}.page-head,.ticket-card a,.event-topline{display:block}.filters form,.detail-grid,.trust-strip,.action-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}.event-card{grid-template-columns:1fr}}`
+	return `:root{--background:#f8fafc;--foreground:#111827;--card:#fff;--card-foreground:#111827;--muted:#f1f5f9;--muted-foreground:#64748b;--border:#e2e8f0;--input:#cbd5e1;--primary:#111827;--primary-foreground:#fff;--secondary:#f8fafc;--accent:#eef2ff;--success:#15803d;--warning:#b45309;--destructive:#b91c1c;--ring:#64748b;--radius:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--foreground);background:var(--background)}*{box-sizing:border-box}body{margin:0}.app-shell{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:rgba(255,255,255,.82);backdrop-filter:blur(12px);padding:18px 12px}.brand{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;margin:0 8px 22px}.brand span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--primary);color:var(--primary-foreground);font-weight:700}.brand strong{font-size:14px;font-weight:600}.sidebar nav{display:grid;gap:4px}.sidebar nav a{color:var(--muted-foreground);text-decoration:none;padding:8px 10px;border-radius:7px;font-size:14px}.sidebar nav a:hover{background:var(--muted);color:var(--foreground)}.content{max-width:1160px;width:100%;padding:30px 24px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:30px;line-height:1.12;font-weight:600;letter-spacing:0}.page-head p{margin:0;color:var(--muted-foreground);max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:600;color:var(--muted-foreground);letter-spacing:0}.actions{display:flex;gap:8px;align-items:center}.button,button{border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);text-decoration:none;padding:8px 12px;border-radius:7px;font-weight:600;font-size:14px;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s,color .15s,opacity .15s,transform .1s}.button.secondary{background:var(--card);color:var(--foreground);border-color:var(--border)}.button:hover:not(:disabled),button:hover:not(:disabled){background:#374151;border-color:#374151}.button.secondary:hover:not(:disabled){background:var(--muted);border-color:var(--input)}.button:active:not(:disabled),button:active:not(:disabled){transform:scale(0.98)}.button:disabled,button:disabled{opacity:0.6;cursor:not-allowed}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:5px}.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}.filters form{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end}.filters span,.auth-panel span,.proposed-actions span{display:block;font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input,.proposed-actions input{width:100%;border:1px solid var(--input);border-radius:7px;padding:8px 9px;background:var(--card);color:var(--foreground);transition:border-color .15s}.filters input:focus,.auth-panel input:focus,.proposed-actions input:focus{border-color:var(--ring);outline:none}.auth-panel{max-width:380px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:var(--destructive);font-weight:600}.ticket-list,.event-list{display:grid;gap:10px;margin-top:16px}.ticket-card,.event-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;transition:border-color .15s,background .15s}.ticket-card:hover,.event-card:hover{border-color:var(--input);background:#fff}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:600}.summary,.meta span,.empty-text,.event-meta{color:var(--muted-foreground)}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:600;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:var(--foreground);font-weight:600}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.trust-strip{display:grid;grid-template-columns:1.3fr repeat(3,minmax(120px,.55fr));gap:10px;margin-bottom:16px}.trust-card{display:block;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;color:inherit;text-decoration:none}.trust-card span{display:block;color:var(--muted-foreground);font-size:12px;font-weight:600;text-transform:uppercase}.trust-card strong{display:block;margin-top:4px;font-weight:650}.trust-card p{margin:6px 0 0;color:var(--muted-foreground)}.trust-card.metric span{font-size:24px;color:var(--foreground);font-weight:650;text-transform:none}.trust-card.metric:hover{border-color:var(--input);background:#fff}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:12px}.action-grid form{display:grid;gap:10px;border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--secondary);min-width:0}.action-grid form input,.action-grid form button{width:100%;min-width:0}.action-grid form button{white-space:normal;overflow-wrap:anywhere}.timeline-item{border-top:1px solid var(--border);padding:12px 0}.timeline-item strong{display:block;font-weight:600}.timeline-item span{color:var(--muted-foreground);font-size:13px}.event-card{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}.event-marker span{display:grid;place-items:center;min-width:36px;height:28px;border-radius:999px;background:var(--muted);color:var(--muted-foreground);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.event-topline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.event-topline strong{font-weight:600}.event-topline span{color:var(--muted-foreground);font-size:12px}.event-body p{margin:6px 0 0}.event-ticket{font-weight:600;color:var(--foreground)}.event-links{display:flex;gap:10px;margin-top:8px}.copy-link{font-size:13px;color:#1d4ed8;text-decoration:none}.copy-link:hover{text-decoration:underline}.match-snippet{background:var(--muted);border-radius:7px;padding:10px}.warning{border-color:#f1c96b;background:#fff9eb}.empty{margin-top:16px}.pager{display:flex;gap:10px;align-items:center;margin:16px 0 0}.pager code{font-size:12px;color:var(--muted-foreground);overflow-wrap:anywhere}@media(max-width:860px){.app-shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}.sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr))}.content{padding:20px 14px}.page-head,.ticket-card a,.event-topline{display:block}.filters form,.detail-grid,.trust-strip,.action-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}.event-card{grid-template-columns:1fr}}`
 }
 
 func accessibilityCSS() string {
