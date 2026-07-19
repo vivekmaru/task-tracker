@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Forge README</title>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <main class="site-shell">
+      <section class="hero">
+        <p class="eyebrow">rendered source document</p>
+        <h1>Forge README</h1>
+        <p class="lead">The canonical setup, smoke-test, surface, and harness guide for Forge.</p>
+        <p><a href="../../../README.md">Open source Markdown</a></p>
+      </section>
+      <article class="markdown-body">
+<h1>Forge</h1>
+<p>Forge is a pull-based work ledger for autonomous AI agents.</p>
+<p>Forge currently includes the execution core, JSON-first CLI commands, Codex-oriented convenience commands, a Bubble Tea TUI, server-rendered web views, local and S3-compatible proof artifact storage, search, basic attempt analytics, and a first external observability export foundation.</p>
+<h2>Current Status</h2>
+<p>Implemented:</p>
+<ul>
+<li>Config loading from JSON file and environment.</li>
+<li>Postgres migration for workspaces, projects, tickets, dependencies, attempts, checkpoints, events, artifacts, idempotency keys, API keys, capabilities, and metrics.</li>
+<li>sqlc-generated query layer.</li>
+<li>Ticket create/propose/list/update services.</li>
+<li>Transactional <code>claim-next</code> query and claim context bundle hydration.</li>
+<li>Heartbeat, checkpoint, terminal attempt transitions, lease expiry transition, and idempotency cleanup worker.</li>
+<li>Claim idempotency replay for stable retry keys.</li>
+<li>Local and S3-compatible proof artifact upload, metadata registration, and human web access.</li>
+<li>JSON-first CLI commands over the shared runtime.</li>
+<li>JSON-first workspace/project setup commands for agent-friendly local bootstrapping.</li>
+<li>Codex harness commands for claim, checkpoint, complete, propose/follow-up, and block flows.</li>
+<li>Proposed-work CLI triage for listing proposals and marking them ready, enqueueing, rejecting, or archiving.</li>
+<li>Huma OpenAPI route registration under <code>/api/v1</code>.</li>
+<li>Server-rendered web pages for login, workspaces, projects, ticket queues, ticket detail, attempt detail, artifact access, proposed work, and search.</li>
+<li>Runtime-backed web actions for proposed-work triage and ticket lifecycle decisions.</li>
+<li>Bubble Tea TUI for scoped queue inspection and ticket detail handoff links.</li>
+<li>Basic attempt analytics by summary, model, and harness.</li>
+<li>Structured observability webhook payloads for ticket events, attempt metadata, and attempt metrics.</li>
+<li>JSON-first CLI and API management for observability webhook subscriptions.</li>
+<li>Correctness regression tests across services, CLI, web, storage, runtime, and contracts.</li>
+</ul>
+<p>Known current limitations:</p>
+<ul>
+<li><code>forge server</code> starts the HTTP router with the OpenAPI surface and human web inspection pages. <code>forge worker</code> runs the maintenance and webhook delivery workers in a long-lived loop; use <code>forge worker --once</code> for deterministic smoke checks.</li>
+</ul>
+<p><code>/livez</code> reports process liveness and <code>/readyz</code> verifies the local PostgreSQL dependency without disclosing connection details. Server requests receive an <code>X-Request-ID</code>; structured access logs omit query strings, credentials, and bodies.</p>
+<ul>
+<li>Observability export sink management UI and OpenTelemetry-native exporters are not implemented yet.</li>
+<li>The TUI and web UI are usable, but still early. They are not yet at the full &quot;beautiful, low-friction&quot; product bar.</li>
+</ul>
+<h2>Requirements</h2>
+<ul>
+<li>Go 1.26+</li>
+<li>PostgreSQL with <code>pgcrypto</code></li>
+<li><code>psql</code></li>
+<li>Optional but useful for the smoke test snippets: <code>jq</code></li>
+<li>Optional: <code>sqlc</code> via <code>go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1</code></li>
+<li>PostgreSQL integration tests additionally require a role that can create and drop databases.</li>
+</ul>
+<h2>Configuration</h2>
+<p>Forge reads config from defaults, an optional JSON file, then environment variables.</p>
+<p>Environment variables:</p>
+<pre><code>export FORGE_DATABASE_URL=&#x27;postgres://localhost:5432/forge?sslmode=disable&#x27;
+export FORGE_HTTP_ADDR=&#x27;127.0.0.1:3017&#x27;
+export FORGE_WORKER_CONCURRENCY=1
+export FORGE_ADMIN_TOKEN=&#x27;change-me-local-admin-token&#x27;
+export FORGE_AUTH_COOKIE_SECURE=false
+export FORGE_ARTIFACT_ROOT=&quot;$PWD/.forge/artifacts&quot;
+export FORGE_ARTIFACT_BACKEND=local</code></pre>
+<p>Equivalent config file:</p>
+<pre><code>{
+  &quot;database_url&quot;: &quot;postgres://localhost:5432/forge?sslmode=disable&quot;,
+  &quot;http_addr&quot;: &quot;127.0.0.1:3017&quot;,
+  &quot;worker_concurrency&quot;: 1,
+  &quot;admin_token&quot;: &quot;replace-with-a-generated-32-byte-token&quot;,
+  &quot;auth_cookie_secure&quot;: false,
+  &quot;artifact_root&quot;: &quot;.forge/artifacts&quot;,
+  &quot;artifact_backend&quot;: &quot;local&quot;
+}</code></pre>
+<p>Run <code>forge init</code> without <code>--admin-token</code> to generate a 32-byte token in a mode-0600 config file; the command intentionally never prints that secret. Set <code>FORGE_AUTH_COOKIE_SECURE=true</code> or <code>&quot;auth_cookie_secure&quot;: true</code> when the human web UI is served through HTTPS, including HTTPS termination in front of the local server. Non-loopback servers require secure cookies and reject the former development placeholder.</p>
+<p>Human web sessions are stateless HMACs derived from <code>admin_token</code>, so there is no server-side session store. Signing out clears the browser cookie but does not invalidate any cookies already issued — an outstanding cookie stays valid until it expires. To revoke every session immediately (for example after a leaked cookie or use on a shared machine), rotate <code>admin_token</code> in the config file or <code>FORGE_ADMIN_TOKEN</code> and restart <code>forge server</code>; this invalidates all existing cookies at once. Every <code>/api/v1</code> caller and script must switch to the new token at the same time, since the same token authenticates both surfaces. Repeated failed logins are rate-limited process-wide (10 failures per minute return <code>429 Too Many Requests</code>) as defense-in-depth for an internet-reachable deployment.</p>
+<p>Local artifact URLs under <code>local://artifacts/...</code> resolve inside <code>FORGE_ARTIFACT_ROOT</code>, so a proof registered as <code>local://artifacts/go-test-output.txt</code> can be inspected from the human <code>/artifacts/{id}</code> route and opened from <code>/artifacts/{id}/content</code> when that file exists under the configured artifact root. Relative config-file artifact roots resolve from the config file directory; the built-in default resolves under the user&#x27;s home directory.</p>
+<p>Set <code>FORGE_ARTIFACT_BACKEND=s3</code> or <code>&quot;artifact_backend&quot;: &quot;s3&quot;</code> to store filesystem proofs in an S3-compatible bucket instead. The S3 backend uses the AWS SDK credential chain by default, or explicit static credentials when <code>FORGE_S3_ACCESS_KEY_ID</code> and <code>FORGE_S3_SECRET_ACCESS_KEY</code> are set. S3-compatible providers can be configured with <code>FORGE_S3_ENDPOINT</code>, <code>FORGE_S3_REGION</code>, <code>FORGE_S3_BUCKET</code>, <code>FORGE_S3_PREFIX</code>, and <code>FORGE_S3_USE_PATH_STYLE=true</code>. Equivalent JSON keys are <code>s3_endpoint</code>, <code>s3_region</code>, <code>s3_bucket</code>, <code>s3_prefix</code>, <code>s3_access_key_id</code>, <code>s3_secret_access_key</code>, <code>s3_session_token</code>, and <code>s3_use_path_style</code>.</p>
+<p>With either backend, <code>forge codex complete --proof ./go-test-output.txt</code> and <code>forge codex block --proof ./blocked.log</code> copy filesystem proofs into the selected artifact store before registering them. Existing URL proofs such as <code>local://artifacts/go-test-output.txt</code> or <code>s3://forge-bucket/proofs/go-test-output.txt</code> are registered directly with the matching storage backend.</p>
+<p>External observability export uses scoped webhook subscriptions in Postgres and posts <code>forge.observability.v1</code> JSON payloads through the durable webhook delivery worker. See <a href="../../../docs/observability-export.md">Observability Export Foundation</a> for subscription setup, payload shape, signing, retry behavior, and current limits.</p>
+<p>Pass it with:</p>
+<pre><code>forge server --config forge.json
+forge worker --config forge.json
+forge worker --config forge.json --once</code></pre>
+<h2>Database Setup</h2>
+<p>Create a database:</p>
+<pre><code>createdb forge</code></pre>
+<p>Apply all migration <code>Up</code> sections:</p>
+<pre><code>go run ./cmd/forge migrate</code></pre>
+<p>If you already have a local Forge database created before <code>forge migrate</code> tracked applied migrations, adopt the existing schema once before applying new migrations:</p>
+<pre><code>go run ./cmd/forge migrate --baseline-existing</code></pre>
+<p>Regenerate sqlc code after query changes:</p>
+<pre><code>go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate</code></pre>
+<p>Run the PostgreSQL integration suite against disposable databases. The URL must name a database beginning with <code>forge_test</code>; Forge connects to the server&#x27;s <code>postgres</code> maintenance database and creates a unique <code>forge_test_*</code> database for each test, then drops it during cleanup.</p>
+<pre><code>export FORGE_TEST_DATABASE_URL=&#x27;postgres://postgres:postgres@localhost:5432/forge_test?sslmode=disable&#x27;
+go test -tags=integration ./internal/integration</code></pre>
+<h2>Build And Test</h2>
+<p>Run all tests:</p>
+<pre><code>go test ./...</code></pre>
+<p>Build the CLI:</p>
+<pre><code>go build -o forge ./cmd/forge</code></pre>
+<h2>Local Smoke Test</h2>
+<p>This path exercises the CLI, Codex convenience commands, local proof artifact storage, search, analytics, TUI, and web UI.</p>
+<p>Create and migrate a disposable local database:</p>
+<pre><code>createdb forge_smoke
+export FORGE_DATABASE_URL=&#x27;postgres://localhost:5432/forge_smoke?sslmode=disable&#x27;
+export FORGE_ADMIN_TOKEN=&#x27;change-me-local-admin-token&#x27;
+export FORGE_ARTIFACT_ROOT=&quot;$PWD/.forge/artifacts&quot;
+
+go run ./cmd/forge migrate</code></pre>
+<p>Create a config file:</p>
+<pre><code>go run ./cmd/forge init \
+  --path forge.local.json \
+  --database-url &quot;$FORGE_DATABASE_URL&quot; \
+  --admin-token &quot;$FORGE_ADMIN_TOKEN&quot; \
+  --artifact-root &quot;$FORGE_ARTIFACT_ROOT&quot;</code></pre>
+<p>Create a workspace and project through Forge:</p>
+<pre><code>WORKSPACE_JSON=$(go run ./cmd/forge workspaces create --config forge.local.json --json \
+  --name &quot;Smoke Workspace&quot;)
+WORKSPACE_ID=$(printf &#x27;%s&#x27; &quot;$WORKSPACE_JSON&quot; | jq -r &#x27;.id&#x27;)
+
+PROJECT_JSON=$(go run ./cmd/forge projects create --config forge.local.json --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --name &quot;Smoke Project&quot;)
+PROJECT_ID=$(printf &#x27;%s&#x27; &quot;$PROJECT_JSON&quot; | jq -r &#x27;.id&#x27;)</code></pre>
+<p>Start the web server in one terminal:</p>
+<pre><code>go run ./cmd/forge server --config forge.local.json</code></pre>
+<p>In another terminal, create, claim, checkpoint, and complete a ticket with a local proof file:</p>
+<pre><code>TICKET_JSON=$(go run ./cmd/forge create --config forge.local.json --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --title &quot;Smoke ticket&quot; \
+  --type bug \
+  --description &quot;Verify the local Forge smoke path&quot; \
+  --acceptance &quot;Smoke ticket can be claimed and completed&quot; \
+  --verify &quot;go test ./...&quot;)
+TICKET_ID=$(printf &#x27;%s&#x27; &quot;$TICKET_JSON&quot; | jq -r &#x27;.id&#x27;)
+
+CLAIM_JSON=$(go run ./cmd/forge codex claim --config forge.local.json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --agent-id codex \
+  --capability codegen \
+  --capability testing \
+  --lease 30m)
+ATTEMPT_ID=$(printf &#x27;%s&#x27; &quot;$CLAIM_JSON&quot; | jq -r &#x27;.attempt_id&#x27;)
+
+go run ./cmd/forge codex checkpoint --config forge.local.json &quot;$ATTEMPT_ID&quot; \
+  --summary &quot;Smoke path reached checkpoint&quot; \
+  --progress 50 \
+  --file README.md \
+  --command &quot;go test ./...&quot;
+
+printf &#x27;smoke proof ok\n&#x27; &gt; smoke-proof.txt
+COMPLETE_JSON=$(go run ./cmd/forge codex complete --config forge.local.json &quot;$ATTEMPT_ID&quot; \
+  --summary &quot;Smoke path completed&quot; \
+  --proof smoke-proof.txt \
+  --tokens-in 12 \
+  --tokens-out 7 \
+  --cost-usd 0.001 \
+  --duration 2s)
+ARTIFACT_ID=$(printf &#x27;%s&#x27; &quot;$COMPLETE_JSON&quot; | jq -r &#x27;.artifacts[0].id&#x27;)</code></pre>
+<p>Check the CLI and web surfaces:</p>
+<pre><code>go run ./cmd/forge list --config forge.local.json --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot;
+
+go run ./cmd/forge analytics summary --config forge.local.json --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot;
+
+go run ./cmd/forge tui --config forge.local.json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot;</code></pre>
+<p>Open these URLs:</p>
+<ul>
+<li><code>http://127.0.0.1:3017/login</code> and sign in with the <code>admin_token</code> from your mode-0600 config file.</li>
+<li><code>http://127.0.0.1:3017/workspaces</code></li>
+<li><code>http://127.0.0.1:3017/tickets?workspace_id=$WORKSPACE_ID&amp;project_id=$PROJECT_ID</code></li>
+<li><code>http://127.0.0.1:3017/search?workspace_id=$WORKSPACE_ID&amp;project_id=$PROJECT_ID&amp;q=smoke</code></li>
+<li><code>http://127.0.0.1:3017/artifacts?workspace_id=$WORKSPACE_ID&amp;project_id=$PROJECT_ID</code></li>
+<li><code>http://127.0.0.1:3017/artifacts/$ARTIFACT_ID</code></li>
+<li><code>http://127.0.0.1:3017/artifacts/$ARTIFACT_ID/content</code></li>
+</ul>
+<p>Expected results:</p>
+<ul>
+<li>Login redirects to <code>/workspaces</code> without console errors.</li>
+<li>The scoped ticket queue shows the completed smoke ticket.</li>
+<li>Search finds the smoke ticket.</li>
+<li>The artifact detail route shows metadata, and the content route serves <code>smoke proof ok</code>.</li>
+<li>Analytics summary reports one attempt with the token metrics above.</li>
+</ul>
+<h2>Runtime Commands</h2>
+<p>The process commands open the shared runtime. <code>forge server</code> listens on <code>http_addr</code> and exposes <code>/api/v1/openapi.json</code>, <code>/login</code>, <code>/workspaces</code>, <code>/tickets</code>, and <code>/tickets/{id}</code>. Human web views require <code>admin_token</code>; cookie-authenticated changes require a same-origin browser request. Every <code>/api/v1</code> route requires <code>Authorization: Bearer $FORGE_ADMIN_TOKEN</code> or <code>X-Forge-Admin-Token</code>; browser session cookies are not accepted there.</p>
+<pre><code>forge server --config forge.json
+forge worker --config forge.json
+forge tui --config forge.json --workspace-id &quot;$WORKSPACE_ID&quot; --project-id &quot;$PROJECT_ID&quot;</code></pre>
+<p>Human web routes are stable inspection links:</p>
+<ul>
+<li><code>/workspaces</code> lists workspaces and creates minimal workspace scopes.</li>
+<li><code>/workspaces/{workspace_id}</code> shows projects for a workspace and creates minimal project scopes.</li>
+<li><code>/tickets?workspace_id={workspace_id}&amp;project_id={project_id}</code> opens a scoped ticket queue.</li>
+<li><code>/tickets/{ticket_id}</code> opens ticket detail.</li>
+<li><code>/attempts/{attempt_id}</code> opens attempt detail.</li>
+<li><code>/artifacts?workspace_id={workspace_id}&amp;project_id={project_id}</code> lists artifacts for a workspace/project scope, with optional <code>ticket_id</code> filtering.</li>
+<li><code>/artifacts/{artifact_id}</code> shows artifact metadata and open/delete actions. <code>/artifacts/{artifact_id}/content</code> streams locally stored artifact content. Local artifact deletion removes the stored object before removing metadata; remote artifact deletion is intentionally constrained until Forge owns safe remote object cleanup.</li>
+<li><code>/search?workspace_id={workspace_id}&amp;project_id={project_id}&amp;q={query}</code> searches ticket execution context.</li>
+<li><code>/proposed/{ticket_id}</code> opens a proposed follow-up inspection view.</li>
+</ul>
+<p>The TUI detail view prints the same route paths in its copy section so links can be pasted into chat, PRs, and handoffs.</p>
+<p>The JSON-first execution commands call the same runtime services:</p>
+<pre><code>forge create --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --title &quot;Fix failing auth tests&quot; \
+  --type bug \
+  --description &quot;Investigate and fix failing auth tests&quot; \
+  --acceptance &quot;Auth tests pass&quot; \
+  --verify &quot;go test ./...&quot;</code></pre>
+<pre><code>forge propose --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --title &quot;Stabilize flaky auth refresh test&quot; \
+  --type bug \
+  --description &quot;Observed intermittent auth refresh failures&quot; \
+  --acceptance &quot;Auth refresh test passes 10 consecutive runs&quot; \
+  --verify &quot;pnpm test auth-refresh --repeat 10&quot; \
+  --created-by agent \
+  --created-by-id codex \
+  --reason &quot;Follow-up discovered during attempt&quot;</code></pre>
+<pre><code>forge claim-next --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --agent-id codex \
+  --harness codex \
+  --capability codegen \
+  --capability testing \
+  --lease 30m \
+  --idempotency-key &quot;$STABLE_CLAIM_KEY&quot;</code></pre>
+<pre><code>forge heartbeat --json &quot;$ATTEMPT_ID&quot; --lease 30m</code></pre>
+<pre><code>forge checkpoint --json &quot;$ATTEMPT_ID&quot; \
+  --summary &quot;Identified auth middleware branch causing session expiry&quot; \
+  --progress 40 \
+  --file internal/auth/middleware.go \
+  --command &quot;go test ./internal/auth&quot; \
+  --next &quot;Patch retry branch and add regression coverage&quot;</code></pre>
+<pre><code>forge complete --json &quot;$ATTEMPT_ID&quot; --summary &quot;Auth retry fix landed and tests pass&quot;</code></pre>
+<pre><code>forge fail --json &quot;$ATTEMPT_ID&quot; \
+  --reason &quot;Could not reproduce failure after clean checkout&quot; \
+  --category task_failed</code></pre>
+<pre><code>forge block --json &quot;$ATTEMPT_ID&quot; \
+  --reason &quot;Missing API token required for integration test&quot; \
+  --category permission_required</code></pre>
+<pre><code>forge attach --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --ticket-id &quot;$TICKET_ID&quot; \
+  --attempt-id &quot;$ATTEMPT_ID&quot; \
+  --type test_output \
+  --role evidence \
+  --name &quot;go-test-output.txt&quot; \
+  --url &quot;local://artifacts/go-test-output.txt&quot; \
+  --mime-type text/plain</code></pre>
+<pre><code>forge list --json \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --status todo</code></pre>
+<pre><code>forge get --json --kind ticket &quot;$TICKET_ID&quot;
+forge get --json --kind attempt &quot;$ATTEMPT_ID&quot;</code></pre>
+<h2>Day-Zero Flow</h2>
+<p>The first end-to-end dogfood path should prove this sequence:</p>
+<ol>
+<li>Create a workspace and project with <code>forge workspaces create</code> and <code>forge projects create</code>, or from <code>/workspaces</code>.</li>
+<li>Create tickets with <code>forge create --json</code>.</li>
+<li>Have an agent claim eligible work with <code>forge claim-next --json</code>.</li>
+<li>Heartbeat during execution.</li>
+<li>Write at least one checkpoint with summary, files touched, commands run, and next step.</li>
+<li>Complete, fail, or block the attempt.</li>
+<li>Attach proof metadata such as test output, diff path, diagnostic log, or final response.</li>
+<li>List tickets and inspect ticket/attempt details.</li>
+<li>Retry <code>claim-next</code> with the same idempotency key and request to verify replay behavior.</li>
+</ol>
+<h2>Correctness Checks</h2>
+<p>Regression tests cover:</p>
+<ul>
+<li>Claim locking with <code>FOR UPDATE SKIP LOCKED</code>.</li>
+<li>One running attempt per ticket.</li>
+<li>Workspace/project/type/tag/harness/capability/dependency eligibility.</li>
+<li>Retry-limit dead-letter behavior.</li>
+<li>Lease expiry returning work to <code>todo</code> or <code>failed</code>.</li>
+<li>Blocked work moving to <code>blocked</code>.</li>
+<li>Terminal attempts rejecting later terminal transitions.</li>
+<li>Claim idempotency response persistence and replay.</li>
+</ul>
+<p>Run:</p>
+<pre><code>go test ./...</code></pre>
+<h2>Agent Harnesses</h2>
+<p>See <a href="../../../docs/harness-integration.md">Harness Integration Examples</a> for copy-pasteable Codex, Claude Code, Gemini CLI, OpenCode, and custom-agent flows.</p>
+<p>See <a href="../../../docs/phase-2-closeout.md">Phase 2 Closeout</a> for the REST, CLI, and MCP parity matrix, closeout test commands, and current adapter boundaries.</p>
+<p>For local coding-agent integration, see <a href="../../../docs/mcp-lifecycle.md">MCP stdio lifecycle</a>.</p>
+<p>See <a href="../../../docs/deployment.md">Deployment</a> for taking Forge to production: the Docker Compose stack, hardened systemd units, reverse-proxy TLS, and scheduled backups in <a href="../../../deploy/"><code>deploy/</code></a>.</p>
+<p>Run the release-candidate pilot with <code>scripts/production-acceptance.sh</code>; it requires disposable test and recovery database URLs and writes a redacted <a href="../../../docs/production-acceptance-report.md">acceptance report</a>.</p>
+<p>See <a href="../../../docs/human-operations.md">Human Operations</a> for the Phase 3 TUI-first UX contract, view order, non-goals, and Beads breakdown.</p>
+      </article>
+    </main>
+
+  </body>
+</html>

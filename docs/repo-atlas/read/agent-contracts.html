@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Operation Contracts</title>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <main class="site-shell">
+      <section class="hero">
+        <p class="eyebrow">rendered source document</p>
+        <h1>Agent Operation Contracts</h1>
+        <p class="lead">The shared contract catalogue that keeps REST, CLI, and MCP agent operations aligned.</p>
+        <p><a href="../../../docs/agent-contracts.md">Open source Markdown</a></p>
+      </section>
+      <article class="markdown-body">
+<h1>Agent Operation Contracts</h1>
+<p>Forge keeps agent-facing operation definitions in <code>internal/contracts</code>. The package is the shared catalog for REST, CLI, and MCP work so later adapters do not invent separate names, descriptions, or JSON Schema payloads.</p>
+<p>The catalog currently defines the Phase 2 surface:</p>
+<ul>
+<li><code>create_ticket</code></li>
+<li><code>propose_ticket</code></li>
+<li><code>create_ticket_from_attempt</code></li>
+<li><code>claim_next_ticket</code></li>
+<li><code>heartbeat_attempt</code></li>
+<li><code>checkpoint_attempt</code></li>
+<li><code>update_ticket</code></li>
+<li><code>complete_attempt</code></li>
+<li><code>fail_attempt</code></li>
+<li><code>block_attempt</code></li>
+<li><code>list_tickets</code></li>
+<li><code>get_ticket</code></li>
+<li><code>attach_artifact</code></li>
+<li><code>decompose_ticket</code></li>
+<li><code>register_agent_capabilities</code></li>
+</ul>
+<p>Each operation includes:</p>
+<ul>
+<li>a stable operation name for MCP tools</li>
+<li>REST operation ID and CLI command bindings where that surface already exists</li>
+<li>an input JSON Schema</li>
+<li>an output JSON Schema</li>
+<li>an agent-readable summary and description</li>
+</ul>
+<p>Agent-created ticket flows should prefer <code>propose_ticket</code> and <code>create_ticket_from_attempt</code>. Their schemas deliberately ask for acceptance criteria, verification commands, relevant paths, and creation reason so agents can create useful work without adding Jira-style ceremony.</p>
+<h2>Workflow Policy Guardrails</h2>
+<p>Forge now has a small workflow policy service in <code>internal/services/policy.go</code>. It is not RBAC; it is a shared guardrail layer that evaluates common ticket and attempt workflow inputs and returns an <code>allow</code>, <code>warn</code>, or <code>deny</code> decision with human-readable reasons.</p>
+<p>Current defaults:</p>
+<ul>
+<li>Agent-created work may not be directly enqueued unless the caller has enqueue authority.</li>
+<li>Thin agent-created tickets are warnings, not denials: missing source attribution, creation reason, acceptance criteria, or verification commands should be surfaced for triage.</li>
+<li>Claim requests deny excessive leases; the default maximum claim lease is 24 hours, matching the published <code>claim_next</code> contract.</li>
+<li>Ticket-aware claim checks can deny disallowed harnesses or missing required capabilities, and warn when required tools or permissions need human attention.</li>
+<li>Attempt checkpoint and terminal transitions deny non-running attempts when attempt status is supplied.</li>
+<li>Archived tickets deny workflow transitions until reopened; done tickets produce a warning so callers can ask for an explicit reason.</li>
+</ul>
+<p>The first runtime integration is <code>claim_next_ticket</code>: <code>Runtime</code> constructs the policy service and <code>ClaimService</code> denies claim requests that violate claim-level policy before touching storage. Other callers can use <code>PolicyService.Evaluate</code> directly when they already have richer ticket or attempt context.</p>
+<p>See <a href="../../../docs/harness-integration.md">Harness Integration Examples</a> for copy-pasteable CLI and MCP-oriented flows for Codex, Claude Code, Gemini CLI, OpenCode, and custom agents.</p>
+<p>See <a href="../../../docs/phase-2-closeout.md">Phase 2 Closeout</a> for the current REST, CLI, and MCP parity matrix, test commands, and known adapter boundaries.</p>
+      </article>
+    </main>
+
+  </body>
+</html>

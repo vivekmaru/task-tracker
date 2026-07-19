@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Plan 025: Ready-state program — take Forge from current state to production-ready</title>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <main class="site-shell">
+      <section class="hero">
+        <p class="eyebrow">rendered source document</p>
+        <h1>Plan 025: Ready-state program — take Forge from current state to production-ready</h1>
+        <p class="lead">The completed readiness program, including its scope boundaries and verification gates.</p>
+        <p><a href="../../../plans/025-ready-state-program.md">Open source Markdown</a></p>
+      </section>
+      <article class="markdown-body">
+<h1>Plan 025: Ready-state program — take Forge from current state to production-ready</h1>
+<blockquote><strong>Executor instructions</strong>: You are an AI agent executing this program end to</blockquote>
+<blockquote>end. Work packet by packet in the order given. Run every verification</blockquote>
+<blockquote>command and confirm the expected result before moving on. If any STOP</blockquote>
+<blockquote>condition occurs, stop that packet and report — do not improvise. Update the</blockquote>
+<blockquote>status rows in <code>plans/README.md</code> as you complete packets. Commit per packet</blockquote>
+<blockquote>with a short imperative message (match <code>git log --oneline</code>).</blockquote>
+<blockquote></blockquote>
+<blockquote><strong>Drift check (run first)</strong>: <code>git log --oneline -5</code> and compare against</blockquote>
+<blockquote>&quot;Planned at&quot;. Then for each packet, compare its &quot;Current state&quot; excerpts to</blockquote>
+<blockquote>the live code before editing; on a mismatch, treat it as a STOP condition</blockquote>
+<blockquote>for that packet only.</blockquote>
+<h2>Status</h2>
+<ul>
+<li><strong>Priority</strong>: P0</li>
+<li><strong>Effort</strong>: L (program of S/M packets)</li>
+<li><strong>Risk</strong>: LOW-MED (each packet lists its own)</li>
+<li><strong>Depends on</strong>: none (packets have internal ordering)</li>
+<li><strong>Category</strong>: program</li>
+<li><strong>Planned at</strong>: commit <code>9f8d948</code> + issue-tracking commits, 2026-07-18</li>
+<li><strong>Beads</strong>: agent-task-tracker-0v5, -sij, -919, -4lh, -nq0, -cvd, -yqd</li>
+</ul>
+<h2>Why this matters</h2>
+<p>Forge&#x27;s execution core is proven: build, vet, 420 unit tests, and 20 PostgreSQL integration tests all pass; the 20-packet production-readiness program (plans 001-020) is complete. A hands-on probe on 2026-07-18 exercised the full product as an agent (CLI lifecycle) and as a human (web + TUI) and found that everything remaining is <strong>surface quality, CI truthfulness, and deployment packaging</strong> — no ledger-correctness defects. &quot;Ready&quot; means: green CI on GitHub, the human web UI able to carry the triage loop it exists for, a documented deploy path, and defense-in-depth on the login boundary.</p>
+<h2>Definition of ready (program-level done criteria)</h2>
+<p>ALL must hold at the end:</p>
+<ul>
+<li>[ ] <code>./scripts/verify.sh</code> passes locally with <code>FORGE_TEST_DATABASE_URL</code> set</li>
+<li>[ ] GitHub Actions CI (both <code>verify</code> and <code>browser</code> jobs) green on the branch</li>
+<li>[ ] A blocked ticket&#x27;s blocker reason is visible on the web ticket page</li>
+<li>[ ] Ticket action forms render without overlap at 1200px width</li>
+<li>[ ] <code>forge block &lt;attempt-id&gt; --reason X --category Y</code> (README form) works</li>
+<li>[ ] Playwright covers login, queue→detail, artifact proof, and search</li>
+<li>[ ] <code>deploy/</code> + <code>docs/deployment.md</code> exist and their commands were executed once</li>
+<li>[ ] Login failure throttle active with race-tested coverage</li>
+<li>[ ] All seven Beads issues above are closed with reasons</li>
+</ul>
+<h2>Global commands</h2>
+<table><thead><tr><th>Purpose</th><th>Command</th><th>Expected</th></tr></thead><tbody><tr><td>Full gate</td><td><code>FORGE_TEST_DATABASE_URL=&#x27;postgres://postgres:postgres@localhost:5432/forge_test?sslmode=disable&#x27; ./scripts/verify.sh</code></td><td>exit 0</td></tr><tr><td>Unit tests</td><td><code>go test ./...</code></td><td>all pass</td></tr><tr><td>Race</td><td><code>go test -race ./...</code></td><td>all pass</td></tr><tr><td>Web tests</td><td><code>go test ./internal/web</code></td><td>all pass</td></tr><tr><td>CLI tests</td><td><code>go test ./internal/cli</code></td><td>all pass</td></tr><tr><td>Browser tests</td><td><code>cd ui-tests &amp;&amp; bun install &amp;&amp; bun run test</code></td><td>all pass (needs a migrated local DB, see packet 1)</td></tr></tbody></table>
+<p>Repo conventions: Go stdlib-first, no new third-party deps without strong reason; handlers are methods on <code>Handler</code> in <code>internal/web/handler.go</code> with inline CSS from <code>pageCSS()</code> (handler.go:2318); tests use <code>httptest</code> table style in <code>internal/web/handler_test.go</code>; CLI commands live in <code>internal/cli/cli.go</code> with paired tests in <code>cli_test.go</code>; commit messages are short imperative sentences.</p>
+<p>---</p>
+<h2>Packet 1 (P0): Fix the red CI browser job and add real browser coverage</h2>
+<p><strong>Beads</strong>: agent-task-tracker-0v5. <strong>Full spec</strong>: <code>plans/021-fix-browser-ci-and-cover-workflows.md</code> — read and execute it as written. Summary: CI&#x27;s <code>browser</code> job fails on <code>main</code> because the <code>forge_browser</code> database is never created/migrated before <code>forge server</code> boots (verified in run 29545792976: <code>FATAL: database &quot;forge_browser&quot; does not exist</code>). Add a createdb+migrate step to <code>.github/workflows/ci.yml</code>, a Playwright <code>globalSetup</code> that seeds workspace/project/ticket/attempt/artifact via the CLI, and specs for login round-trip, queue→ticket detail, attempt/artifact proof, and search, keeping the existing axe accessibility check.</p>
+<p><strong>Done when</strong>: plan 021&#x27;s done criteria all pass.</p>
+<h2>Packet 2 (P0): Render the blocker reason on the web ticket page</h2>
+<p><strong>Beads</strong>: agent-task-tracker-4lh. <strong>Effort</strong>: S. <strong>Risk</strong>: LOW.</p>
+<p>A blocked ticket&#x27;s page shows only <code>{&quot;ticket_status&quot;: &quot;blocked&quot;, &quot;failure_category&quot;: &quot;needs_human&quot;}</code> in the event feed. The human-readable reason is stored in <code>attempts.blocker</code> (JSON <code>{&quot;reason&quot;: ...}</code>) and <code>attempts.failure_reason</code>-adjacent fields, and <strong>the TUI already renders it</strong> — its detail view prints <code>Failure: &lt;reason&gt; (&lt;category&gt;)</code> and <code>Blocker: &lt;reason&gt;</code> lines. The web attempt section renders only status + agent (see the Attempts section written by the ticket detail handler in <code>internal/web/handler.go</code>; find it via <code>grep -n &quot;Attempts&quot; internal/web/handler.go</code>).</p>
+<p>Steps:</p>
+<ol>
+<li>Locate how the TUI detail assembles Failure/Blocker lines (<code>grep -rn &quot;Blocker:&quot; internal/tui/</code>) and which runtime/service call supplies them — reuse that data path; do not add a new query if the ticket-detail view model already carries the attempt rows with blocker fields.</li>
+<li>In the web ticket detail&#x27;s Attempts section, for any attempt with status <code>blocked</code> or <code>failed</code>, render the failure category and blocker/failure reason as visible text (styled like the existing <code>empty-text</code>/muted paragraph conventions). Also render it in the &quot;Current attempt&quot; panel when the current attempt is blocked.</li>
+<li>Add a handler test in <code>internal/web/handler_test.go</code> (match existing table style): block an attempt with a known reason through the same fixtures existing tests use, GET the ticket page, assert the reason string appears in the HTML.</li>
+</ol>
+<p><strong>Verify</strong>: <code>go test ./internal/web</code> → passes, including the new assertion. <strong>STOP if</strong> the ticket-detail view model does not carry blocker data — report which service call needs extending rather than adding an ad-hoc SQL query.</p>
+<h2>Packet 3 (P0): Fix the overlapping ticket-actions layout</h2>
+<p><strong>Beads</strong>: agent-task-tracker-nq0. <strong>Effort</strong>: S. <strong>Risk</strong>: LOW.</p>
+<p>On <code>/tickets/{id}</code>, action forms overlap and button labels clip. Measured via Playwright: each form container is 89px wide while its input and button are 147px. The markup is written by <code>writeTicketActionForm</code> (<code>internal/web/handler.go:1846</code>) inside <code>&lt;div class=&quot;action-grid compact&quot;&gt;</code> (handler.go:1839); the CSS comes from the inline stylesheet in <code>pageCSS()</code> (handler.go:2318). The proposed-triage page renders the same form pattern full-width and looks correct — match its layout behavior.</p>
+<p>Steps:</p>
+<ol>
+<li>Find the <code>.action-grid</code> / <code>.compact</code> rules inside <code>pageCSS()</code> and fix the grid so each form gets enough width (e.g. <code>grid-template-columns: repeat(auto-fit, minmax(180px, 1fr))</code> and let forms wrap) — controls must not overflow their column at 1200px and 900px viewport widths.</li>
+<li>Add/extend a <code>shell_test.go</code> or handler test only if one already asserts CSS content; otherwise verify visually via the packet-1 Playwright infrastructure: extend the ticket-detail spec with a bounding-box assertion that each action button&#x27;s box does not intersect its sibling form&#x27;s box.</li>
+</ol>
+<p><strong>Verify</strong>: browser spec passes; manual screenshot at 1200px shows three separated forms with full labels (&quot;Reopen&quot;, &quot;Request review&quot;, &quot;Archive&quot;). <strong>STOP if</strong> fixing requires restructuring <code>writeTicketActionForm</code> markup semantics (form action URLs must not change — tests and htmx depend on them).</p>
+<h2>Packet 4 (P0): Fix CLI attempt-command flag parsing, help, and category errors</h2>
+<p><strong>Beads</strong>: agent-task-tracker-cvd. <strong>Effort</strong>: M. <strong>Risk</strong>: MED (CLI contract — keep backward compatible).</p>
+<p>Three defects in <code>internal/cli/cli.go</code>:</p>
+<p>(a) <strong>Positional-then-flags silently drops flags.</strong> <code>runBlockCommand</code> (cli.go:1188) calls <code>parseFlags(flags, args)</code> then falls back to <code>flags.Arg(0)</code> for the attempt ID. Go&#x27;s stdlib <code>flag</code> stops parsing at the first non-flag argument, so <code>forge block &lt;id&gt; --reason X</code> — the form documented in README.md — silently ignores <code>--reason</code>. The repo already has the correct helper: <code>splitAttemptIDArg</code> (cli.go:1964) extracts the positional attempt ID first, then parses the remainder; it is used at cli.go:1017, 1679, 1727, and 1868. Steps: audit EVERY attempt-scoped command (<code>heartbeat</code>, <code>checkpoint</code>, <code>complete</code>, <code>fail</code>, <code>block</code>, <code>cancel</code>, plus <code>codex</code> variants) with <code>grep -n &quot;Arg(0)&quot; internal/cli/cli.go</code>; convert any that use the parse-then-Arg(0) pattern to <code>splitAttemptIDArg</code>. Add a CLI test per converted command in <code>cli_test.go</code> asserting the README form (<code>cmd &lt;id&gt; --flag value</code>) round-trips the flag value (model on existing tests that call the command runners with fake dependencies).</p>
+<p>(b) <strong><code>--help</code> prints no flags.</strong> <code>newFlagSet</code> (cli.go:2430) evidently installs a usage that omits <code>flags.PrintDefaults()</code>. Make subcommand help print the flag table. Verify: <code>go run ./cmd/forge block --help 2&gt;&amp;1 | grep -- --reason</code> → shows the flag with its description.</p>
+<p>(c) <strong>Invalid <code>--category</code> leaks a raw Postgres error</strong> (<code>attempts_failure_category_check</code> SQLSTATE 23514). Valid values (from <code>sql/migrations/0001_initial_schema.sql:95</code>): <code>task_failed</code>, <code>blocked</code>, <code>needs_human</code>, <code>environment_failed</code>, <code>permission_required</code>, <code>dependency_missing</code>, <code>unclear_requirements</code>. Validate the category in the CLI (and in the service layer if other entrypoints share the gap — check the REST lifecycle route) before the DB write, with an error that lists the valid values. Add the list to the <code>--category</code> flag&#x27;s help text. Test: invalid category → exit code 2 and an error naming valid values; no SQLSTATE text.</p>
+<p><strong>Verify</strong>: <code>go test ./internal/cli</code> and <code>go test ./...</code> pass; the three grep/CLI checks above. <strong>STOP if</strong> fixing (a) would change behavior of any currently-passing invocation form (both <code>--attempt-id X</code> and positional must keep working).</p>
+<h2>Packet 5 (P1): Web and CLI polish cluster</h2>
+<p><strong>Beads</strong>: agent-task-tracker-yqd. <strong>Effort</strong>: M. <strong>Risk</strong>: LOW. All in <code>internal/web/handler.go</code> (+ TUI file for item 6):</p>
+<ol>
+<li><strong>Root route</strong>: <code>GET /</code> currently 404s (the router&#x27;s default branch). Redirect <code>/</code> to <code>/workspaces</code> (which itself bounces to <code>/login</code> when unauthenticated). Test: GET <code>/</code> → 303/302 to <code>/workspaces</code>.</li>
+<li><strong>Favicon</strong>: every page 404s <code>/favicon.ico</code>. Serve a small inline SVG/ICO from the assets handler (<code>internal/web/assets.go</code>, embedded like <code>htmx-2.0.4.min.js</code>) and reference it from the shell <code>&lt;head&gt;</code> written at handler.go:1724. Test: GET <code>/favicon.ico</code> → 200.</li>
+<li><strong>Activity feed attribution and order</strong> (<code>/events</code> page): each entry shows only event kind + actor + raw JSON with a bare &quot;Ticket&quot; link — add the ticket title to each entry (the events query/view model may need a join; check <code>EventService</code>/<code>ListEvents</code> in <code>internal/runtime</code> and the SQL in <code>sql/queries/</code>), and render newest-first to match the &quot;Recent&quot; framing (keep cursor semantics consistent).</li>
+<li><strong>Attempt detail depth</strong> (<code>/attempts/{id}</code>): the page shows only ID/ticket/summary/artifacts. Add the checkpoints timeline and the submitted metrics (tokens in/out, cost USD, duration) — this data is already collected (<code>forge codex complete --tokens-in ... --cost-usd ...</code>) and appears in <code>forge analytics</code>, but is invisible on the web. Reuse the ticket-detail checkpoint rendering.</li>
+<li><strong>Actor formatting</strong>: &quot;human/-&quot; and &quot;codex/&quot; render with dangling slashes when the id/model half is empty; render just the non-empty part.</li>
+<li><strong>TUI stale selection</strong>: while <code>/</code> filtering in the queue view, the &quot;Selected&quot; preview keeps the previously highlighted ticket even when it&#x27;s filtered out (<code>internal/tui/</code>); reset selection to the first visible row when the filter changes.</li>
+</ol>
+<p>Each item: extend the nearest existing test (handler_test.go for 1-5, TUI test for 6). <strong>Verify</strong>: <code>go test ./...</code>; manual spot-checks per item. These are six independent commits — do not batch into one.</p>
+<h2>Packet 6 (P1): Login failure throttle</h2>
+<p><strong>Beads</strong>: agent-task-tracker-sij. <strong>Full spec</strong>: <code>plans/022-login-throttle-and-session-hardening.md</code> — execute as written. Summary: global fixed-window throttle on failed <code>/login</code> POSTs (10/minute, 429 over limit, injectable clock via existing <code>AuthOptions.Now</code>), plus a README paragraph documenting admin-token rotation as the session revocation path.</p>
+<h2>Packet 7 (P1): Production deployment packet</h2>
+<p><strong>Beads</strong>: agent-task-tracker-919. <strong>Full spec</strong>: <code>plans/023-production-deployment-packet.md</code> — execute as written. Summary: <code>deploy/compose/</code> (postgres + migrate one-shot + server + worker + Caddy TLS), <code>deploy/systemd/</code> hardened units, <code>deploy/backup/</code> pg_dump script + timer, and <code>docs/deployment.md</code>, all with placeholder-only secrets, verified by actually booting the compose stack.</p>
+<p>---</p>
+<h2>Execution order and rationale</h2>
+<p>1 → 2 → 3 → 4 → 5 → 6 → 7. Packet 1 first so every later packet lands on a green CI signal; 2-4 are the defects that block the human triage loop and the documented agent flow; 5-7 harden and package. Packets 2/3 both touch <code>internal/web/handler.go</code> — do them serially, not in parallel worktrees. After packet 3, the browser suite from packet 1 gains the bounding-box assertion, so re-run <code>bun run test</code> at the end of every later packet.</p>
+<h2>What is explicitly NOT in scope</h2>
+<ul>
+<li>The production dogfood pilot (<code>plans/024-production-dogfood-pilot.md</code>) — it</li>
+<p>is operational, runs after this program, and is the final go/no-go gate.</p>
+<li>JSON envelope redesign for CLI output — noted in agent-task-tracker-yqd but</li>
+<p>breaking output shapes needs a versioning decision from the maintainer; leave envelopes as-is beyond the null-status fix if it proves trivial.</p>
+<li>Prometheus/OTel endpoint, server-side sessions, API rate limiting, React</li>
+<p>rewrite, RBAC — all recorded as rejected in <code>plans/README.md</code>.</p>
+</ul>
+<h2>Program STOP conditions</h2>
+<ul>
+<li>Any packet&#x27;s fix requires schema migration — stop, report; migrations need</li>
+<p>operator review per <code>docs/release-and-recovery.md</code>.</p>
+<li><code>./scripts/verify.sh</code> fails for a reason unrelated to your change — stop;</li>
+<p>the baseline was green at planning time.</p>
+<li>A change would alter REST/MCP response shapes — stop; external agents</li>
+<p>depend on them (<code>docs/phase-2-closeout.md</code> parity matrix).</p>
+</ul>
+<h2>Session close (mandatory, from CLAUDE.md)</h2>
+<p>After the final packet: close the seven Beads issues with reasons, update all status rows in <code>plans/README.md</code>, run the full gate one last time, then <code>git pull --rebase &amp;&amp; git push</code> until <code>git status</code> shows up to date.</p>
+      </article>
+    </main>
+
+  </body>
+</html>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Deploying Forge</title>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <main class="site-shell">
+      <section class="hero">
+        <p class="eyebrow">rendered source document</p>
+        <h1>Deploying Forge</h1>
+        <p class="lead">The production deployment options, migration handling, TLS boundary, and backup guidance.</p>
+        <p><a href="../../../docs/deployment.md">Open source Markdown</a></p>
+      </section>
+      <article class="markdown-body">
+<h1>Deploying Forge</h1>
+<p>This guide takes Forge from a built binary or image to serving production traffic. Forge v0.1 is trusted, single-tenant, and self-hosted: the moving parts are PostgreSQL, the <code>forge server</code> (HTTP + human web UI) and <code>forge worker</code> (maintenance + webhook delivery) processes, and a reverse proxy that terminates HTTPS. The server speaks plain HTTP by design — there is no in-process TLS.</p>
+<p>Working examples live in <a href="../../../deploy/"><code>deploy/</code></a>:</p>
+<ul>
+<li><code>deploy/compose/</code> — Docker Compose stack (Postgres + migrate + server + worker + Caddy).</li>
+<li><code>deploy/systemd/</code> — hardened systemd units for a bare-metal install.</li>
+<li><code>deploy/backup/</code> — a <code>pg_dump</code> + artifact backup script and a daily timer.</li>
+</ul>
+<h2>Prerequisites</h2>
+<ul>
+<li>PostgreSQL 16.</li>
+<li>A domain (for public HTTPS) or a LAN hostname (for internal TLS).</li>
+<li>Either Docker + Docker Compose, or a Linux host with systemd and the <code>forge</code> binary at <code>/usr/local/bin/forge</code>.</li>
+<li>The <code>sql/migrations/</code> directory from this repo or a release tarball (see &quot;Supplying migrations&quot; below).</li>
+</ul>
+<h2>Choosing compose vs systemd</h2>
+<ul>
+<li><strong>Compose</strong> is the fastest path: one <code>docker compose up -d</code> brings up the</li>
+<p>database, applies migrations, starts both processes, and fronts them with Caddy. Best for a single host where Docker is already in use.</p>
+<li><strong>systemd</strong> suits bare-metal or VM installs where you manage PostgreSQL and</li>
+<p>the reverse proxy separately and want the Forge processes supervised by the init system with resource/hardening controls.</p>
+</ul>
+<h2>Supplying migrations</h2>
+<p><code>forge migrate</code> reads migration files from a directory (default <code>sql/migrations</code>). The release container image is distroless and ships only the <code>/forge</code> binary, so the migrations must be provided to it:</p>
+<ul>
+<li><strong>Compose</strong> bind-mounts <code>../../sql/migrations</code> into the <code>migrate</code> one-shot and</li>
+<p>runs <code>migrate --dir /migrations</code> — handled for you in <code>deploy/compose/docker-compose.yml</code>.</p>
+<li><strong>Bare metal</strong> should keep the migrations directory alongside the binary (for</li>
+<p>example <code>/usr/local/share/forge/migrations</code>) and run <code>forge migrate --dir /usr/local/share/forge/migrations</code>.</p>
+</ul>
+<p>(Embedding the migrations in the binary is tracked as a follow-up so the image becomes self-sufficient.)</p>
+<h2>Initial deploy with Docker Compose</h2>
+<pre><code>cd deploy/compose
+cp .env.example .env
+# Edit .env: set FORGE_DOMAIN, POSTGRES_PASSWORD, a matching FORGE_DATABASE_URL,
+# and a generated FORGE_ADMIN_TOKEN (for example: openssl rand -base64 32).
+
+# Validate the rendered configuration.
+docker compose config
+
+# Build the image locally (or set FORGE_IMAGE in .env to a published tag).
+docker build -t forge:latest ../..
+
+# Bring the stack up. Order is enforced by depends_on: Postgres becomes healthy,
+# the migrate one-shot applies migrations and exits 0, then server and worker
+# start, then Caddy.
+docker compose up -d
+
+# Verify liveness through the proxy (use -k for the internal/self-signed cert
+# when FORGE_DOMAIN=localhost).
+curl -fsSk https://localhost/livez</code></pre>
+<p><code>FORGE_AUTH_COOKIE_SECURE=true</code> is already set for the server in the compose file because Caddy terminates HTTPS; the server binds <code>0.0.0.0:3017</code> internally so Caddy can reach it. Because the release image is distroless (no shell), the server and worker have no in-container HTTP healthcheck — startup ordering is handled by <code>depends_on</code> and Caddy retries its upstream until the server is listening. Verify health from the host with the <code>curl</code> above.</p>
+<p>Tear the stack down (removing volumes) with:</p>
+<pre><code>docker compose down -v</code></pre>
+<h2>Initial deploy with systemd</h2>
+<ol>
+<li>Create a <code>forge</code> user and the artifact directory:</li>
+</ol>
+<p>``<code>bash useradd --system --home /var/lib/forge --shell /usr/sbin/nologin forge install -d -o forge -g forge /var/lib/forge/artifacts </code>``</p>
+<ol>
+<li>Generate a config with a fresh 32-byte admin token (mode-0600, never printed):</li>
+</ol>
+<p>``<code>bash forge init --path /etc/forge/forge.json \ --database-url &quot;postgres://forge@db.internal:5432/forge?sslmode=disable&quot; \ --artifact-root /var/lib/forge/artifacts </code>``</p>
+<p>Then write <code>/etc/forge/forge.env</code> with <code>FORGE_DATABASE_URL</code>, <code>FORGE_ADMIN_TOKEN</code>, <code>FORGE_ARTIFACT_ROOT=/var/lib/forge/artifacts</code>, and <code>FORGE_AUTH_COOKIE_SECURE=true</code> (required for a non-loopback server behind HTTPS). Keep it mode-0600, owned by <code>forge</code>.</p>
+<ol>
+<li>Apply migrations explicitly (the runbook prefers this over migrating on</li>
+<p>start):</p>
+</ol>
+<p>``<code>bash forge migrate --dir /usr/local/share/forge/migrations </code>``</p>
+<ol>
+<li>Install the units and start the services:</li>
+</ol>
+<p>``<code>bash cp deploy/systemd/forge-server.service deploy/systemd/forge-worker.service /etc/systemd/system/ systemctl daemon-reload systemctl enable --now forge-server forge-worker </code>``</p>
+<ol>
+<li>Put a reverse proxy (Caddy, nginx, etc.) in front, terminating HTTPS and</li>
+<p>proxying to <code>127.0.0.1:3017</code>. <code>deploy/compose/Caddyfile</code> is a working reference.</p>
+</ol>
+<ol>
+<li>Verify readiness (checks the PostgreSQL dependency):</li>
+</ol>
+<p>``<code>bash curl -fsS http://127.0.0.1:3017/readyz </code>``</p>
+<p>The units set <code>NoNewPrivileges</code>, <code>ProtectSystem=strict</code>, <code>PrivateTmp</code>, and restrict writes to the artifact root via <code>ReadWritePaths</code>. On Linux, verify them with <code>systemd-analyze verify deploy/systemd/*.service</code>. (This was not run while authoring this guide because the authoring host is macOS, which has no <code>systemd-analyze</code>.)</p>
+<h2>Post-deploy smoke</h2>
+<p>Confirm the operator workflow end to end by following the <a href="../../../README.md#local-smoke-test">Local Smoke Test</a> with <code>FORGE_DATABASE_URL</code> pointed at your deployment&#x27;s database: create a workspace and project, create a ticket, then <code>codex claim</code> → <code>codex checkpoint</code> → <code>codex complete --proof</code>, and finally sign in at <code>https://&lt;domain&gt;/login</code> and confirm the ticket, its attempt, and the proof artifact render.</p>
+<h2>Upgrades</h2>
+<p>Follow <a href="../../../docs/release-and-recovery.md">release-and-recovery.md</a> — do not duplicate it here. In short: back up first, run <code>forge migrate</code> with the new binary before swapping processes, check <code>/readyz</code>, and never run down migrations in production.</p>
+<h2>Backups and restore</h2>
+<p><code>deploy/backup/forge-backup.sh</code> writes a custom-format <code>pg_dump</code> plus a tar of the artifact root to <code>FORGE_BACKUP_DIR</code>, pruning files older than <code>FORGE_BACKUP_RETENTION_DAYS</code>. Schedule it with the provided <code>forge-backup.timer</code>/<code>forge-backup.service</code> (daily at 02:30). The restore drill is <code>scripts/recovery-smoke.sh</code>, described in <a href="../../../docs/release-and-recovery.md">release-and-recovery.md</a>.</p>
+<h2>Non-goals</h2>
+<ul>
+<li><strong>Kubernetes manifests</strong> are intentionally not provided yet; add them when a</li>
+<p>deployment actually needs them.</p>
+<li><strong>In-process TLS</strong> is out of scope: the reverse proxy owns HTTPS. The server</li>
+<p>is HTTP-only and expects to sit behind a proxy that sets secure cookies.</p>
+<li><strong>Metrics endpoint (Prometheus/OTel)</strong> is deferred; <code>/livez</code>, <code>/readyz</code>,</li>
+<p>structured logs, and the webhook observability export cover v0.1 needs.</p>
+</ul>
+      </article>
+    </main>
+
+  </body>
+</html>

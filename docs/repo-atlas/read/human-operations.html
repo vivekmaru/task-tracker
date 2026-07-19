@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Human Operations</title>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <main class="site-shell">
+      <section class="hero">
+        <p class="eyebrow">rendered source document</p>
+        <h1>Human Operations</h1>
+        <p class="lead">The operator-facing UX contract for the TUI and server-rendered web surfaces.</p>
+        <p><a href="../../../docs/human-operations.md">Open source Markdown</a></p>
+      </section>
+      <article class="markdown-body">
+<h1>Human Operations</h1>
+<p>Phase 3 makes Forge inspectable and operable for developers and leads. The goal is not to build a general project-management dashboard. The goal is to make agent execution easy to trust: what is ready, what is running, what is blocked, what proof exists, and what follow-up work agents discovered.</p>
+<p>This document is the UX contract for the Phase 3 implementation tickets.</p>
+<h2>Principles</h2>
+<ul>
+<li>TUI first, web polish second.</li>
+<li>Dense but calm surfaces, optimized for repeated inspection.</li>
+<li>Keyboard-first navigation in the TUI.</li>
+<li>Server-rendered web pages with useful URLs for shared inspection.</li>
+<li>Timeline and ledger patterns over boards.</li>
+<li>Proof, blockers, checkpoints, and attempts are first-class content.</li>
+<li>Copyable IDs, commands, and links everywhere they help handoff.</li>
+<li>Beautiful empty, loading, blocked, and verified states.</li>
+<li>No Jira-style ceremony: no board grooming, sprint ritual, required field sprawl, drag-and-drop primary workflows, or modal-heavy routine actions.</li>
+</ul>
+<p>The visual direction is in <code>docs/ux-mockups/</code>:</p>
+<ul>
+<li><code>tui-queue-console-v1.png</code> and <code>tui-queue-console-v2.png</code> for the first operator console.</li>
+<li><code>web-ticket-detail.png</code> for the canonical shared ticket inspection page.</li>
+<li><code>proposed-work-triage.png</code> for reviewing agent-created follow-up.</li>
+<li><code>execution-ledger.png</code> for calm activity and proof inspection.</li>
+</ul>
+<h2>Product Surfaces</h2>
+<h3>TUI Queue Console</h3>
+<p>The TUI queue console is the first rich human interface. It should open quickly with <code>forge tui</code> and make the current work state obvious without requiring a browser.</p>
+<p>Initial content:</p>
+<ul>
+<li>queue summary by status</li>
+<li>ticket list with status, type, priority, title, harness or capability signals, and recency</li>
+<li>quick filters for status, type, project, harness, agent, and text where available</li>
+<li>selected-ticket preview with acceptance criteria, verification commands, current attempt, blocker, and proof count</li>
+<li>empty and error states that explain the next useful action</li>
+</ul>
+<p>Initial interactions:</p>
+<ul>
+<li>move selection</li>
+<li>filter</li>
+<li>open ticket detail</li>
+<li>copy ticket ID</li>
+<li>quit</li>
+</ul>
+<p>Claiming, releasing, approving, reopening, and archiving should be added only after shared runtime operations exist for those actions.</p>
+<h3>TUI Ticket Detail And Timelines</h3>
+<p>Ticket detail should answer whether a developer can trust the current work state.</p>
+<p>Show:</p>
+<ul>
+<li>ticket identity, status, type, priority, tags, and source attribution</li>
+<li>acceptance criteria and verification commands</li>
+<li>relevant paths, expected artifacts, required tools, permissions, capabilities, and harness restrictions</li>
+<li>current and prior attempts</li>
+<li>checkpoints, events, blockers, and proof artifacts as timelines</li>
+<li>commands or IDs that can be copied for handoff</li>
+</ul>
+<p>Timelines should be ordered, compact, and readable. Terminal states and blocked states should be visually distinct without noisy decoration.</p>
+<h3>Human Operation Transitions</h3>
+<p>Human operations must be runtime-backed, event-writing actions. UI code should not invent state transitions.</p>
+<p>Phase 3 operations:</p>
+<ul>
+<li>mark proposed or backlog work ready</li>
+<li>reopen work when a terminal state needs another attempt</li>
+<li>unblock work when the blocker is resolved</li>
+<li>archive work that should leave the active queue</li>
+<li>mark work as needing review or reviewed</li>
+</ul>
+<p>Each operation should have service-level validation and tests before TUI or web callers depend on it.</p>
+<h3>Proposed Work Triage</h3>
+<p>Agent-created tickets should feel like a review inbox, not backlog grooming.</p>
+<p>The triage flow should support:</p>
+<ul>
+<li>ready or enqueue</li>
+<li>refine</li>
+<li>merge with existing work</li>
+<li>reject</li>
+<li>archive</li>
+</ul>
+<p>The interface should preserve the source attempt, source artifact, creation reason, acceptance criteria, verification commands, and relevant paths. Agents should be rewarded for preserving context, not for creating a lot of vague tickets.</p>
+<p>Agents should propose work when they discover adjacent work, missing tests, unclear requirements, or follow-up tasks that should not silently expand the current scope. Proposed work stays in <code>backlog</code>, keeps <code>created_by=agent</code>, and must include source attribution plus enough context for another worker to start.</p>
+<p>Enqueueing is an explicit approval path. A human or authorized planner can move proposed work into <code>todo</code> after triage; agents should only create directly claimable work when the caller has enqueue authority and the request is intentionally scoped for immediate execution.</p>
+<p>Shared triage operations should remain service/runtime-backed so TUI, web, CLI, and MCP callers all use the same validation and event history:</p>
+<ul>
+<li>list proposed tickets as UI-ready inbox items</li>
+<li>mark a proposal ready or enqueue it into <code>todo</code></li>
+<li>refine proposal metadata while preserving source attribution</li>
+<li>merge a proposal into an existing ticket</li>
+<li>reject or archive proposals that should leave active review</li>
+</ul>
+<h3>Web Inspection Surface</h3>
+<p>The web UI is the shared inspection surface for links in chats, PRs, and handoffs. It should use Go handlers with templ plus htmx where partial updates help. It should not become a React or Next.js app.</p>
+<p>Initial pages:</p>
+<ul>
+<li>ticket list</li>
+<li>ticket detail</li>
+<li>attempt timeline</li>
+<li>event timeline</li>
+<li>artifact list</li>
+<li>proposed ticket detail or triage page</li>
+<li>basic workspace and project inspection</li>
+</ul>
+<p>The first web slice should reuse the same information architecture proven by the TUI. Desktop use matters most, but pages should remain readable on mobile for quick checks.</p>
+<h2>View Order</h2>
+<p>Build in this order:</p>
+<ol>
+<li>TUI queue console foundation.</li>
+<li>TUI ticket detail.</li>
+<li>TUI attempt, checkpoint, blocker, event, and artifact timelines.</li>
+<li>Runtime-backed human operation transitions.</li>
+<li>Proposed work triage.</li>
+<li>Server-rendered web ticket list and detail.</li>
+<li>Shareable deep links.</li>
+<li>Human auth.</li>
+<li>Project and workspace admin screens.</li>
+</ol>
+<p>This order keeps the first human interface useful while preserving the product direction: terminal-heavy developers get the fastest path first, and the web UI becomes a polished shared inspection surface after the interaction model is clear.</p>
+<h2>Non-Goals For Phase 3</h2>
+<ul>
+<li>Kanban boards.</li>
+<li>Sprint planning.</li>
+<li>Drag-and-drop workflow management.</li>
+<li>Custom-field administration.</li>
+<li>Advanced analytics.</li>
+<li>Real-time dashboard infrastructure.</li>
+<li>Full artifact storage beyond metadata inspection.</li>
+<li>Semantic search.</li>
+<li>Multi-tenant RBAC beyond the initial human auth boundary.</li>
+</ul>
+<p>Those ideas either belong to later phases or should be skipped if they add ceremony without helping developers trust agent execution.</p>
+<h2>Verification Expectations</h2>
+<p>For each Phase 3 implementation slice:</p>
+<ul>
+<li>Use shared runtime, service, or query surfaces; do not duplicate business logic inside UI packages.</li>
+<li>Add deterministic tests for view models, route output, state transitions, or handlers.</li>
+<li>Run the focused package tests plus <code>go test ./...</code> before closing the Beads issue.</li>
+<li>Keep UX docs current when implementation changes the view order, operation contract, or important non-goal.</li>
+</ul>
+<h2>Beads Breakdown</h2>
+<p>Phase 3 is tracked in Beads as:</p>
+<ul>
+<li><code>agent-task-tracker-phase-3.1</code> - Define human operations UX contract.</li>
+<li><code>agent-task-tracker-phase-3.2</code> - Build TUI queue view foundation.</li>
+<li><code>agent-task-tracker-phase-3.3</code> - Build TUI ticket detail view.</li>
+<li><code>agent-task-tracker-phase-3.4</code> - Add TUI attempt and event timelines.</li>
+<li><code>agent-task-tracker-phase-3.5</code> - Add human operation transitions.</li>
+<li><code>agent-task-tracker-phase-3.6</code> - Add proposed work triage flow.</li>
+<li><code>agent-task-tracker-phase-3.7</code> - Add server-rendered ticket list and detail pages.</li>
+<li><code>agent-task-tracker-phase-3.8</code> - Add shareable deep links.</li>
+<li><code>agent-task-tracker-phase-3.9</code> - Add human auth flow.</li>
+<li><code>agent-task-tracker-phase-3.10</code> - Add project and workspace admin screens.</li>
+</ul>
+<h2>TUI inspection key map</h2>
+<p>Forge&#x27;s production TUI is read-only. Use <code>j</code>/<code>k</code> or arrows to move, <code>enter</code> to open the selected ticket, <code>b</code> to return, <code>/</code> to filter the loaded queue, <code>c</code> to reveal the selected ticket ID for copy, and <code>q</code> to quit. Resize events bound the visible queue rows so the selected item stays in view; terminal mutation actions remain deliberately out of scope.</p>
+      </article>
+    </main>
+
+  </body>
+</html>
