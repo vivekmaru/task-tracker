@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Observability Export Foundation</title>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <main class="site-shell">
+      <section class="hero">
+        <p class="eyebrow">rendered source document</p>
+        <h1>Observability Export Foundation</h1>
+        <p class="lead">The durable webhook-based export path for execution-ledger events and metrics.</p>
+        <p><a href="../../../docs/observability-export.md">Open source Markdown</a></p>
+      </section>
+      <article class="markdown-body">
+<h1>Observability Export Foundation</h1>
+<p>Forge can export execution ledger events through the durable webhook delivery path. This is the first observability foundation: it emits structured JSON for ticket events and snapshots attempt-scoped metadata and metrics when deliveries are enqueued.</p>
+<h2>Configuration</h2>
+<p>Exports use scoped webhook subscriptions and durable webhook deliveries.</p>
+<p>Create and inspect a subscription for a workspace/project scope:</p>
+<pre><code>forge observability subscriptions create \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --endpoint-url https://observability.example.test/forge/events \
+  --secret shared-secret \
+  --event-types claimed,checkpointed,completed,failed,blocked \
+  --description &quot;External observability sink&quot; \
+  --json
+
+forge observability subscriptions list \
+  --workspace-id &quot;$WORKSPACE_ID&quot; \
+  --project-id &quot;$PROJECT_ID&quot; \
+  --json</code></pre>
+<p>API clients can use the same scope and payload contract without direct database access:</p>
+<pre><code>curl -sS -H &quot;Authorization: Bearer $FORGE_ADMIN_TOKEN&quot; \
+  &quot;$FORGE_URL/api/v1/observability/subscriptions?workspace_id=$WORKSPACE_ID&amp;project_id=$PROJECT_ID&quot;
+
+curl -sS -X POST &quot;$FORGE_URL/api/v1/observability/subscriptions&quot; \
+  -H &#x27;content-type: application/json&#x27; \
+  -H &quot;Authorization: Bearer $FORGE_ADMIN_TOKEN&quot; \
+  -d &quot;{
+    \&quot;workspace_id\&quot;: \&quot;$WORKSPACE_ID\&quot;,
+    \&quot;project_id\&quot;: \&quot;$PROJECT_ID\&quot;,
+    \&quot;endpoint_url\&quot;: \&quot;https://observability.example.test/forge/events\&quot;,
+    \&quot;secret\&quot;: \&quot;shared-secret\&quot;,
+    \&quot;event_types\&quot;: [\&quot;claimed\&quot;, \&quot;checkpointed\&quot;, \&quot;completed\&quot;, \&quot;failed\&quot;, \&quot;blocked\&quot;],
+    \&quot;description\&quot;: \&quot;External observability sink\&quot;
+  }&quot;</code></pre>
+<p>Subscription responses report whether a secret is set, but never return the secret value.</p>
+<p>An empty <code>event_types</code> array subscribes to all ticket events in that scope except high-volume <code>heartbeat</code> events; include <code>heartbeat</code> explicitly to export them. The endpoint must be <code>http://</code> or <code>https://</code>. If <code>secret</code> is set, deliveries include <code>X-Forge-Signature-SHA256</code>, an HMAC-SHA256 over the exact JSON request body.</p>
+<p>Webhook egress is default-deny for loopback, private, link-local, multicast, and unspecified IP addresses. The worker validates the resolved address at connection time to prevent DNS rebinding. Intentional internal sinks require exact hostname or CIDR allowlists through <code>FORGE_WEBHOOK_ALLOWED_HOSTS</code> and <code>FORGE_WEBHOOK_ALLOWED_CIDRS</code> (or matching config fields). Redirects are not followed.</p>
+<p>Ticket event inserts enqueue <code>webhook_deliveries</code> automatically. The enqueue trigger snapshots attempt metadata and attempt metrics into the delivery payload when those rows exist, so retries preserve the event-time view instead of reading mutable attempt state later. The webhook worker claims pending deliveries, posts the observability payload, records response metadata, and retries failures with exponential backoff up to <code>max_attempts</code>.</p>
+<h2>Payload</h2>
+<p>Webhook requests are JSON with <code>X-Forge-Payload-Schema: forge.observability.v1</code>.</p>
+<pre><code>{
+  &quot;schema_version&quot;: &quot;forge.observability.v1&quot;,
+  &quot;source&quot;: &quot;forge&quot;,
+  &quot;signal&quot;: &quot;ticket_event&quot;,
+  &quot;workspace_id&quot;: &quot;00000000-0000-0000-0000-000000000001&quot;,
+  &quot;project_id&quot;: &quot;00000000-0000-0000-0000-000000000002&quot;,
+  &quot;ticket_id&quot;: &quot;00000000-0000-0000-0000-000000000003&quot;,
+  &quot;attempt_id&quot;: &quot;00000000-0000-0000-0000-000000000004&quot;,
+  &quot;event&quot;: {
+    &quot;id&quot;: &quot;00000000-0000-0000-0000-000000000047&quot;,
+    &quot;type&quot;: &quot;completed&quot;,
+    &quot;actor_type&quot;: &quot;agent&quot;,
+    &quot;actor_id&quot;: &quot;codex-worker&quot;,
+    &quot;data&quot;: {&quot;output_schema&quot;: &quot;summary.v1&quot;},
+    &quot;occurred_at&quot;: &quot;2026-05-23T07:30:00Z&quot;
+  },
+  &quot;attempt&quot;: {
+    &quot;id&quot;: &quot;00000000-0000-0000-0000-000000000004&quot;,
+    &quot;agent_id&quot;: &quot;codex-worker&quot;,
+    &quot;harness&quot;: &quot;codex&quot;,
+    &quot;model&quot;: &quot;gpt-5&quot;,
+    &quot;status&quot;: &quot;succeeded&quot;,
+    &quot;progress_percent&quot;: 100,
+    &quot;trace_id&quot;: &quot;trace-123&quot;,
+    &quot;checkpoint_ref&quot;: &quot;checkpoint-456&quot;,
+    &quot;started_at&quot;: &quot;2026-05-23T07:27:00Z&quot;,
+    &quot;completed_at&quot;: &quot;2026-05-23T07:29:50Z&quot;
+  },
+  &quot;metrics&quot;: {
+    &quot;tokens_in&quot;: 1200,
+    &quot;tokens_out&quot;: 345,
+    &quot;total_tokens&quot;: 1545,
+    &quot;cost_usd&quot;: 0.123456,
+    &quot;duration_seconds&quot;: 170.25,
+    &quot;retry_count&quot;: 2
+  }
+}</code></pre>
+<p>The <code>attempt</code> section is omitted for ticket-only events. The <code>metrics</code> section is omitted when an attempt has no recorded metrics yet.</p>
+<h2>Limits</h2>
+<ul>
+<li>This is an export foundation, not a full observability platform. Forge does not yet provide sink management UI, OpenTelemetry exporters, dashboards, or aggregation.</li>
+<li>Subscription creation and listing are available through the JSON CLI and REST API. Web management surfaces can be added later without changing the payload contract.</li>
+<li>Delivery is at least once. Consumers should deduplicate by <code>event.id</code> or the <code>X-Forge-Event-ID</code> header. A claim token fences stale workers: a worker that loses its lease cannot overwrite the newer owner&#x27;s result.</li>
+<li>Terminal delivery rows (<code>succeeded</code> and <code>failed</code>) may be removed after <code>FORGE_WEBHOOK_RETENTION_HOURS</code>; pending and delivering rows are never selected by that cleanup.</li>
+<li>Payload data comes from ticket events plus event-time snapshots of attempts and attempt metrics. Search analytics, policy decisions, claims comparisons, artifacts, and UI state are intentionally out of scope.</li>
+<li>The current worker type supports the durable claim/post/retry path. A long-lived scheduler around it is a separate operations concern.</li>
+</ul>
+      </article>
+    </main>
+
+  </body>
+</html>

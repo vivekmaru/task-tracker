@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Plan 024: Run the production dogfood pilot and render the go/no-go verdict</title>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <main class="site-shell">
+      <section class="hero">
+        <p class="eyebrow">rendered source document</p>
+        <h1>Plan 024: Run the production dogfood pilot and render the go/no-go verdict</h1>
+        <p class="lead">The next operational go–no-go protocol after the completed readiness program.</p>
+        <p><a href="../../../plans/024-production-dogfood-pilot.md">Open source Markdown</a></p>
+      </section>
+      <article class="markdown-body">
+<h1>Plan 024: Run the production dogfood pilot and render the go/no-go verdict</h1>
+<blockquote><strong>Executor instructions</strong>: This is an operational plan, not a code plan —</blockquote>
+<blockquote>the executor is the operator (possibly assisted by agents). Follow it step</blockquote>
+<blockquote>by step; record evidence for every claim. If anything in &quot;STOP conditions&quot;</blockquote>
+<blockquote>occurs, stop and report. When done, update the status row in</blockquote>
+<blockquote><code>plans/README.md</code>.</blockquote>
+<blockquote></blockquote>
+<blockquote><strong>Drift check (run first)</strong>: <code>git diff --stat 9f8d948..HEAD -- docs/ scripts/production-acceptance.sh README.md</code></blockquote>
+<blockquote>On drift, re-read the changed docs before proceeding; the pilot protocol</blockquote>
+<blockquote>below must not contradict them.</blockquote>
+<h2>Status</h2>
+<ul>
+<li><strong>Priority</strong>: P0</li>
+<li><strong>Effort</strong>: L (elapsed time; low hands-on)</li>
+<li><strong>Risk</strong>: LOW (pilot data only; production candidate DB must be backed up per runbook)</li>
+<li><strong>Depends on</strong>: plans/023-production-deployment-packet.md; plan 021 (green CI) should land first so the release gate is honest</li>
+<li><strong>Category</strong>: direction</li>
+<li><strong>Beads</strong>: agent-task-tracker-dxl</li>
+<li><strong>Planned at</strong>: commit <code>9f8d948</code>, 2026-07-18</li>
+</ul>
+<h2>Why this matters</h2>
+<p>Everything up to here proves mechanics: the 20-packet production-readiness program is complete, the quality gate is comprehensive, and <code>scripts/production-acceptance.sh</code> passes from a clean environment in ~32 seconds (see <code>docs/production-acceptance-report.md</code>). What has never happened is Forge operating as a production system: a deployed instance, real agent workload over days, and the PRD&#x27;s own success metrics measured from ledger data. The PRD (§19) explicitly says early success is measured by execution correctness and adoption, not features. This pilot is the go/no-go gate for calling Forge &quot;in production,&quot; and its friction output seeds the next product wave (per <code>docs/phase-5-closeout.md</code> &quot;Recommended Next Wave&quot;: start from real dogfood friction).</p>
+<h2>Current state</h2>
+<ul>
+<li>Deployment examples and checklist: <code>docs/deployment.md</code> + <code>deploy/</code> (produced by plan 023).</li>
+<li>Acceptance mechanics: <code>scripts/production-acceptance.sh</code> (quality gate, integration races, recovery drill, browser smoke; writes a redacted report).</li>
+<li>Metrics sources already shipped: <code>forge analytics summary|by-model|by-harness|trends</code> (CLI), <code>/api/v1</code> analytics routes, and the append-only <code>ticket_events</code> ledger in Postgres.</li>
+<li>PRD success metrics to measure — <code>PRD.md:1875-1907</code>:</li>
+<li>19.1 correctness: double-claim rate = 0; stale claim recovery works; P50 claim-next &lt; 800ms; P95 &lt; 2s; completion rate; expired attempt rate; attempts per completed ticket.</li>
+<li>19.2 product: tickets per active project; attempts per week; distinct harnesses; % completed tickets with artifacts; % completed attempts with metrics; % agent-created tickets accepted; % attempts with verification evidence; blocked attempts by category; time-to-current-state in UI; actions per common flow.</li>
+<li>Harness integration recipes for the agents that will generate load: <code>docs/harness-integration.md</code> (Codex, Claude Code, Gemini CLI, OpenCode, custom).</li>
+</ul>
+<h2>Commands you will need</h2>
+<table><thead><tr><th>Purpose</th><th>Command</th><th>Expected</th></tr></thead><tbody><tr><td>Acceptance gate</td><td><code>FORGE_TEST_DATABASE_URL=... FORGE_RECOVERY_DATABASE_URL=... ./scripts/production-acceptance.sh</code></td><td>&quot;production acceptance passed&quot;</td></tr><tr><td>Deploy</td><td>per <code>docs/deployment.md</code> checklist</td><td><code>/readyz</code> 200</td></tr><tr><td>Metrics</td><td><code>forge analytics summary --json --workspace-id ... --project-id ...</code></td><td>JSON with attempt counts/metrics</td></tr><tr><td>Ledger queries</td><td><code>psql &quot;$FORGE_DATABASE_URL&quot;</code> read-only queries against <code>tickets</code>, <code>attempts</code>, <code>ticket_events</code></td><td>rows</td></tr></tbody></table>
+<h2>Scope</h2>
+<p><strong>In scope</strong>:</p>
+<ul>
+<li>One deployed Forge instance (compose or systemd, per plan 023) with HTTPS, secure cookies, and scheduled backups enabled.</li>
+<li>Real work routed through it (this repo&#x27;s own development is the natural workload — Forge-on-Forge).</li>
+<li><code>docs/production-pilot-report.md</code> (create — redacted like <code>docs/production-acceptance-report.md</code>: no URLs, tokens, ticket bodies).</li>
+<li>Friction tickets filed IN the pilot Forge instance and mirrored to Beads (<code>bd create</code>) for anything requiring code changes.</li>
+</ul>
+<p><strong>Out of scope</strong>:</p>
+<ul>
+<li>Any code change during the pilot window beyond P0 fixes (a code freeze keeps the measurement honest; file, don&#x27;t fix).</li>
+<li>New metrics infrastructure — measure with existing analytics CLI + read-only SQL only.</li>
+</ul>
+<h2>Pilot protocol (the steps)</h2>
+<h3>Step 1: Entry gate</h3>
+<p>Green CI on main (plan 021 landed), <code>./scripts/production-acceptance.sh</code> passes, deploy per <code>docs/deployment.md</code>, backups verified once by restoring into a scratch database (<code>scripts/recovery-smoke.sh</code> pattern).</p>
+<p><strong>Verify</strong>: acceptance output, <code>/readyz</code> 200, one successful restore drill; record all three in the report skeleton.</p>
+<h3>Step 2: Define the window and workload</h3>
+<p>Window: 14 calendar days OR until 50 tickets reach a terminal state, whichever is later. Workload: all agent-executed development tasks for this repository are created as Forge tickets and claimed via <code>forge claim-next</code>/<code>forge codex claim</code> by at least 2 distinct harnesses (e.g. Codex + Claude Code, per <code>docs/harness-integration.md</code>). Human triage happens in the web UI/TUI only — no side channels.</p>
+<p><strong>Verify</strong>: pilot charter section written in the report before day 1.</p>
+<h3>Step 3: Operate and observe</h3>
+<p>Daily: skim <code>/tickets</code> queue and <code>forge analytics summary</code>. Log every operator friction moment (&gt;3 actions for a common flow, confusing state, missing link, slow page) as a ticket tagged <code>pilot-friction</code>. Weekly: run the backup restore drill once.</p>
+<h3>Step 4: Measure</h3>
+<p>At window close, compute each PRD §19.1 and §19.2 metric from the ledger with read-only SQL and the analytics CLI. Two require instrumented observation rather than SQL — &quot;time from opening UI to finding current work state&quot; and &quot;actions for common inspect/approve flows&quot;: measure by stopwatch/screen-recording on 3 representative flows and record medians.</p>
+<p><strong>Verify</strong>: every metric in the report has either a number or an explicit &quot;not measurable because X&quot;.</p>
+<h3>Step 5: Verdict and handoff</h3>
+<p>Go criteria (ALL must hold): zero double-claims in the ledger (<code>SELECT</code> on overlapping running attempts per ticket → 0 rows); P95 claim-next latency &lt; 2s; zero data-loss incidents; backups restorable; no unresolved P0 friction. Render GO (Forge is production for this team) or NO-GO (list blocking findings). Either way: file the top 5 friction items as prioritized Beads issues, and propose the next product wave grounded in them.</p>
+<p><strong>Verify</strong>: <code>docs/production-pilot-report.md</code> complete and redacted; friction issues exist in <code>bd list</code>.</p>
+<h2>Done criteria</h2>
+<ul>
+<li>[ ] Pilot ran its full defined window on a deployed instance with HTTPS + backups</li>
+<li>[ ] <code>docs/production-pilot-report.md</code> exists with every §19.1/§19.2 metric addressed and a GO/NO-GO verdict</li>
+<li>[ ] Zero-double-claim query result recorded in the report</li>
+<li>[ ] ≥ 2 distinct harnesses appear in <code>forge analytics by-harness</code></li>
+<li>[ ] Top friction items filed in Beads with priorities</li>
+<li>[ ] <code>plans/README.md</code> status row updated</li>
+</ul>
+<h2>STOP conditions</h2>
+<ul>
+<li>Any suspected data loss or double-claim during the pilot: stop the pilot clock, snapshot the database, investigate before continuing.</li>
+<li>The deployment packet (plan 023) proves unusable for a real deploy: stop and route back to plan 023 with specifics.</li>
+<li>Backup restore drill fails: stop; a system whose backups don&#x27;t restore must not carry the pilot.</li>
+</ul>
+<h2>Maintenance notes</h2>
+<ul>
+<li>The pilot report becomes the baseline: rerun the metric queries after major releases and diff.</li>
+<li>The friction backlog — not this advisor&#x27;s guesses — should drive the next roadmap wave (Phase 5 closeout says the same).</li>
+</ul>
+      </article>
+    </main>
+
+  </body>
+</html>
