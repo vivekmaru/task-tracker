@@ -1492,10 +1492,10 @@ func ticketListPage(view ticketListView) templ.Component {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Tickets</h1><p>Shared inspection for claimable work, proposed follow-ups, and review handoffs.</p></div>`)
 		fmt.Fprintf(w, `<div class="actions"><a class="button" href="/search?workspace_id=%s&project_id=%s">Search</a><a class="button" href="/tickets?workspace_id=%s&project_id=%s">Refresh</a></div></section>`, esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)), esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/tickets">`)
-		input(w, "workspace_id", uuidText(view.WorkspaceID))
-		input(w, "project_id", uuidText(view.ProjectID))
-		input(w, "status", view.Status)
-		input(w, "type", view.Type)
+		input(w, "workspace_id", uuidText(view.WorkspaceID), "e.g. 123e4567...")
+		input(w, "project_id", uuidText(view.ProjectID), "e.g. 123e4567...")
+		input(w, "status", view.Status, "e.g. todo")
+		input(w, "type", view.Type, "e.g. feature")
 		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel empty"><h2>Ticket list needs a scope</h2><p>%s</p></section>`, esc(view.Message))
@@ -1523,9 +1523,9 @@ func searchPage(view searchView) templ.Component {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Search</h1><p>Find tickets through titles, descriptions, attempts, events, and proof artifacts.</p></div>`)
 		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/search">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
-		input(w, "q", view.Query)
+		input(w, "workspace_id", view.WorkspaceIDText, "e.g. 123e4567...")
+		input(w, "project_id", view.ProjectIDText, "e.g. 123e4567...")
+		input(w, "q", view.Query, "Search tickets...")
 		fmt.Fprint(w, `<button type="submit">Search</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel empty"><h2>Search needs a scope and query</h2><p>%s</p></section>`, esc(view.Message))
@@ -1554,11 +1554,11 @@ func eventLedgerPage(view eventLedgerView) templ.Component {
 		}
 		fmt.Fprint(w, `</div></section>`)
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/events">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
-		input(w, "ticket_id", view.TicketIDText)
-		input(w, "attempt_id", view.AttemptIDText)
-		input(w, "limit", view.LimitText)
+		input(w, "workspace_id", view.WorkspaceIDText, "e.g. 123e4567...")
+		input(w, "project_id", view.ProjectIDText, "e.g. 123e4567...")
+		input(w, "ticket_id", view.TicketIDText, "e.g. 123e4567...")
+		input(w, "attempt_id", view.AttemptIDText, "e.g. 123e4567...")
+		input(w, "limit", view.LimitText, "e.g. 50")
 		fmt.Fprint(w, `<button type="submit">Filter</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel empty"><h2>Event ledger needs valid filters</h2><p>%s</p></section>`, esc(view.Message))
@@ -1585,9 +1585,9 @@ func artifactListPage(view artifactListView) templ.Component {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Artifacts</h1><p>Browse proof files and handoff outputs by workspace, project, or ticket.</p></div>`)
 		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/artifacts">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
-		input(w, "ticket_id", view.TicketIDText)
+		input(w, "workspace_id", view.WorkspaceIDText, "e.g. 123e4567...")
+		input(w, "project_id", view.ProjectIDText, "e.g. 123e4567...")
+		input(w, "ticket_id", view.TicketIDText, "e.g. 123e4567...")
 		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel empty"><h2>Artifact browser needs a scope</h2><p>%s</p></section>`, esc(view.Message))
@@ -1614,9 +1614,9 @@ func proposedListPage(view proposedListView) templ.Component {
 	return layoutWithPage(pageContext{Title: "Proposed Work", ActiveRoute: "proposed", WorkspaceID: view.WorkspaceIDText, ProjectID: view.ProjectIDText}, func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">agent-created queue</p><h1>Proposed Work</h1><p>Review follow-up work agents discovered while executing tickets.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/proposed">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
-		input(w, "type", view.Type)
+		input(w, "workspace_id", view.WorkspaceIDText, "e.g. 123e4567...")
+		input(w, "project_id", view.ProjectIDText, "e.g. 123e4567...")
+		input(w, "type", view.Type, "e.g. feature")
 		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel empty"><h2>Proposed work needs a scope</h2><p>%s</p></section>`, esc(view.Message))
@@ -1801,7 +1801,7 @@ func workspaceIndexPage(view workspaceIndexView) templ.Component {
 	return layout("Forge Workspaces", func(w io.Writer) {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Workspaces</h1><p>Minimal setup and inspection for Forge scopes.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
 		fmt.Fprint(w, `<section class="filters panel"><form method="post" action="/workspaces">`)
-		input(w, "name", "")
+		input(w, "name", "", "e.g. Backend Team")
 		fmt.Fprint(w, `<button type="submit">Create workspace</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel warning"><h2>Workspace action failed</h2><p>%s</p></section>`, esc(view.Message))
@@ -1830,7 +1830,7 @@ func workspaceDetailPage(view workspaceDetailView) templ.Component {
 			esc(workspace.Name),
 		)
 		fmt.Fprintf(w, `<section class="filters panel"><form method="post" action="/workspaces/%s/projects">`, esc(uuidText(workspace.ID)))
-		input(w, "name", "")
+		input(w, "name", "", "e.g. API v2")
 		fmt.Fprint(w, `<button type="submit">Create project</button></form></section>`)
 		fmt.Fprint(w, `<section class="panel"><h2>Projects</h2>`)
 		if len(view.Projects) == 0 {
@@ -1891,8 +1891,8 @@ func scopedPagePath(path, workspaceID, projectID string) string {
 	return path + "?" + values.Encode()
 }
 
-func input(w io.Writer, name string, value string) {
-	fmt.Fprintf(w, `<label><span>%s</span><input name="%s" value="%s"></label>`, esc(strings.ReplaceAll(name, "_", " ")), esc(name), esc(value))
+func input(w io.Writer, name string, value string, placeholder string) {
+	fmt.Fprintf(w, `<label><span>%s</span><input name="%s" value="%s" placeholder="%s"></label>`, esc(strings.ReplaceAll(name, "_", " ")), esc(name), esc(value), esc(placeholder))
 }
 
 func writeTicketCard(w io.Writer, ticket db.Ticket) {
