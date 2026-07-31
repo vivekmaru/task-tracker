@@ -1756,7 +1756,7 @@ func artifactDetailPage(artifact db.Artifact, contentOpenable bool) templ.Compon
 			fmt.Fprintf(w, `<p><a href="/artifacts/%s/content">Open artifact</a></p>`, esc(uuidText(artifact.ID)))
 		}
 		if storage.IsLocalArtifactURL(artifact.Url) {
-			fmt.Fprintf(w, `<form method="post" action="/artifacts/%s/delete" hx-boost="false" onsubmit="return confirm('Are you sure you want to delete this artifact? This action cannot be undone.');"><button type="submit">Delete local artifact</button></form>`, esc(uuidText(artifact.ID)))
+			fmt.Fprintf(w, `<form method="post" action="/artifacts/%s/delete" hx-boost="false" onsubmit="return confirm('Are you sure you want to delete this artifact? This action cannot be undone.');"><button type="submit" class="destructive">Delete local artifact</button></form>`, esc(uuidText(artifact.ID)))
 		} else if storage.IsS3ArtifactURL(artifact.Url) {
 			fmt.Fprint(w, `<p class="empty-text">Delete is constrained to local artifacts because Forge cannot safely clean remote objects yet.</p>`)
 		} else if artifactURL, ok := safeArtifactURL(artifact.Url); ok {
@@ -2102,11 +2102,24 @@ func writeTrustMetric(w io.Writer, count int, noun string, href string) {
 }
 
 func writeProposedActionForm(w io.Writer, ticketID pgtype.UUID, action string, label string, placeholder string) {
-	fmt.Fprintf(w, `<form method="post" action="/proposed/%s/%s" hx-boost="false"><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" placeholder="%s"></label><button type="submit">%s</button></form>`,
+	class, confirmation, required := "", "", ""
+	if action == "archive" || action == "reject" {
+		class = ` class="destructive"`
+		actionName := "Archive"
+		if action == "reject" {
+			actionName = "Reject"
+		}
+		confirmation = fmt.Sprintf(` onsubmit="return confirm('%s this proposed work? This removes it from the active triage queue.');"`, actionName)
+		required = ` required`
+	}
+	fmt.Fprintf(w, `<form method="post" action="/proposed/%s/%s" hx-boost="false"%s><input type="hidden" name="actor_type" value="%s"><input type="hidden" name="actor_id" value="web"><label><span>Reason</span><input name="reason" placeholder="%s"%s></label><button type="submit"%s>%s</button></form>`,
 		esc(uuidText(ticketID)),
 		esc(action),
+		confirmation,
 		esc(services.ActorHuman),
 		esc(placeholder),
+		required,
+		class,
 		esc(label),
 	)
 }
