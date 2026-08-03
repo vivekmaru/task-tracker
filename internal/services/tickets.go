@@ -392,10 +392,18 @@ func (s *TicketService) EnqueueProposedTicket(ctx context.Context, req ProposedT
 }
 
 func (s *TicketService) RejectProposedTicket(ctx context.Context, req ProposedTicketTriageRequest) (db.Ticket, error) {
+	req = trimProposedTicketTriageRequest(req)
+	if req.Reason == "" {
+		return db.Ticket{}, ValidationError{Problems: []string{"reason is required to reject proposed work"}}
+	}
 	return s.transitionProposedTicket(ctx, req, "reject_proposed", EventTicketArchived, TicketStatusArchived)
 }
 
 func (s *TicketService) ArchiveProposedTicket(ctx context.Context, req ProposedTicketTriageRequest) (db.Ticket, error) {
+	req = trimProposedTicketTriageRequest(req)
+	if req.Reason == "" {
+		return db.Ticket{}, ValidationError{Problems: []string{"reason is required to archive proposed work"}}
+	}
 	return s.transitionProposedTicket(ctx, req, "archive_proposed", EventTicketArchived, TicketStatusArchived)
 }
 

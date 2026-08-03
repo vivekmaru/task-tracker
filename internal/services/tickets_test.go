@@ -521,6 +521,7 @@ func TestProposedTicketTriageRejectsNonProposedTickets(t *testing.T) {
 	_, err := service.RejectProposedTicket(context.Background(), ProposedTicketTriageRequest{
 		TicketID:  testUUID(51),
 		ActorType: ActorHuman,
+		Reason:    "not a proposed ticket",
 	})
 	if !errors.Is(err, ErrTicketIsNotProposed) {
 		t.Fatalf("expected ErrTicketIsNotProposed, got %v", err)
@@ -1429,5 +1430,36 @@ func assertJSONFields(t *testing.T, raw []byte, want map[string]any) {
 		if got[key] != wantValue {
 			t.Fatalf("expected JSON field %q=%#v, got %#v in %#v", key, wantValue, got[key], got)
 		}
+	}
+}
+
+func TestRejectAndArchiveProposedTicketRequireReason(t *testing.T) {
+	service := NewTicketService(&fakeTicketStore{})
+
+	_, err := service.RejectProposedTicket(context.Background(), ProposedTicketTriageRequest{
+		TicketID:  testUUID(51),
+		ActorType: ActorHuman,
+		Reason:    "   ", // whitespace only
+	})
+
+	var valErr ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected ValidationError, got %v", err)
+	}
+	if len(valErr.Problems) != 1 || valErr.Problems[0] != "reason is required to reject proposed work" {
+		t.Errorf("unexpected validation problems: %v", valErr.Problems)
+	}
+
+	_, err = service.ArchiveProposedTicket(context.Background(), ProposedTicketTriageRequest{
+		TicketID:  testUUID(51),
+		ActorType: ActorHuman,
+		Reason:    "", // empty
+	})
+
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected ValidationError, got %v", err)
+	}
+	if len(valErr.Problems) != 1 || valErr.Problems[0] != "reason is required to archive proposed work" {
+		t.Errorf("unexpected validation problems: %v", valErr.Problems)
 	}
 }
