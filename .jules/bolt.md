@@ -7,3 +7,6 @@
 ## 2025-07-28 - Missing Index on Rapidly Growing Table (Attempts)
 **Learning:** Found that `ListAttemptsByTicket` queries filter the `attempts` table by `ticket_id` and order by `started_at DESC`. Since `attempts` can grow significantly and there was only an index on `ticket_id`, this was causing in-memory sorts and performance degradation.
 **Action:** Always create a composite index that covers both the foreign key (`ticket_id`) and the sort column (`started_at DESC`) for rapidly growing append-only history or queue tables, avoiding expensive in-memory sort operations.
+## 2024-09-01 - Composite Index for Append-Only Timeline Queries
+**Learning:** For append-only timeline or queue tables in PostgreSQL (like `attempts`), sorting by `started_at DESC` or `created_at DESC` after a foreign key filter (like `ticket_id`) can be slow as the table grows. A basic index on the foreign key is insufficient to optimize the `ORDER BY` clause.
+**Action:** Always prioritize composite database indexes that cover both the foreign key filter (e.g., `ticket_id`) and the sort column (e.g., `started_at DESC`) to optimize cursor-based and chronological timeline queries.
