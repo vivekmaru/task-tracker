@@ -7,3 +7,6 @@
 ## 2025-07-20 - Missing composite index for ordered queries
 **Learning:** Found a missing composite index for `attempts` table. The query `ListAttemptsByTicket` filters by `ticket_id` but orders by `started_at DESC`. Without a composite index covering both the filter column and sort column (e.g., `(ticket_id, started_at DESC)`), PostgreSQL must sort the results in memory.
 **Action:** Always create composite indexes that match both the WHERE clause filter and the ORDER BY clause when there are lists or queues that can grow unbounded over time, such as listing attempts per ticket.
+## 2024-09-01 - Composite Index for Append-Only Timeline Queries
+**Learning:** For append-only timeline or queue tables in PostgreSQL (like `attempts`), sorting by `started_at DESC` or `created_at DESC` after a foreign key filter (like `ticket_id`) can be slow as the table grows. A basic index on the foreign key is insufficient to optimize the `ORDER BY` clause.
+**Action:** Always prioritize composite database indexes that cover both the foreign key filter (e.g., `ticket_id`) and the sort column (e.g., `started_at DESC`) to optimize cursor-based and chronological timeline queries.
