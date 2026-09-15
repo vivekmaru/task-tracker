@@ -7,3 +7,6 @@
 ## 2024-09-01 - Composite Index for Append-Only Timeline Queries
 **Learning:** For append-only timeline or queue tables in PostgreSQL (like `attempts`), sorting by `started_at DESC` or `created_at DESC` after a foreign key filter (like `ticket_id`) can be slow as the table grows. A basic index on the foreign key is insufficient to optimize the `ORDER BY` clause.
 **Action:** Always prioritize composite database indexes that cover both the foreign key filter (e.g., `ticket_id`) and the sort column (e.g., `started_at DESC`) to optimize cursor-based and chronological timeline queries.
+## 2024-09-02 - Missing Indexes on Scope-Level Sorting Queries
+**Learning:** Queries that filter by scope (`workspace_id` and `project_id`) and then sort by date or priority (like `ORDER BY created_at DESC` or `ORDER BY priority ASC, created_at ASC`) require composite indexes spanning both the scope fields and the sorting fields to prevent sorting performance degradation (full table scans or costly sorting of large results) when tables grow large. Examples include `artifacts`, `tickets`, and `webhook_subscriptions`.
+**Action:** Always verify that queries filtering by `workspace_id` and `project_id` and sorting have composite indexes covering both the scope filters and the sort column (e.g., `workspace_id`, `project_id`, `created_at DESC`) to avoid full table scans.
