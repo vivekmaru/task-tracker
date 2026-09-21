@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -11,6 +12,69 @@ import (
 	"github.com/vivek/agent-task-tracker/internal/services"
 	"github.com/vivek/agent-task-tracker/internal/web"
 )
+
+type ticketTransitionInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		ActorType string `json:"actor_type,omitempty"`
+		ActorID   string `json:"actor_id,omitempty"`
+		Reason    string `json:"reason,omitempty"`
+	} `json:"body"`
+}
+
+type reviewTicketInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		Decision  string `json:"decision" enum:"approve,reject"`
+		ActorType string `json:"actor_type,omitempty"`
+		ActorID   string `json:"actor_id,omitempty"`
+		Reason    string `json:"reason,omitempty"`
+	} `json:"body"`
+}
+
+type reviewRuntime interface {
+	Review(context.Context, services.ReviewTicketRequest) (db.Ticket, error)
+}
+
+func registerTicketTransitionRoutes(api huma.API, rt web.Runtime) {
+	register := func(path, operation, summary string, transition func(web.Runtime, context.Context, services.TicketTransitionRequest) (db.Ticket, error)) {
+		huma.Register[ticketTransitionInput, ticketOutput](api, huma.Operation{OperationID: operation, Method: http.MethodPost, Path: "/tickets/{id}/" + path, Summary: summary, Tags: []string{"Tickets"}}, func(ctx context.Context, in *ticketTransitionInput) (*ticketOutput, error) {
+			id, err := parseRequiredUUID("id", in.ID)
+			if err != nil {
+				return nil, huma.Error400BadRequest(err.Error())
+			}
+			if rt == nil {
+				return nil, huma.Error503ServiceUnavailable("ticket runtime is not configured")
+			}
+			ticket, err := transition(rt, ctx, services.TicketTransitionRequest{TicketID: id, ActorType: in.Body.ActorType, ActorID: in.Body.ActorID, Reason: in.Body.Reason})
+			if err != nil {
+				return nil, resourceError(err, "ticket transition failed")
+			}
+			return &ticketOutput{Body: makeTicketResponse(ticket)}, nil
+		})
+	}
+	register("ready", contracts.RESTMarkTicketReady, "Move ticket to todo", web.Runtime.MarkReady)
+	register("reopen", contracts.RESTReopenTicket, "Reopen ticket", web.Runtime.Reopen)
+	register("unblock", contracts.RESTUnblockTicket, "Unblock ticket", web.Runtime.Unblock)
+	register("request-review", contracts.RESTRequestReview, "Request ticket review", web.Runtime.RequestReview)
+	register("archive", contracts.RESTArchiveTicket, "Archive ticket", web.Runtime.Archive)
+
+	reviewer, _ := rt.(reviewRuntime)
+	huma.Register[reviewTicketInput, ticketOutput](api, huma.Operation{OperationID: contracts.RESTReviewTicket, Method: http.MethodPost, Path: "/tickets/{id}/review", Summary: "Review ticket", Tags: []string{"Tickets"}}, func(ctx context.Context, in *reviewTicketInput) (*ticketOutput, error) {
+		id, err := parseRequiredUUID("id", in.ID)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		if reviewer == nil {
+			return nil, huma.Error503ServiceUnavailable("review runtime is not configured")
+		}
+		ticket, err := reviewer.Review(ctx, services.ReviewTicketRequest{TicketID: id, Decision: in.Body.Decision, ActorType: in.Body.ActorType, ActorID: in.Body.ActorID, Reason: in.Body.Reason})
+		if err != nil {
+			return nil, resourceError(err, "review ticket failed")
+		}
+		return &ticketOutput{Body: makeTicketResponse(ticket)}, nil
+	})
+}
 
 type claimInput struct {
 	IdempotencyKey string    `header:"Idempotency-Key"`
@@ -87,23 +151,52 @@ type metricsBody struct {
 	RetryCount      int32   `json:"retry_count,omitempty"`
 }
 type attemptResponse struct {
-	ID              string `json:"id"`
-	TicketID        string `json:"ticket_id"`
-	WorkspaceID     string `json:"workspace_id"`
-	ProjectID       string `json:"project_id"`
-	Status          string `json:"status"`
-	ProgressPercent int32  `json:"progress_percent"`
-	AgentID         string `json:"agent_id"`
-	Harness         string `json:"harness"`
+	ID              string          `json:"id"`
+	TicketID        string          `json:"ticket_id"`
+	WorkspaceID     string          `json:"workspace_id"`
+	ProjectID       string          `json:"project_id"`
+	Status          string          `json:"status"`
+	ProgressPercent int32           `json:"progress_percent"`
+	AgentID         string          `json:"agent_id"`
+	Harness         string          `json:"harness"`
+	Model           string          `json:"model"`
+	CurrentSummary  string          `json:"current_summary,omitempty"`
+	NextStep        string          `json:"next_step,omitempty"`
+	FailureReason   string          `json:"failure_reason,omitempty"`
+	FailureCategory string          `json:"failure_category,omitempty"`
+	Output          json.RawMessage `json:"output,omitempty"`
+	Blocker         json.RawMessage `json:"blocker,omitempty"`
 }
 type attemptOutput struct {
 	Body attemptResponse `json:"body"`
 }
 type claimOutput struct {
 	Body struct {
-		Ticket  ticketResponse  `json:"ticket"`
-		Attempt attemptResponse `json:"attempt"`
+		Ticket  ticketResponse       `json:"ticket"`
+		Attempt attemptResponse      `json:"attempt"`
+		Context claimContextResponse `json:"context"`
 	} `json:"body"`
+}
+type claimContextResponse struct {
+	Ticket               ticketResponse            `json:"ticket"`
+	Attempt              attemptResponse           `json:"attempt"`
+	AcceptanceCriteria   []string                  `json:"acceptance_criteria"`
+	VerificationCommands []string                  `json:"verification_commands"`
+	Environment          map[string]any            `json:"environment"`
+	Input                map[string]any            `json:"input"`
+	RelevantPaths        []string                  `json:"relevant_paths"`
+	RequiredTools        []string                  `json:"required_tools"`
+	RequiredPermissions  []string                  `json:"required_permissions"`
+	ExpectedArtifacts    []string                  `json:"expected_artifacts"`
+	PriorAttempts        []attemptResponse         `json:"prior_attempts"`
+	Checkpoints          []claimCheckpointResponse `json:"checkpoints"`
+	Artifacts            []artifactResponse        `json:"artifacts"`
+}
+type claimCheckpointResponse struct {
+	ID       string `json:"id"`
+	Summary  string `json:"summary"`
+	NextStep string `json:"next_step"`
+	Risk     string `json:"risk"`
 }
 type checkpointOutput struct {
 	Body struct {
@@ -154,6 +247,7 @@ func registerLifecycleRoutes(api huma.API, rt web.Runtime) {
 		out := &claimOutput{}
 		out.Body.Ticket = makeTicketResponse(result.Ticket)
 		out.Body.Attempt = makeAttemptResponse(result.Attempt)
+		out.Body.Context = makeClaimContextResponse(result.Context)
 		return out, nil
 	})
 	huma.Register[attemptInput, attemptOutput](api, huma.Operation{OperationID: "get-attempt", Method: http.MethodGet, Path: "/attempts/{id}", Summary: "Get attempt", Tags: []string{"Execution"}}, func(ctx context.Context, in *attemptInput) (*attemptOutput, error) {
@@ -305,5 +399,46 @@ func mapMetrics(body *metricsBody) *services.AttemptMetricsRequest {
 	return &services.AttemptMetricsRequest{TokensIn: body.TokensIn, TokensOut: body.TokensOut, CostUSD: body.CostUSD, DurationSeconds: body.DurationSeconds, RetryCount: body.RetryCount}
 }
 func makeAttemptResponse(a db.Attempt) attemptResponse {
-	return attemptResponse{ID: uuidText(a.ID), TicketID: uuidText(a.TicketID), WorkspaceID: uuidText(a.WorkspaceID), ProjectID: uuidText(a.ProjectID), Status: a.Status, ProgressPercent: a.ProgressPercent, AgentID: a.AgentID, Harness: a.Harness}
+	return attemptResponse{ID: uuidText(a.ID), TicketID: uuidText(a.TicketID), WorkspaceID: uuidText(a.WorkspaceID), ProjectID: uuidText(a.ProjectID), Status: a.Status, ProgressPercent: a.ProgressPercent, AgentID: a.AgentID, Harness: a.Harness, Model: a.Model, CurrentSummary: a.CurrentSummary.String, NextStep: a.NextStep.String, FailureReason: a.FailureReason.String, FailureCategory: a.FailureCategory.String, Output: json.RawMessage(a.Output), Blocker: json.RawMessage(a.Blocker)}
+}
+
+func makeClaimContextResponse(bundle services.ClaimContextBundle) claimContextResponse {
+	out := claimContextResponse{
+		Ticket:               makeTicketResponse(bundle.Ticket),
+		Attempt:              makeAttemptResponse(bundle.Attempt),
+		AcceptanceCriteria:   append([]string{}, bundle.AcceptanceCriteria...),
+		VerificationCommands: append([]string{}, bundle.VerificationCommands...),
+		Environment:          bundle.Environment,
+		Input:                bundle.Input,
+		RelevantPaths:        append([]string{}, bundle.RelevantPaths...),
+		RequiredTools:        append([]string{}, bundle.RequiredTools...),
+		RequiredPermissions:  append([]string{}, bundle.RequiredPermissions...),
+		ExpectedArtifacts:    append([]string{}, bundle.ExpectedArtifacts...),
+		PriorAttempts:        make([]attemptResponse, 0, len(bundle.PriorAttempts)),
+		Checkpoints:          make([]claimCheckpointResponse, 0, len(bundle.Checkpoints)),
+		Artifacts:            make([]artifactResponse, 0, len(bundle.Artifacts)),
+	}
+	if out.Environment == nil {
+		out.Environment = map[string]any{}
+	}
+	if out.Input == nil {
+		out.Input = map[string]any{}
+	}
+	for _, attempt := range bundle.PriorAttempts {
+		out.PriorAttempts = append(out.PriorAttempts, makeAttemptResponse(attempt))
+	}
+	for _, checkpoint := range bundle.Checkpoints {
+		item := claimCheckpointResponse{ID: uuidText(checkpoint.ID), Summary: checkpoint.Summary}
+		if checkpoint.NextStep.Valid {
+			item.NextStep = checkpoint.NextStep.String
+		}
+		if checkpoint.Risk.Valid {
+			item.Risk = checkpoint.Risk.String
+		}
+		out.Checkpoints = append(out.Checkpoints, item)
+	}
+	for _, artifact := range bundle.Artifacts {
+		out.Artifacts = append(out.Artifacts, makeArtifactResponse(artifact))
+	}
+	return out
 }

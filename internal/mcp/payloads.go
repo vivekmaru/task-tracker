@@ -627,12 +627,18 @@ func ticketPayload(ticket db.Ticket) map[string]any {
 
 func attemptPayload(attempt db.Attempt) map[string]any {
 	return map[string]any{
-		"id":        uuidText(attempt.ID),
-		"ticket_id": uuidText(attempt.TicketID),
-		"agent_id":  attempt.AgentID,
-		"harness":   attempt.Harness,
-		"model":     attempt.Model,
-		"status":    attempt.Status,
+		"id":               uuidText(attempt.ID),
+		"ticket_id":        uuidText(attempt.TicketID),
+		"agent_id":         attempt.AgentID,
+		"harness":          attempt.Harness,
+		"model":            attempt.Model,
+		"status":           attempt.Status,
+		"current_summary":  textValue(attempt.CurrentSummary),
+		"next_step":        textValue(attempt.NextStep),
+		"failure_reason":   textValue(attempt.FailureReason),
+		"failure_category": textValue(attempt.FailureCategory),
+		"output":           json.RawMessage(attempt.Output),
+		"blocker":          json.RawMessage(attempt.Blocker),
 	}
 }
 

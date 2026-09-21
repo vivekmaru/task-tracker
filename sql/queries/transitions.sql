@@ -76,10 +76,26 @@ updated_ticket AS (
             WHEN COALESCE(t.retry_policy->>'on_failure', 'return_to_todo') = 'needs_review'
                 THEN 'needs_review'
             WHEN (
-                SELECT count(*)::integer
+                -- The snapshot still sees the current attempt as running; count it once.
+                SELECT count(*)::integer + 1
                 FROM attempts counted_attempts
                 WHERE counted_attempts.ticket_id = t.id
                   AND counted_attempts.status IN ('failed', 'expired')
+                  -- Event order separates retry cycles even when timestamps tie.
+                  AND COALESCE((
+                      SELECT min(claimed.event_sequence)
+                      FROM ticket_events claimed
+                      WHERE claimed.attempt_id = counted_attempts.id
+                        AND claimed.type = 'claimed'
+                  ), 0) >= COALESCE((
+                      SELECT max(recovery.event_sequence)
+                      FROM ticket_events recovery
+                      WHERE recovery.ticket_id = t.id
+                        AND (
+                            recovery.type = 'reopened'
+                            OR (recovery.type = 'reviewed' AND recovery.data->>'status' = 'todo')
+                        )
+                  ), 0)
             ) >= COALESCE((t.retry_policy->>'max_attempts')::integer, 3)
                 THEN 'failed'
             ELSE 'todo'
@@ -250,10 +266,26 @@ updated_ticket AS (
     UPDATE tickets t
     SET status = CASE
             WHEN (
-                SELECT count(*)::integer
+                -- The snapshot still sees the current attempt as running; count it once.
+                SELECT count(*)::integer + 1
                 FROM attempts counted_attempts
                 WHERE counted_attempts.ticket_id = t.id
                   AND counted_attempts.status IN ('failed', 'expired')
+                  -- Event order separates retry cycles even when timestamps tie.
+                  AND COALESCE((
+                      SELECT min(claimed.event_sequence)
+                      FROM ticket_events claimed
+                      WHERE claimed.attempt_id = counted_attempts.id
+                        AND claimed.type = 'claimed'
+                  ), 0) >= COALESCE((
+                      SELECT max(recovery.event_sequence)
+                      FROM ticket_events recovery
+                      WHERE recovery.ticket_id = t.id
+                        AND (
+                            recovery.type = 'reopened'
+                            OR (recovery.type = 'reviewed' AND recovery.data->>'status' = 'todo')
+                        )
+                  ), 0)
             ) >= COALESCE((t.retry_policy->>'max_attempts')::integer, 3)
                 THEN 'failed'
             ELSE 'todo'

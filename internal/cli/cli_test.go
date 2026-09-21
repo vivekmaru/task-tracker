@@ -2745,6 +2745,64 @@ type fakeRuntime struct {
 	webhookSubscriptions         []db.WebhookSubscription
 }
 
+func TestRunGetParsesFlagsAroundPositionalID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "forge.json")
+	if err := os.WriteFile(configPath, []byte(`{"database_url":"postgres://get-config"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const id = "00000000-0000-0000-0000-000000000001"
+	for _, tc := range []struct {
+		name string
+		args []string
+		kind string
+	}{
+		{"ticket config after ID", []string{"--kind", "ticket", id, "--config", configPath, "--json"}, "ticket"},
+		{"attempt kind after ID", []string{id, "--kind", "attempt", "--config", configPath, "--json"}, "attempt"},
+		{"equals flags", []string{"--kind=attempt", id, "--config=" + configPath, "--json=true"}, "attempt"},
+		{"flags before ID", []string{"--config", configPath, "--json", id}, "ticket"},
+		{"explicit ID", []string{"--id", id, "--config", configPath, "--json"}, "ticket"},
+		{"explicit ID takes precedence", []string{"00000000-0000-0000-0000-000000000002", "--id", id, "--config", configPath}, "ticket"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &getRecordingRuntime{fakeRuntime: &fakeRuntime{}}
+			var gotConfig config.Config
+			var stdout, stderr bytes.Buffer
+			code := RunWithDependencies(append([]string{"get"}, tc.args...), &stdout, &stderr, Dependencies{
+				OpenRuntime: func(_ context.Context, cfg config.Config) (RuntimeHandle, error) {
+					gotConfig = cfg
+					return rt, nil
+				},
+			})
+			if code != 0 || gotConfig.DatabaseURL != "postgres://get-config" {
+				t.Fatalf("get failed to use config: code=%d database=%q stderr=%s", code, gotConfig.DatabaseURL, stderr.String())
+			}
+			if rt.kind != tc.kind || uuidText(rt.id) != id {
+				t.Fatalf("wrong lookup: kind=%s id=%s", rt.kind, uuidText(rt.id))
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil || payload["id"] != id {
+				t.Fatalf("unexpected JSON result: %s, %v", stdout.String(), err)
+			}
+		})
+	}
+}
+
+type getRecordingRuntime struct {
+	*fakeRuntime
+	kind string
+	id   pgtype.UUID
+}
+
+func (r *getRecordingRuntime) GetTicket(_ context.Context, id pgtype.UUID) (db.Ticket, error) {
+	r.kind, r.id = "ticket", id
+	return db.Ticket{ID: id}, nil
+}
+
+func (r *getRecordingRuntime) GetAttempt(_ context.Context, id pgtype.UUID) (db.Attempt, error) {
+	r.kind, r.id = "attempt", id
+	return db.Attempt{ID: id}, nil
+}
+
 func fakeRuntimeOpener(rt *fakeRuntime) func(context.Context, config.Config) (RuntimeHandle, error) {
 	return func(context.Context, config.Config) (RuntimeHandle, error) {
 		return rt, nil

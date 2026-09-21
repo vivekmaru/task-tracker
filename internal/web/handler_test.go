@@ -416,7 +416,7 @@ func TestTicketListRendersEmptyAndBadRequestStates(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected empty list status 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "No tickets match") {
+	if !strings.Contains(rec.Body.String(), "Create your first ticket") {
 		t.Fatalf("expected empty state, got:\n%s", rec.Body.String())
 	}
 }
@@ -429,11 +429,11 @@ func TestTicketListRendersFilterFormWhenScopeIsMissing(t *testing.T) {
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected missing scope status 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected scope selection status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`<form method="get" action="/tickets">`, `name="workspace_id"`, `name="project_id"`, "workspace_id and project_id are required"} {
+	for _, want := range []string{`<form method="get" action="/tickets">`, `name="workspace_id"`, `name="project_id"`, "Choose a workspace and project to continue."} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected missing scope page to contain %q, got:\n%s", want, body)
 		}
@@ -665,11 +665,11 @@ func TestSearchPageRequiresScopeAndQuery(t *testing.T) {
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected missing query status 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected search form status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`<form method="get" action="/search">`, `name="q"`, "query is required"} {
+	for _, want := range []string{`<form method="get" action="/search">`, `name="q"`, "Enter a phrase to search"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected search guidance to contain %q, got:\n%s", want, body)
 		}
@@ -1067,7 +1067,7 @@ func TestTicketDetailRendersTrustSummary(t *testing.T) {
 		"1 attempt",
 		"1 event",
 		"1 proof artifact",
-		"/events?ticket_id=" + uuidString(ticketID),
+		esc(ticketActivityPath(runtime.ticket)),
 		"Shared proof page",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
@@ -1547,10 +1547,10 @@ func TestArtifactBrowserSupportsTicketScopeAndMissingScope(t *testing.T) {
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected missing scope status 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected scope selection status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{`<form method="get" action="/artifacts">`, `name="workspace_id"`, `name="project_id"`, "workspace_id and project_id are required"} {
+	for _, want := range []string{`<form method="get" action="/artifacts">`, `name="workspace_id"`, `name="project_id"`, "Choose a workspace and project to continue."} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("expected missing scope page to contain %q, got:\n%s", want, rec.Body.String())
 		}

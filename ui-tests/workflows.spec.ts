@@ -147,3 +147,100 @@ test('core operator pages have no serious axe violations', async ({ page }) => {
   await page.goto(`/tickets/${fixture.ticketId}`);
   noSeriousAxeViolations(await new AxeBuilder({ page }).analyze());
 });
+
+test('first-use browser workflow creates work and completes human review', async ({ page }) => {
+  const fixture = loadFixture();
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await login(page, fixture.adminToken);
+  await page.getByLabel('Name', { exact: true }).fill(`First use ${Date.now()}`);
+  await page.getByRole('button', { name: 'Create workspace' }).click();
+  await page.getByLabel('Name', { exact: true }).fill('First project');
+  await page.getByRole('button', { name: 'Create project' }).click();
+  await page.getByRole('link', { name: 'Open ticket queue' }).click();
+  const queueURL = page.url();
+  await page.getByRole('link', { name: 'Create your first ticket' }).click();
+  await page.getByRole('button', { name: 'Create ticket', exact: true }).click();
+  expect(await page.getByLabel('Title', { exact: true }).evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBeTruthy();
+  await expect(page.getByRole('heading', { name: 'New ticket', exact: true })).toBeVisible();
+  const title = `First-use review ${Date.now()}`;
+  await page.getByLabel('Title', { exact: true }).fill(title);
+  await page.getByLabel('Context', { exact: true }).fill('Verify the human workflow with a small bounded task.');
+  await page.getByLabel(/Acceptance criteria/).fill('The ticket is created and review decisions persist.');
+  await page.getByLabel(/Verification commands/).fill('go test ./...');
+  await page.getByLabel('Type', { exact: true }).selectOption('bug');
+  await page.getByLabel('Priority', { exact: true }).selectOption('1');
+  const draftScope = new URL(queueURL);
+  await page.getByLabel('Workspace', { exact: true }).selectOption(fixture.workspaceId);
+  await expect(page.getByLabel('Title', { exact: true })).toHaveValue(title);
+  await expect(page.getByLabel('Type', { exact: true })).toHaveValue('bug');
+  await expect(page.getByLabel('Priority', { exact: true })).toHaveValue('1');
+  await expect(page.getByRole('button', { name: 'Create ticket', exact: true })).toBeDisabled();
+  await page.getByLabel('Workspace', { exact: true }).selectOption(draftScope.searchParams.get('workspace_id')!);
+  await page.getByLabel('Project', { exact: true }).selectOption(draftScope.searchParams.get('project_id')!);
+  await page.getByRole('button', { name: 'Select project', exact: true }).click();
+  await expect(page.getByLabel('Title', { exact: true })).toHaveValue(title);
+  await page.getByRole('button', { name: 'Create ticket', exact: true }).click();
+  await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  await page.getByRole('button', { name: 'Request review', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.locator('.page-head .eyebrow')).toContainText(/done/i);
+  await page.getByRole('button', { name: 'Request review', exact: true }).click();
+  await page.getByRole('button', { name: 'Request changes', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Request review', exact: true })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Primary', exact: true }).getByRole('link', { name: 'Tickets', exact: true }).click();
+  const original = new URL(queueURL);
+  await expect(page.getByLabel('Workspace', { exact: true })).toHaveValue(original.searchParams.get('workspace_id')!);
+  await expect(page.getByLabel('Project', { exact: true })).toHaveValue(original.searchParams.get('project_id')!);
+  await expect(page.getByRole('link', { name: new RegExp(title) })).toBeVisible();
+  await page.getByLabel('Status', { exact: true }).selectOption('blocked');
+  await page.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'No tickets match' })).toBeVisible();
+  await page.getByRole('link', { name: 'Clear filters', exact: true }).click();
+  await expect(page.getByRole('link', { name: new RegExp(title) })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('mobile operators can sign out through the application router', async ({ page }) => {
+  const fixture = loadFixture();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture.adminToken);
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.goto('/workspaces');
+  await expect(page).toHaveURL(/\/login\?next=/);
+});
+
+test('workspace switching refreshes named projects without losing the form', async ({ page }) => {
+  const fixture = loadFixture();
+  await login(page, fixture.adminToken);
+  await page.goto('/tickets');
+  await page.getByLabel('Workspace', { exact: true }).selectOption(fixture.workspaceId);
+  await expect(page.getByLabel('Workspace', { exact: true })).toHaveValue(fixture.workspaceId);
+  await expect(page.getByLabel('Project', { exact: true }).locator('option', { hasText: 'Browser Project' })).toHaveCount(1);
+  await page.getByLabel('Project', { exact: true }).selectOption(fixture.projectId);
+  await page.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.locator(`a[href="/tickets/${fixture.ticketId}"]`)).toBeVisible();
+});
+
+test('light and dark operator pages stay accessible on desktop and mobile', async ({ page }) => {
+  const fixture = loadFixture();
+  await login(page, fixture.adminToken);
+  test.setTimeout(90000);
+  for (const colorScheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme });
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const path of [
+        `/tickets?workspace_id=${fixture.workspaceId}&project_id=${fixture.projectId}`,
+        `/tickets/new?workspace_id=${fixture.workspaceId}&project_id=${fixture.projectId}`,
+        `/tickets/${fixture.ticketId}`,
+      ]) {
+        await page.goto(path);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+        noSeriousAxeViolations(await new AxeBuilder({ page }).analyze());
+      }
+    }
+  }
+});
