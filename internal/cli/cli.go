@@ -684,11 +684,12 @@ func runGetCommand(ctx context.Context, args []string, stdout, stderr io.Writer,
 	var id, kind string
 	flags.StringVar(&id, "id", "", "resource id")
 	flags.StringVar(&kind, "kind", "ticket", "ticket or attempt")
-	if !parseFlags(flags, args) {
+	positionalID, parseArgs := splitAttemptIDArg(args, flags)
+	if !parseFlags(flags, parseArgs) {
 		return 2
 	}
-	if id == "" && flags.NArg() > 0 {
-		id = flags.Arg(0)
+	if id == "" {
+		id = positionalID
 	}
 	rt, ok := openCommandRuntime(ctx, flags.Name(), opts, stderr, deps)
 	if !ok {
@@ -2682,12 +2683,18 @@ func webhookSubscriptionPayloads(subscriptions []db.WebhookSubscription) []map[s
 
 func attemptPayload(attempt db.Attempt) map[string]any {
 	return map[string]any{
-		"id":        uuidText(attempt.ID),
-		"ticket_id": uuidText(attempt.TicketID),
-		"agent_id":  attempt.AgentID,
-		"harness":   attempt.Harness,
-		"model":     attempt.Model,
-		"status":    attempt.Status,
+		"id":               uuidText(attempt.ID),
+		"ticket_id":        uuidText(attempt.TicketID),
+		"agent_id":         attempt.AgentID,
+		"harness":          attempt.Harness,
+		"model":            attempt.Model,
+		"status":           attempt.Status,
+		"current_summary":  textPayload(attempt.CurrentSummary),
+		"next_step":        textPayload(attempt.NextStep),
+		"failure_reason":   textPayload(attempt.FailureReason),
+		"failure_category": textPayload(attempt.FailureCategory),
+		"output":           jsonValuePayload(attempt.Output),
+		"blocker":          jsonValuePayload(attempt.Blocker),
 	}
 }
 

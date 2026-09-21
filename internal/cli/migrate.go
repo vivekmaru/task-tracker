@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/vivek/agent-task-tracker/internal/config"
+	"github.com/vivek/agent-task-tracker/sql/migrations"
 )
 
 const migrationTableSQL = `
@@ -44,7 +46,7 @@ func runMigrateCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	opts.bind(flags)
 	var dir string
 	var baselineExisting bool
-	flags.StringVar(&dir, "dir", "sql/migrations", "migration directory")
+	flags.StringVar(&dir, "dir", "", "migration directory (defaults to embedded migrations)")
 	flags.BoolVar(&baselineExisting, "baseline-existing", false, "record existing Forge schema migrations before applying new ones")
 	if !parseFlags(flags, args) {
 		return 2
@@ -86,10 +88,12 @@ func runMigrateCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	return 0
 }
 
+// ApplyMigrations uses bundled SQL when dir is empty, or the given directory otherwise.
 func ApplyMigrations(ctx context.Context, cfg config.Config, dir string) (MigrationResult, error) {
 	return ApplyMigrationsWithOptions(ctx, cfg, dir, MigrationOptions{})
 }
 
+// An empty dir selects the SQL bundled in the binary.
 func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir string, opts MigrationOptions) (MigrationResult, error) {
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -97,7 +101,8 @@ func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir stri
 	}
 	defer pool.Close()
 
-	files, err := migrationFiles(dir)
+	source := migrationFS(dir)
+	files, err := migrationFiles(source)
 	if err != nil {
 		return MigrationResult{}, err
 	}
@@ -141,7 +146,7 @@ func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir stri
 			if !baseline[id] {
 				continue
 			}
-			if err := recordMigration(ctx, tx, id, path); err != nil {
+			if err := recordMigration(ctx, tx, source, id, path); err != nil {
 				return MigrationResult{}, fmt.Errorf("record baseline migration %s: %w", id, err)
 			}
 			applied[id] = true
@@ -149,7 +154,7 @@ func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir stri
 			result.Baselined = append(result.Baselined, id)
 		}
 	}
-	if err := verifyMigrationChecksums(ctx, tx, files); err != nil {
+	if err := verifyMigrationChecksums(ctx, tx, source, files); err != nil {
 		return MigrationResult{}, err
 	}
 	for _, path := range files {
@@ -160,14 +165,14 @@ func ApplyMigrationsWithOptions(ctx context.Context, cfg config.Config, dir stri
 			}
 			continue
 		}
-		sql, err := readMigrationUp(path)
+		sql, err := readMigrationUp(source, path)
 		if err != nil {
 			return MigrationResult{}, err
 		}
 		if _, err := tx.Exec(ctx, sql); err != nil {
 			return MigrationResult{}, fmt.Errorf("apply migration %s: %w", id, err)
 		}
-		if err := recordMigration(ctx, tx, id, path); err != nil {
+		if err := recordMigration(ctx, tx, source, id, path); err != nil {
 			return MigrationResult{}, fmt.Errorf("record migration %s: %w", id, err)
 		}
 		result.Applied = append(result.Applied, id)
@@ -183,8 +188,8 @@ type migrationRecorder interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
-func recordMigration(ctx context.Context, q migrationRecorder, id string, path string) error {
-	checksum, err := migrationChecksum(path)
+func recordMigration(ctx context.Context, q migrationRecorder, source fs.FS, id string, path string) error {
+	checksum, err := migrationChecksum(source, path)
 	if err != nil {
 		return err
 	}
@@ -197,7 +202,7 @@ type migrationChecksumQuerier interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
-func verifyMigrationChecksums(ctx context.Context, q migrationChecksumQuerier, files []string) error {
+func verifyMigrationChecksums(ctx context.Context, q migrationChecksumQuerier, source fs.FS, files []string) error {
 	byID := make(map[string]string, len(files))
 	for _, path := range files {
 		byID[strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))] = path
@@ -222,7 +227,7 @@ func verifyMigrationChecksums(ctx context.Context, q migrationChecksumQuerier, f
 		if filename != filepath.Base(path) {
 			return fmt.Errorf("applied migration %s filename changed from %s to %s", id, filename, filepath.Base(path))
 		}
-		current, err := migrationChecksum(path)
+		current, err := migrationChecksum(source, path)
 		if err != nil {
 			return err
 		}
@@ -244,8 +249,8 @@ func verifyMigrationChecksums(ctx context.Context, q migrationChecksumQuerier, f
 	return nil
 }
 
-func migrationChecksum(path string) (string, error) {
-	data, err := os.ReadFile(path)
+func migrationChecksum(source fs.FS, path string) (string, error) {
+	data, err := fs.ReadFile(source, path)
 	if err != nil {
 		return "", fmt.Errorf("read migration %s: %w", filepath.Base(path), err)
 	}
@@ -433,12 +438,16 @@ func loadAppliedMigrations(ctx context.Context, q appliedMigrationQuerier) (map[
 	return applied, nil
 }
 
-func migrationFiles(dir string) ([]string, error) {
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		return nil, errors.New("migration directory is required")
+// An empty directory selects the bundled migrations; explicit paths use disk only.
+func migrationFS(dir string) fs.FS {
+	if dir = strings.TrimSpace(dir); dir == "" {
+		return migrations.Files
 	}
-	files, err := filepath.Glob(filepath.Join(dir, "*.sql"))
+	return os.DirFS(dir)
+}
+
+func migrationFiles(source fs.FS) ([]string, error) {
+	files, err := fs.Glob(source, "*.sql")
 	if err != nil {
 		return nil, fmt.Errorf("list migrations: %w", err)
 	}
@@ -446,8 +455,8 @@ func migrationFiles(dir string) ([]string, error) {
 	return files, nil
 }
 
-func readMigrationUp(path string) (string, error) {
-	data, err := os.ReadFile(path)
+func readMigrationUp(source fs.FS, path string) (string, error) {
+	data, err := fs.ReadFile(source, path)
 	if err != nil {
 		return "", fmt.Errorf("read migration %s: %w", filepath.Base(path), err)
 	}

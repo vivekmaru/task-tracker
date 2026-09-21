@@ -355,6 +355,20 @@ type fakeReadyRuntime struct {
 
 func (f *fakeReadyRuntime) Ready(context.Context) error { return f.err }
 
+// Mounted pages load scope choices even when testing invalid query parameters.
+// Keep those reads independent of the intentionally unconfigured database.
+type fakeScopeRuntime struct {
+	*forgeruntime.Runtime
+}
+
+func (f *fakeScopeRuntime) ListWorkspaces(context.Context) ([]db.Workspace, error) {
+	return []db.Workspace{}, nil
+}
+
+func (f *fakeScopeRuntime) ListProjectsByWorkspace(context.Context, pgtype.UUID) ([]db.Project, error) {
+	return []db.Project{}, nil
+}
+
 func (f *fakeObservabilityRuntime) CreateWebhookSubscription(_ context.Context, req db.CreateWebhookSubscriptionParams) (db.WebhookSubscription, error) {
 	f.createReq = req
 	if f.createErr != nil {
@@ -424,23 +438,43 @@ func TestRouterWithAuthProtectsEveryAPIRoute(t *testing.T) {
 	}
 }
 
+func TestRouterMountsLogoutAndNewTicket(t *testing.T) {
+	router := NewRouterWithRuntimeAndAuth(nil, web.AuthOptions{AdminToken: "test-logout-token"})
+	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req.Header.Set("Authorization", "Bearer test-logout-token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("logout route returned %d", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].MaxAge != -1 {
+		t.Fatal("logout did not clear session cookie")
+	}
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/tickets/new", nil))
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/login?") {
+		t.Fatalf("new ticket route must require login, got %d", rec.Code)
+	}
+}
+
 func TestNewRouterWithRuntimeMountsSearchPage(t *testing.T) {
-	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	router := NewRouterWithRuntime(&fakeScopeRuntime{Runtime: forgeruntime.New(db.New(nil))})
 	req := httptest.NewRequest(http.MethodGet, "/search?workspace_id=00000000-0000-0000-0000-000000000001&project_id=00000000-0000-0000-0000-000000000002", nil)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected search page status 400 for missing query, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected search form status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Forge Search") || !strings.Contains(body, "query is required") {
+	if body := rec.Body.String(); !strings.Contains(body, "Forge Search") || !strings.Contains(body, "Enter a phrase to search") {
 		t.Fatalf("expected mounted search page guidance, got:\n%s", body)
 	}
 }
 
 func TestNewRouterWithRuntimeMountsEventLedgerPage(t *testing.T) {
-	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	router := NewRouterWithRuntime(&fakeScopeRuntime{Runtime: forgeruntime.New(db.New(nil))})
 	req := httptest.NewRequest(http.MethodGet, "/events?limit=-1", nil)
 	rec := httptest.NewRecorder()
 
@@ -455,31 +489,31 @@ func TestNewRouterWithRuntimeMountsEventLedgerPage(t *testing.T) {
 }
 
 func TestNewRouterWithRuntimeMountsArtifactListPage(t *testing.T) {
-	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	router := NewRouterWithRuntime(&fakeScopeRuntime{Runtime: forgeruntime.New(db.New(nil))})
 	req := httptest.NewRequest(http.MethodGet, "/artifacts", nil)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected artifact list page status 400 for missing scope, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact scope form status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Artifacts") || !strings.Contains(body, "workspace_id and project_id are required") {
+	if body := rec.Body.String(); !strings.Contains(body, "Artifacts") || !strings.Contains(body, "Choose a workspace and project") {
 		t.Fatalf("expected mounted artifact list guidance, got:\n%s", body)
 	}
 }
 
 func TestNewRouterWithRuntimeMountsProposedListPageWithoutSlashRedirect(t *testing.T) {
-	router := NewRouterWithRuntime(forgeruntime.New(db.New(nil)))
+	router := NewRouterWithRuntime(&fakeScopeRuntime{Runtime: forgeruntime.New(db.New(nil))})
 	req := httptest.NewRequest(http.MethodGet, "/proposed", nil)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected proposed list page status 400 for missing scope, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected proposed scope form status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Proposed Work") || !strings.Contains(body, "workspace_id is required") {
+	if body := rec.Body.String(); !strings.Contains(body, "Proposed Work") || !strings.Contains(body, "Choose a workspace and project") {
 		t.Fatalf("expected mounted proposed list guidance, got:\n%s", body)
 	}
 }

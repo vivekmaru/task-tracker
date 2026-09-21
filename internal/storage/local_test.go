@@ -229,13 +229,15 @@ func TestLocalStoreRejectsSymlinkEscapeOnWrite(t *testing.T) {
 
 	_, err := store.StoreFile(context.Background(), source, "linked/proof.log")
 
-	if err == nil || (!strings.Contains(err.Error(), "escapes artifact root") && !strings.Contains(err.Error(), "file exists")) {
+	if err == nil || (!strings.Contains(err.Error(), "escapes artifact root") && !strings.Contains(err.Error(), "file exists") && !strings.Contains(err.Error(), "path escapes from parent")) {
 		t.Fatalf("expected symlink write rejection, got %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(outsideDir, "proof.log")); err == nil {
+	entries, err := os.ReadDir(outsideDir)
+	if err != nil {
+		t.Fatalf("read outside target: %v", err)
+	}
+	if len(entries) != 0 {
 		t.Fatal("outside symlink target was written")
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("stat outside target: %v", err)
 	}
 }
 

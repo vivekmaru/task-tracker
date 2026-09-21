@@ -67,6 +67,7 @@ func NewRouterWithRuntimeAndAuth(rt web.Runtime, auth web.AuthOptions) http.Hand
 	mux.Handle("/{$}", webHandler)
 	mux.Handle("/favicon.ico", webHandler)
 	mux.Handle("/login", webHandler)
+	mux.Handle("/logout", webHandler)
 	mux.Handle("/assets/", webHandler)
 	mux.Handle("/tickets", webHandler)
 	mux.Handle("/tickets/", webHandler)
@@ -113,43 +114,13 @@ func (w *statusRecorder) WriteHeader(status int) {
 
 func RegisterPhaseOneRoutes(api huma.API, rt web.Runtime) {
 	registerResourceRoutes(api, rt)
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/ready", contracts.RESTMarkTicketReady, "Move ticket to todo")
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/reopen", contracts.RESTReopenTicket, "Reopen ticket")
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/unblock", contracts.RESTUnblockTicket, "Unblock ticket")
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/request-review", contracts.RESTRequestReview, "Request ticket review")
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/review", contracts.RESTReviewTicket, "Review ticket")
-	register[idBodyInput](api, http.MethodPost, "/tickets/{id}/archive", contracts.RESTArchiveTicket, "Archive ticket")
+	registerTicketTransitionRoutes(api, rt)
 
 	registerLifecycleRoutes(api, rt)
 	registerEventRoutes(api, rt)
 
 	registerAnalyticsRoutes(api, rt)
 	registerObservabilityRoutes(api, rt)
-}
-
-func register[I any](api huma.API, method, path, operationID, summary string) {
-	huma.Register[I, placeholderOutput](api, huma.Operation{
-		OperationID: operationID,
-		Method:      method,
-		Path:        path,
-		Summary:     summary,
-		Tags:        []string{"Phase 1"},
-	}, func(context.Context, *I) (*placeholderOutput, error) {
-		return nil, huma.Error501NotImplemented("route is registered; handler wiring is not implemented yet")
-	})
-}
-
-type bodyInput struct {
-	Body map[string]any `json:"body,omitempty"`
-}
-
-type idInput struct {
-	ID string `path:"id" doc:"Resource ID"`
-}
-
-type idBodyInput struct {
-	ID   string         `path:"id" doc:"Resource ID"`
-	Body map[string]any `json:"body,omitempty"`
 }
 
 type listTicketsInput struct {
@@ -159,10 +130,6 @@ type listTicketsInput struct {
 	Type        string `query:"type,omitempty"`
 	Offset      int32  `query:"offset,omitempty"`
 	Limit       int32  `query:"limit,omitempty"`
-}
-
-type placeholderOutput struct {
-	Body map[string]string `json:"body"`
 }
 
 type analyticsRuntime interface {

@@ -646,7 +646,7 @@ func decodeInput(input json.RawMessage, out any) error {
 		input = []byte("{}")
 	}
 	if err := json.Unmarshal(input, out); err != nil {
-		return fmt.Errorf("decode input: %w", err)
+		return services.ValidationError{Problems: []string{"input must be valid JSON matching the tool schema"}}
 	}
 	return nil
 }

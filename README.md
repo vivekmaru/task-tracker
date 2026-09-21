@@ -39,12 +39,35 @@ Known current limitations:
 
 ## Requirements
 
-- Go 1.26+
+- Go 1.26.6+ (including the standard-library security fixes)
 - PostgreSQL with `pgcrypto`
 - `psql`
 - Optional but useful for the smoke test snippets: `jq`
 - Optional: `sqlc` via `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1`
 - PostgreSQL integration tests additionally require a role that can create and drop databases.
+
+## First local use
+
+Start with a trusted single-operator installation and a small, verifiable task:
+
+```bash
+go build -o forge ./cmd/forge
+createdb forge
+./forge init --path "$HOME/.forge/forge.json" \
+  --database-url 'postgres://localhost:5432/forge?sslmode=disable'
+./forge migrate --config "$HOME/.forge/forge.json"
+./forge server --config "$HOME/.forge/forge.json"
+```
+
+In another terminal, run maintenance and lease recovery:
+
+```bash
+./forge worker --config "$HOME/.forge/forge.json"
+```
+
+Open `http://127.0.0.1:3017/login` and use the generated `admin_token` from the private config file. Create a workspace, add a project, open its queue, and select **New ticket**. Describe the context and acceptance criteria; verification commands are optional. The queue's **Connect an agent** section explains the claim/checkpoint/evidence loop. Use **Request review**, then **Approve** or **Request changes**, to record a human decision.
+
+Forge records agent work; it does not launch agents or execute verification commands. CLI and MCP processes connect directly to PostgreSQL and must use the same database and artifact configuration as the server. The web URL and admin token alone are not a remote CLI connection. Keep this first installation private; HTTPS, backups, recovery verification, and the sustained pilot in `plans/024-production-dogfood-pilot.md` remain the gates for production use.
 
 ## Configuration
 
@@ -104,7 +127,7 @@ Create a database:
 createdb forge
 ```
 
-Apply all migration `Up` sections:
+Apply the migration `Up` sections bundled in the binary (no source checkout is required). An explicit `--dir` selects a custom migration directory instead:
 
 ```bash
 go run ./cmd/forge migrate
@@ -398,7 +421,8 @@ Regression tests cover:
 - Claim locking with `FOR UPDATE SKIP LOCKED`.
 - One running attempt per ticket.
 - Workspace/project/type/tag/harness/capability/dependency eligibility.
-- Retry-limit dead-letter behavior.
+- Retry-limit dead-letter behavior, including the failure or expiry currently being recorded.
+- Fresh retry budgets after explicit reopen or review rejection, with full attempt history retained.
 - Lease expiry returning work to `todo` or `failed`.
 - Blocked work moving to `blocked`.
 - Terminal attempts rejecting later terminal transitions.

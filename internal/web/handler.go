@@ -179,8 +179,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			renderStatus(r.Context(), w, http.StatusForbidden, "Request rejected", "Cookie-authenticated changes require a same-origin request.")
 			return
 		}
+		r = r.WithContext(context.WithValue(r.Context(), signedInContextKey{}, true))
 	}
 	switch {
+	case r.URL.Path == "/tickets/new":
+		h.renderNewTicket(w, r)
 	case r.URL.Path == "/tickets":
 		if !requireMethod(w, r, http.MethodGet) {
 			return
@@ -425,13 +428,24 @@ func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
+	scope, err := h.loadScopeOptions(r.Context(), r.URL.Query().Get("workspace_id"))
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load workspaces", "Refresh to try again.")
+		return
+	}
 	req, err := listTicketsRequestFromQuery(r)
 	if err != nil {
 		query := r.URL.Query()
-		renderComponent(r.Context(), w, http.StatusBadRequest, ticketListPage(ticketListView{
-			Status:  strings.TrimSpace(query.Get("status")),
-			Type:    strings.TrimSpace(query.Get("type")),
-			Message: err.Error(),
+		workspaceID, _ := parseOptionalUUID(query.Get("workspace_id"))
+		projectID, _ := parseOptionalUUID(query.Get("project_id"))
+		status, message := scopeFormError(r, err)
+		renderComponent(r.Context(), w, status, ticketListPage(ticketListView{
+			Scope:       scope,
+			WorkspaceID: workspaceID,
+			ProjectID:   projectID,
+			Status:      strings.TrimSpace(query.Get("status")),
+			Type:        strings.TrimSpace(query.Get("type")),
+			Message:     message,
 		}))
 		return
 	}
@@ -446,6 +460,7 @@ func (h Handler) renderTicketList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderComponent(r.Context(), w, http.StatusOK, ticketListPage(ticketListView{
+		Scope:       scope,
 		Tickets:     tickets,
 		WorkspaceID: req.WorkspaceID,
 		ProjectID:   req.ProjectID,
@@ -461,14 +476,21 @@ func (h Handler) renderSearch(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
+	scope, err := h.loadScopeOptions(r.Context(), r.URL.Query().Get("workspace_id"))
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load workspaces", "Refresh to try again.")
+		return
+	}
 	req, err := searchTicketsRequestFromQuery(r)
 	if err != nil {
 		query := r.URL.Query()
-		renderComponent(r.Context(), w, http.StatusBadRequest, searchPage(searchView{
+		status, message := scopeFormError(r, err)
+		renderComponent(r.Context(), w, status, searchPage(searchView{
+			Scope:           scope,
 			WorkspaceIDText: strings.TrimSpace(query.Get("workspace_id")),
 			ProjectIDText:   strings.TrimSpace(query.Get("project_id")),
 			Query:           strings.TrimSpace(query.Get("q")),
-			Message:         err.Error(),
+			Message:         message,
 		}))
 		return
 	}
@@ -477,6 +499,7 @@ func (h Handler) renderSearch(w http.ResponseWriter, r *http.Request) {
 		var validationErr services.ValidationError
 		if errors.As(err, &validationErr) {
 			renderComponent(r.Context(), w, http.StatusBadRequest, searchPage(searchView{
+				Scope:           scope,
 				WorkspaceIDText: uuidText(req.WorkspaceID),
 				ProjectIDText:   uuidText(req.ProjectID),
 				Query:           req.Query,
@@ -488,6 +511,7 @@ func (h Handler) renderSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderComponent(r.Context(), w, http.StatusOK, searchPage(searchView{
+		Scope:           scope,
 		Results:         results,
 		WorkspaceIDText: uuidText(req.WorkspaceID),
 		ProjectIDText:   uuidText(req.ProjectID),
@@ -500,9 +524,16 @@ func (h Handler) renderEventLedger(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
+	scope, err := h.loadScopeOptions(r.Context(), r.URL.Query().Get("workspace_id"))
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load workspaces", "Refresh to try again.")
+		return
+	}
 	req, err := listEventsRequestFromQuery(r)
 	if err != nil {
-		renderComponent(r.Context(), w, http.StatusBadRequest, eventLedgerPage(eventLedgerViewFromQuery(r, err.Error())))
+		view := eventLedgerViewFromQuery(r, err.Error())
+		view.Scope = scope
+		renderComponent(r.Context(), w, http.StatusBadRequest, eventLedgerPage(view))
 		return
 	}
 	result, err := h.runtime.ListEvents(r.Context(), req)
@@ -510,6 +541,7 @@ func (h Handler) renderEventLedger(w http.ResponseWriter, r *http.Request) {
 		var validationErr services.ValidationError
 		if errors.As(err, &validationErr) {
 			renderComponent(r.Context(), w, http.StatusBadRequest, eventLedgerPage(eventLedgerView{
+				Scope:           scope,
 				WorkspaceIDText: uuidText(req.WorkspaceID),
 				ProjectIDText:   uuidText(req.ProjectID),
 				TicketIDText:    uuidText(req.TicketID),
@@ -530,6 +562,7 @@ func (h Handler) renderEventLedger(w http.ResponseWriter, r *http.Request) {
 		events[len(result.Events)-1-i] = event
 	}
 	renderComponent(r.Context(), w, http.StatusOK, eventLedgerPage(eventLedgerView{
+		Scope:           scope,
 		Events:          events,
 		TicketTitles:    h.eventTicketTitles(r.Context(), events),
 		NextCursor:      result.NextCursor,
@@ -569,14 +602,21 @@ func (h Handler) renderArtifactList(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
+	scope, err := h.loadScopeOptions(r.Context(), r.URL.Query().Get("workspace_id"))
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load workspaces", "Refresh to try again.")
+		return
+	}
 	req, err := listArtifactsRequestFromQuery(r)
 	if err != nil {
 		query := r.URL.Query()
-		renderComponent(r.Context(), w, http.StatusBadRequest, artifactListPage(artifactListView{
+		status, message := scopeFormError(r, err)
+		renderComponent(r.Context(), w, status, artifactListPage(artifactListView{
+			Scope:           scope,
 			WorkspaceIDText: strings.TrimSpace(query.Get("workspace_id")),
 			ProjectIDText:   strings.TrimSpace(query.Get("project_id")),
 			TicketIDText:    strings.TrimSpace(query.Get("ticket_id")),
-			Message:         err.Error(),
+			Message:         message,
 		}))
 		return
 	}
@@ -585,6 +625,7 @@ func (h Handler) renderArtifactList(w http.ResponseWriter, r *http.Request) {
 		var validationErr services.ValidationError
 		if errors.As(err, &validationErr) {
 			renderComponent(r.Context(), w, http.StatusBadRequest, artifactListPage(artifactListView{
+				Scope:           scope,
 				WorkspaceIDText: uuidText(req.WorkspaceID),
 				ProjectIDText:   uuidText(req.ProjectID),
 				TicketIDText:    uuidText(req.TicketID),
@@ -596,6 +637,7 @@ func (h Handler) renderArtifactList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderComponent(r.Context(), w, http.StatusOK, artifactListPage(artifactListView{
+		Scope:           scope,
 		Artifacts:       artifacts,
 		WorkspaceIDText: uuidText(req.WorkspaceID),
 		ProjectIDText:   uuidText(req.ProjectID),
@@ -610,14 +652,21 @@ func (h Handler) renderProposedList(w http.ResponseWriter, r *http.Request) {
 		renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Runtime unavailable", "runtime is not configured")
 		return
 	}
+	scope, err := h.loadScopeOptions(r.Context(), r.URL.Query().Get("workspace_id"))
+	if err != nil {
+		renderStatus(r.Context(), w, http.StatusInternalServerError, "Unable to load workspaces", "Refresh to try again.")
+		return
+	}
 	req, err := listProposedRequestFromQuery(r)
 	if err != nil {
 		query := r.URL.Query()
-		renderComponent(r.Context(), w, http.StatusBadRequest, proposedListPage(proposedListView{
+		status, message := scopeFormError(r, err)
+		renderComponent(r.Context(), w, status, proposedListPage(proposedListView{
+			Scope:           scope,
 			WorkspaceIDText: strings.TrimSpace(query.Get("workspace_id")),
 			ProjectIDText:   strings.TrimSpace(query.Get("project_id")),
 			Type:            strings.TrimSpace(query.Get("type")),
-			Message:         err.Error(),
+			Message:         message,
 		}))
 		return
 	}
@@ -626,6 +675,7 @@ func (h Handler) renderProposedList(w http.ResponseWriter, r *http.Request) {
 		var validationErr services.ValidationError
 		if errors.As(err, &validationErr) {
 			renderComponent(r.Context(), w, http.StatusBadRequest, proposedListPage(proposedListView{
+				Scope:           scope,
 				WorkspaceIDText: uuidText(req.WorkspaceID),
 				ProjectIDText:   uuidText(req.ProjectID),
 				Type:            req.Type,
@@ -637,6 +687,7 @@ func (h Handler) renderProposedList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderComponent(r.Context(), w, http.StatusOK, proposedListPage(proposedListView{
+		Scope:           scope,
 		Items:           items,
 		WorkspaceIDText: uuidText(req.WorkspaceID),
 		ProjectIDText:   uuidText(req.ProjectID),
@@ -718,6 +769,19 @@ func (h Handler) transitionTicket(w http.ResponseWriter, r *http.Request, ticket
 		ticket, err = h.runtime.Unblock(r.Context(), req)
 	case "request-review":
 		ticket, err = h.runtime.RequestReview(r.Context(), req)
+	case "approve", "request-changes":
+		reviewer, ok := h.runtime.(interface {
+			Review(context.Context, services.ReviewTicketRequest) (db.Ticket, error)
+		})
+		if !ok {
+			renderStatus(r.Context(), w, http.StatusServiceUnavailable, "Review unavailable", "The review runtime is not configured.")
+			return
+		}
+		decision := services.ReviewDecisionApprove
+		if action == "request-changes" {
+			decision = services.ReviewDecisionReject
+		}
+		ticket, err = reviewer.Review(r.Context(), services.ReviewTicketRequest{TicketID: ticketID, ActorType: req.ActorType, ActorID: req.ActorID, Reason: req.Reason, Decision: decision})
 	case "archive":
 		ticket, err = h.runtime.Archive(r.Context(), req)
 	default:
@@ -1105,6 +1169,7 @@ func renderTicketServiceError(ctx context.Context, w http.ResponseWriter, err er
 }
 
 type ticketListView struct {
+	Scope       scopeOptions
 	Tickets     []db.Ticket
 	WorkspaceID pgtype.UUID
 	ProjectID   pgtype.UUID
@@ -1123,6 +1188,7 @@ type ticketDetailView struct {
 }
 
 type searchView struct {
+	Scope           scopeOptions
 	Results         []services.SearchResult
 	WorkspaceIDText string
 	ProjectIDText   string
@@ -1133,6 +1199,7 @@ type searchView struct {
 }
 
 type eventLedgerView struct {
+	Scope           scopeOptions
 	Events          []db.TicketEvent
 	TicketTitles    map[string]string
 	NextCursor      string
@@ -1146,6 +1213,7 @@ type eventLedgerView struct {
 }
 
 type artifactListView struct {
+	Scope           scopeOptions
 	Artifacts       []db.Artifact
 	WorkspaceIDText string
 	ProjectIDText   string
@@ -1156,6 +1224,7 @@ type artifactListView struct {
 }
 
 type proposedListView struct {
+	Scope           scopeOptions
 	Items           []services.ProposedTicketTriageItem
 	WorkspaceIDText string
 	ProjectIDText   string
@@ -1476,7 +1545,7 @@ func statusPage(title string, message string) templ.Component {
 
 func loginPage(next string, message string) templ.Component {
 	return layout("Forge Login", func(w io.Writer) {
-		fmt.Fprint(w, `<section class="auth-panel panel"><h1>Forge Login</h1>`)
+		fmt.Fprint(w, `<section class="auth-panel panel"><p class="eyebrow">Your agent work, in one place</p><h1>Forge Login</h1><p class="empty-text">Sign in to follow progress, resolve blockers, and review the evidence.</p>`)
 		if message != "" {
 			fmt.Fprintf(w, `<p class="auth-error" role="alert">%s</p>`, esc(message))
 		}
@@ -1489,22 +1558,28 @@ func loginPage(next string, message string) templ.Component {
 
 func ticketListPage(view ticketListView) templ.Component {
 	return layoutWithPage(pageContext{Title: "Forge Tickets", ActiveRoute: "tickets", WorkspaceID: uuidText(view.WorkspaceID), ProjectID: uuidText(view.ProjectID)}, func(w io.Writer) {
-		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Tickets</h1><p>Shared inspection for claimable work, proposed follow-ups, and review handoffs.</p></div>`)
-		fmt.Fprintf(w, `<div class="actions"><a class="button" href="/search?workspace_id=%s&project_id=%s">Search</a><a class="button" href="/tickets?workspace_id=%s&project_id=%s">Refresh</a></div></section>`, esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)), esc(uuidText(view.WorkspaceID)), esc(uuidText(view.ProjectID)))
+		workspaceID, projectID := uuidText(view.WorkspaceID), uuidText(view.ProjectID)
+		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">Your execution workspace</p><h1>Tickets</h1><p>Move work forward. Know what needs your attention.</p></div>`)
+		fmt.Fprintf(w, `<div class="actions"><a class="button secondary" href="%s">Refresh</a><a class="button" href="%s">New ticket</a></div></section>`, esc(scopedPagePath("/tickets", workspaceID, projectID)), esc(scopedPagePath("/tickets/new", workspaceID, projectID)))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/tickets">`)
-		input(w, "workspace_id", uuidText(view.WorkspaceID))
-		input(w, "project_id", uuidText(view.ProjectID))
-		input(w, "status", view.Status)
-		input(w, "type", view.Type)
-		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
+		writeScopeFields(w, view.Scope, workspaceID, projectID)
+		writeChoiceField(w, "status", view.Status, "All statuses", ticketStatuses)
+		writeChoiceField(w, "type", view.Type, "All types", ticketTypes)
+		fmt.Fprint(w, `<button class="secondary" type="submit">Apply</button></form></section>`)
 		if view.Message != "" {
-			fmt.Fprintf(w, `<section class="panel empty"><h2>Ticket list needs a scope</h2><p>%s</p></section>`, esc(view.Message))
+			fmt.Fprintf(w, `<section class="panel empty"><p class="eyebrow">Start here</p><h2>Choose your project</h2><p>%s</p><a class="button secondary" href="/workspaces">Manage workspaces</a></section>`, esc(view.Message))
 			return
 		}
+		writeQueueTabs(w, view)
 		if len(view.Tickets) == 0 {
-			fmt.Fprint(w, `<section class="panel empty"><h2>No tickets match</h2><p>Change the scope or filters to inspect a different queue.</p></section>`)
+			if view.Status != "" || view.Type != "" || view.Offset > 0 {
+				fmt.Fprintf(w, `<section class="panel empty"><h2>No tickets match</h2><p>Try a different status or type, or return to the full queue.</p><a class="button secondary" href="%s">Clear filters</a></section>`, esc(scopedPagePath("/tickets", workspaceID, projectID)))
+			} else {
+				fmt.Fprintf(w, `<section class="panel empty"><p class="eyebrow">Ready when you are</p><h2>Your first ticket starts here</h2><p>Describe a small, verifiable piece of work. An agent can claim it, record progress, and leave evidence for you to review.</p><a class="button" href="%s">Create your first ticket</a></section>`, esc(scopedPagePath("/tickets/new", workspaceID, projectID)))
+			}
 			return
 		}
+		writeAgentSetup(w, workspaceID, projectID)
 		fmt.Fprint(w, `<section class="ticket-list" aria-label="Tickets">`)
 		for _, ticket := range view.Tickets {
 			writeTicketCard(w, ticket)
@@ -1523,8 +1598,7 @@ func searchPage(view searchView) templ.Component {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Forge Search</h1><p>Find tickets through titles, descriptions, attempts, events, and proof artifacts.</p></div>`)
 		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/search">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
+		writeScopeFields(w, view.Scope, view.WorkspaceIDText, view.ProjectIDText)
 		input(w, "q", view.Query)
 		fmt.Fprint(w, `<button type="submit">Search</button></form></section>`)
 		if view.Message != "" {
@@ -1554,8 +1628,7 @@ func eventLedgerPage(view eventLedgerView) templ.Component {
 		}
 		fmt.Fprint(w, `</div></section>`)
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/events">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
+		writeScopeFields(w, view.Scope, view.WorkspaceIDText, view.ProjectIDText)
 		input(w, "ticket_id", view.TicketIDText)
 		input(w, "attempt_id", view.AttemptIDText)
 		input(w, "limit", view.LimitText)
@@ -1585,8 +1658,7 @@ func artifactListPage(view artifactListView) templ.Component {
 		fmt.Fprint(w, `<section class="page-head"><div><h1>Artifacts</h1><p>Browse proof files and handoff outputs by workspace, project, or ticket.</p></div>`)
 		fmt.Fprintf(w, `<a class="button" href="/tickets?workspace_id=%s&project_id=%s">Tickets</a></section>`, esc(view.WorkspaceIDText), esc(view.ProjectIDText))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/artifacts">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
+		writeScopeFields(w, view.Scope, view.WorkspaceIDText, view.ProjectIDText)
 		input(w, "ticket_id", view.TicketIDText)
 		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
 		if view.Message != "" {
@@ -1612,11 +1684,10 @@ func artifactListPage(view artifactListView) templ.Component {
 
 func proposedListPage(view proposedListView) templ.Component {
 	return layoutWithPage(pageContext{Title: "Proposed Work", ActiveRoute: "proposed", WorkspaceID: view.WorkspaceIDText, ProjectID: view.ProjectIDText}, func(w io.Writer) {
-		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">agent-created queue</p><h1>Proposed Work</h1><p>Review follow-up work agents discovered while executing tickets.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">Agent-created queue</p><h1>Proposed Work</h1><p>Review follow-up work agents discovered while executing tickets.</p></div><a class="button secondary" href="%s">Tickets</a></section>`, esc(scopedPagePath("/tickets", view.WorkspaceIDText, view.ProjectIDText)))
 		fmt.Fprint(w, `<section class="filters panel"><form method="get" action="/proposed">`)
-		input(w, "workspace_id", view.WorkspaceIDText)
-		input(w, "project_id", view.ProjectIDText)
-		input(w, "type", view.Type)
+		writeScopeFields(w, view.Scope, view.WorkspaceIDText, view.ProjectIDText)
+		writeChoiceField(w, "type", view.Type, "All types", ticketTypes)
 		fmt.Fprint(w, `<button type="submit">Apply</button></form></section>`)
 		if view.Message != "" {
 			fmt.Fprintf(w, `<section class="panel empty"><h2>Proposed work needs a scope</h2><p>%s</p></section>`, esc(view.Message))
@@ -1636,7 +1707,7 @@ func proposedListPage(view proposedListView) templ.Component {
 
 func ticketDetailPage(view ticketDetailView) templ.Component {
 	ticket := view.Ticket
-	return layout(ticket.Title, func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: ticket.Title, ActiveRoute: "tickets", WorkspaceID: uuidText(ticket.WorkspaceID), ProjectID: uuidText(ticket.ProjectID)}, func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s P%d</p><h1>%s</h1><p>%s</p></div><a class="button" href="/tickets?workspace_id=%s&project_id=%s">Back to list</a></section>`,
 			esc(ticket.Status),
 			esc(ticket.Type),
@@ -1666,7 +1737,7 @@ func ticketDetailPage(view ticketDetailView) templ.Component {
 }
 
 func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact, checkpoints []db.AttemptCheckpoint, metrics db.AttemptMetric, hasMetrics bool) templ.Component {
-	return layout("Attempt Detail", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Attempt Detail", ActiveRoute: "tickets", WorkspaceID: uuidText(attempt.WorkspaceID), ProjectID: uuidText(attempt.ProjectID)}, func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Attempt Detail</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket</a></section>`,
 			esc(attempt.Status),
 			esc(uuidText(attempt.ID)),
@@ -1727,7 +1798,7 @@ func attemptDetailPage(attempt db.Attempt, artifacts []db.Artifact, checkpoints 
 }
 
 func artifactDetailPage(artifact db.Artifact, contentOpenable bool) templ.Component {
-	return layout("Artifact Detail", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Artifact Detail", ActiveRoute: "artifacts", WorkspaceID: uuidText(artifact.WorkspaceID), ProjectID: uuidText(artifact.ProjectID)}, func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Artifact Detail</h1><p>%s</p></div><div class="actions"><a class="button" href="%s">Artifacts</a><a class="button" href="/tickets/%s">Ticket</a></div></section>`,
 			esc(artifact.Role),
 			esc(artifact.Type),
@@ -1771,7 +1842,7 @@ func artifactDetailPage(artifact db.Artifact, contentOpenable bool) templ.Compon
 }
 
 func proposedDetailPage(ticket db.Ticket) templ.Component {
-	return layout("Proposed Follow-up", func(w io.Writer) {
+	return layoutWithPage(pageContext{Title: "Proposed Follow-up", ActiveRoute: "proposed", WorkspaceID: uuidText(ticket.WorkspaceID), ProjectID: uuidText(ticket.ProjectID)}, func(w io.Writer) {
 		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">%s %s</p><h1>Proposed Follow-up</h1><p>%s</p></div><a class="button" href="/tickets/%s">Ticket detail</a></section>`,
 			esc(ticket.Status),
 			esc(ticket.Type),
@@ -1799,7 +1870,7 @@ func proposedDetailPage(ticket db.Ticket) templ.Component {
 
 func workspaceIndexPage(view workspaceIndexView) templ.Component {
 	return layout("Forge Workspaces", func(w io.Writer) {
-		fmt.Fprint(w, `<section class="page-head"><div><h1>Workspaces</h1><p>Minimal setup and inspection for Forge scopes.</p></div><a class="button" href="/tickets">Tickets</a></section>`)
+		fmt.Fprint(w, `<section class="page-head"><div><p class="eyebrow">Welcome to Forge</p><h1>Workspaces</h1><p>A clear home for your projects, agents, and the work ahead.</p></div><a class="button secondary" href="/tickets">Open queue</a></section>`)
 		fmt.Fprint(w, `<section class="filters panel"><form method="post" action="/workspaces">`)
 		input(w, "name", "")
 		fmt.Fprint(w, `<button type="submit">Create workspace</button></form></section>`)
@@ -1807,15 +1878,14 @@ func workspaceIndexPage(view workspaceIndexView) templ.Component {
 			fmt.Fprintf(w, `<section class="panel warning"><h2>Workspace action failed</h2><p>%s</p></section>`, esc(view.Message))
 		}
 		if len(view.Workspaces) == 0 {
-			fmt.Fprint(w, `<section class="panel empty"><h2>No workspaces yet</h2><p>Create the first workspace to scope tickets and projects.</p></section>`)
+			fmt.Fprint(w, `<section class="panel empty"><p class="eyebrow">A simple place to start</p><h2>No workspaces yet</h2><p>Create a workspace above, add a project, then describe your first ticket. Agents claim the work; you keep the full record.</p><p class="empty-text">Start with a small task whose result you can verify.</p></section>`)
 			return
 		}
-		fmt.Fprint(w, `<section class="ticket-list" aria-label="Workspaces">`)
+		fmt.Fprint(w, `<section class="workspace-grid" aria-label="Workspaces">`)
 		for _, workspace := range view.Workspaces {
-			fmt.Fprintf(w, `<article class="ticket-card"><a href="/workspaces/%s"><span class="title">%s</span><span class="summary">%s</span></a></article>`,
+			fmt.Fprintf(w, `<article class="ticket-card workspace-card"><a href="/workspaces/%s"><span class="title">%s</span><span class="summary">Open workspace &rarr;</span></a></article>`,
 				esc(uuidText(workspace.ID)),
 				esc(workspace.Name),
-				esc(uuidText(workspace.ID)),
 			)
 		}
 		fmt.Fprint(w, `</section>`)
@@ -1824,9 +1894,8 @@ func workspaceIndexPage(view workspaceIndexView) templ.Component {
 
 func workspaceDetailPage(view workspaceDetailView) templ.Component {
 	workspace := view.Workspace
-	return layout(workspace.Name, func(w io.Writer) {
-		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">workspace %s</p><h1>%s</h1><p>Projects define the ticket scopes agents claim from.</p></div><a class="button" href="/workspaces">Workspaces</a></section>`,
-			esc(uuidText(workspace.ID)),
+	return layoutWithPage(pageContext{Title: workspace.Name, ActiveRoute: "workspaces", WorkspaceID: uuidText(workspace.ID)}, func(w io.Writer) {
+		fmt.Fprintf(w, `<section class="page-head"><div><p class="eyebrow">Workspace</p><h1>%s</h1><p>Choose a project to open its queue, or create a new home for your work.</p></div><a class="button secondary" href="/workspaces">Workspaces</a></section>`,
 			esc(workspace.Name),
 		)
 		fmt.Fprintf(w, `<section class="filters panel"><form method="post" action="/workspaces/%s/projects">`, esc(uuidText(workspace.ID)))
@@ -1837,9 +1906,8 @@ func workspaceDetailPage(view workspaceDetailView) templ.Component {
 			fmt.Fprint(w, `<p class="empty-text">No projects in this workspace yet.</p>`)
 		}
 		for _, project := range view.Projects {
-			fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><p>%s</p><p><a class="copy-link" href="/tickets?workspace_id=%s&project_id=%s">Open ticket queue</a></p></div>`,
+			fmt.Fprintf(w, `<div class="timeline-item"><strong>%s</strong><p><a class="button secondary" href="/tickets?workspace_id=%s&project_id=%s">Open ticket queue</a></p></div>`,
 				esc(project.Name),
-				esc(uuidText(project.ID)),
 				esc(uuidText(workspace.ID)),
 				esc(uuidText(project.ID)),
 			)
@@ -1860,13 +1928,20 @@ type pageContext struct {
 	ReturnURL   string
 }
 
+type signedInContextKey struct{}
+
 func layoutWithPage(page pageContext, body func(io.Writer)) templ.Component {
-	return templ.ComponentFunc(func(_ context.Context, w io.Writer) error {
+	return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
 		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="/favicon.ico" type="image/svg+xml"><title>%s</title><script src="/assets/htmx-2.0.4.min.js" defer></script><style>%s</style></head><body hx-boost="true"><a class="skip-link" href="#main-content">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/workspaces"><span>F</span><strong>Forge</strong></a>`, esc(page.Title), pageCSS()+accessibilityCSS())
-		if err := scopedNavigation(scopedNavigationItems(page)).Render(context.Background(), w); err != nil {
+		fmt.Fprint(w, `<p class="sidebar-note">Agent work, made inspectable</p>`)
+		if err := scopedNavigation(scopedNavigationItems(page)).Render(ctx, w); err != nil {
 			return err
 		}
-		fmt.Fprint(w, `</aside><main id="main-content" class="content" tabindex="-1">`)
+		fmt.Fprint(w, `<div class="sidebar-footer">A durable record of the work.`)
+		if signedIn, _ := ctx.Value(signedInContextKey{}).(bool); signedIn {
+			fmt.Fprint(w, `<form method="post" action="/logout" hx-boost="false"><button class="secondary" type="submit">Sign out</button></form>`)
+		}
+		fmt.Fprint(w, `</div></aside><main id="main-content" class="content" tabindex="-1">`)
 		body(w)
 		fmt.Fprint(w, `</main></div></body></html>`)
 		return nil
@@ -1882,25 +1957,29 @@ func scopedNavigationItems(page pageContext) []navigationItem {
 	return items
 }
 func scopedPagePath(path, workspaceID, projectID string) string {
-	if workspaceID == "" || projectID == "" {
+	if workspaceID == "" {
 		return path
 	}
 	values := url.Values{}
 	values.Set("workspace_id", workspaceID)
-	values.Set("project_id", projectID)
+	if projectID != "" {
+		values.Set("project_id", projectID)
+	}
 	return path + "?" + values.Encode()
 }
 
 func input(w io.Writer, name string, value string) {
-	fmt.Fprintf(w, `<label><span>%s</span><input name="%s" value="%s"></label>`, esc(strings.ReplaceAll(name, "_", " ")), esc(name), esc(value))
+	fmt.Fprintf(w, `<label><span>%s</span><input name="%s" value="%s"></label>`, esc(displayLabel(name)), esc(name), esc(value))
 }
 
 func writeTicketCard(w io.Writer, ticket db.Ticket) {
-	fmt.Fprintf(w, `<article class="ticket-card"><a href="/tickets/%s"><span class="title">%s</span><span class="summary">%s %s P%d</span></a>`,
+	fmt.Fprintf(w, `<article class="ticket-card"><a href="/tickets/%s"><span class="title">%s</span><span class="summary"><span class="badge" data-status="%s">%s</span><span class="badge badge-type">%s</span><span class="badge badge-prio" data-prio="%d">P%d</span></span></a>`,
 		esc(uuidText(ticket.ID)),
 		esc(ticket.Title),
 		esc(ticket.Status),
-		esc(ticket.Type),
+		esc(displayLabel(ticket.Status)),
+		esc(displayLabel(ticket.Type)),
+		ticket.Priority,
 		ticket.Priority,
 	)
 	writeList(w, "Tags", ticket.Tags, "")
@@ -1912,11 +1991,13 @@ func writeTicketCard(w io.Writer, ticket db.Ticket) {
 
 func writeSearchResult(w io.Writer, result services.SearchResult) {
 	ticket := result.Ticket
-	fmt.Fprintf(w, `<article class="ticket-card"><a href="/tickets/%s"><span class="title">%s</span><span class="summary">%s %s P%d</span></a>`,
+	fmt.Fprintf(w, `<article class="ticket-card"><a href="/tickets/%s"><span class="title">%s</span><span class="summary"><span class="badge" data-status="%s">%s</span><span class="badge badge-type">%s</span><span class="badge badge-prio" data-prio="%d">P%d</span></span></a>`,
 		esc(uuidText(ticket.ID)),
 		esc(ticket.Title),
 		esc(ticket.Status),
-		esc(ticket.Type),
+		esc(displayLabel(ticket.Status)),
+		esc(displayLabel(ticket.Type)),
+		ticket.Priority,
 		ticket.Priority,
 	)
 	if ticket.Description != "" {
@@ -1930,7 +2011,7 @@ func writeSearchResult(w io.Writer, result services.SearchResult) {
 }
 
 func writeArtifactCard(w io.Writer, artifact db.Artifact) {
-	fmt.Fprintf(w, `<article class="ticket-card"><a href="/artifacts/%s"><span class="title">%s</span><span class="summary">%s %s %s</span></a>`,
+	fmt.Fprintf(w, `<article class="ticket-card"><a href="/artifacts/%s"><span class="title">%s</span><span class="summary"><span class="badge badge-type">%s</span><span class="badge badge-type">%s</span><span class="badge badge-type">%s</span></span></a>`,
 		esc(uuidText(artifact.ID)),
 		esc(artifact.Name),
 		esc(artifact.Role),
@@ -1948,10 +2029,11 @@ func writeArtifactCard(w io.Writer, artifact db.Artifact) {
 
 func writeProposedCard(w io.Writer, item services.ProposedTicketTriageItem) {
 	ticket := item.Ticket
-	fmt.Fprintf(w, `<article class="ticket-card"><a href="/proposed/%s"><span class="title">%s</span><span class="summary">%s P%d</span></a>`,
+	fmt.Fprintf(w, `<article class="ticket-card"><a href="/proposed/%s"><span class="title">%s</span><span class="summary"><span class="badge badge-type">%s</span><span class="badge badge-prio" data-prio="%d">P%d</span></span></a>`,
 		esc(uuidText(ticket.ID)),
 		esc(ticket.Title),
 		esc(ticket.Type),
+		ticket.Priority,
 		ticket.Priority,
 	)
 	if item.CreationReason != "" {
@@ -1976,7 +2058,7 @@ func writeTicketActions(w io.Writer, ticket db.Ticket) {
 		fmt.Fprint(w, `<article class="panel ticket-actions"><h2>Ticket actions</h2><p class="empty-text">No direct lifecycle actions are available for this ticket status.</p></article>`)
 		return
 	}
-	fmt.Fprint(w, `<article class="panel ticket-actions"><h2>Ticket actions</h2><p class="empty-text">Use the same runtime transitions as CLI and API callers; each action writes normal ticket events.</p><div class="action-grid compact">`)
+	fmt.Fprint(w, `<article class="panel ticket-actions"><h2>Ticket actions</h2><p class="empty-text">Choose the next step. Your decision and reason stay in the activity history.</p><div class="action-grid compact">`)
 	for _, action := range actions {
 		writeTicketActionForm(w, ticket.ID, action.Action, action.Label, action.Placeholder)
 	}
@@ -2016,6 +2098,8 @@ func ticketActionsForStatus(status string) []ticketActionSpec {
 		actions = append(actions, ticketActionSpec{"reopen", "Reopen", "Return to todo for another attempt"})
 	case services.TicketStatusBlocked:
 		actions = append(actions, ticketActionSpec{"unblock", "Unblock", "Blocker cleared"})
+	case services.TicketStatusNeedsReview:
+		actions = append(actions, ticketActionSpec{"approve", "Approve", "Evidence meets the acceptance criteria"}, ticketActionSpec{"request-changes", "Request changes", "What should the next attempt address?"})
 	}
 	switch status {
 	case services.TicketStatusBlocked, services.TicketStatusTodo, services.TicketStatusFailed, services.TicketStatusDone:
@@ -2030,7 +2114,7 @@ func ticketActionsForStatus(status string) []ticketActionSpec {
 
 func isTicketAction(action string) bool {
 	switch action {
-	case "ready", "reopen", "unblock", "request-review", "archive":
+	case "ready", "reopen", "unblock", "request-review", "approve", "request-changes", "archive":
 		return true
 	default:
 		return false
@@ -2437,6 +2521,8 @@ func eventLedgerPath(view eventLedgerView, cursor string) string {
 
 func ticketActivityPath(ticket db.Ticket) string {
 	query := url.Values{}
+	query.Set("workspace_id", uuidText(ticket.WorkspaceID))
+	query.Set("project_id", uuidText(ticket.ProjectID))
 	query.Set("ticket_id", uuidText(ticket.ID))
 	return "/events?" + query.Encode()
 }
@@ -2532,11 +2618,150 @@ func pluralize(count int, noun string) string {
 }
 
 func pageCSS() string {
-	return `:root{--background:#f8fafc;--foreground:#111827;--card:#fff;--card-foreground:#111827;--muted:#f1f5f9;--muted-foreground:#64748b;--border:#e2e8f0;--input:#cbd5e1;--primary:#111827;--primary-foreground:#fff;--secondary:#f8fafc;--accent:#eef2ff;--success:#15803d;--warning:#b45309;--destructive:#b91c1c;--ring:#64748b;--radius:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--foreground);background:var(--background)}*{box-sizing:border-box}body{margin:0}.app-shell{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:rgba(255,255,255,.82);backdrop-filter:blur(12px);padding:18px 12px}.brand{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;margin:0 8px 22px}.brand span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--primary);color:var(--primary-foreground);font-weight:700}.brand strong{font-size:14px;font-weight:600}.sidebar nav{display:grid;gap:4px}.sidebar nav a{color:var(--muted-foreground);text-decoration:none;padding:8px 10px;border-radius:7px;font-size:14px}.sidebar nav a:hover{background:var(--muted);color:var(--foreground)}.content{max-width:1160px;width:100%;padding:30px 24px 56px}.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:4px 0 8px;font-size:30px;line-height:1.12;font-weight:600;letter-spacing:0}.page-head p{margin:0;color:var(--muted-foreground);max-width:720px}.eyebrow{text-transform:uppercase;font-size:12px;font-weight:600;color:var(--muted-foreground);letter-spacing:0}.actions{display:flex;gap:8px;align-items:center}.button,button{border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);text-decoration:none;padding:8px 12px;border-radius:7px;font-weight:600;font-size:14px;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s,color .15s,opacity .15s,transform .1s}.button.secondary{background:var(--card);color:var(--foreground);border-color:var(--border)}.button:hover:not(:disabled),button:hover:not(:disabled){background:#374151;border-color:#374151}.button.secondary:hover:not(:disabled){background:var(--muted);border-color:var(--input)}.button:active:not(:disabled),button:active:not(:disabled){transform:scale(0.98)}.button:disabled,button:disabled{opacity:0.6;cursor:not-allowed}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:5px}.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}.filters form{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end}.filters span,.auth-panel span,.proposed-actions span{display:block;font-size:12px;font-weight:600;color:var(--muted-foreground);margin-bottom:5px;text-transform:capitalize}.filters input,.auth-panel input,.proposed-actions input{width:100%;border:1px solid var(--input);border-radius:7px;padding:8px 9px;background:var(--card);color:var(--foreground);transition:border-color .15s}.filters input:focus,.auth-panel input:focus,.proposed-actions input:focus{border-color:var(--ring);outline:none}.auth-panel{max-width:380px;margin:12vh auto 0}.auth-panel form{display:grid;gap:14px}.auth-panel h1{margin-top:0}.auth-error{color:var(--destructive);font-weight:600}.ticket-list,.event-list{display:grid;gap:10px;margin-top:16px}.ticket-card,.event-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;transition:border-color .15s,background .15s}.ticket-card:hover,.event-card:hover{border-color:var(--input);background:#fff}.ticket-card a{display:flex;justify-content:space-between;gap:16px;color:inherit;text-decoration:none}.title{font-weight:600}.summary,.meta span,.empty-text,.event-meta{color:var(--muted-foreground)}.meta{display:flex;gap:10px;align-items:baseline;margin:8px 0}.meta span{min-width:84px;font-size:12px;font-weight:600;text-transform:uppercase}.list h3{font-size:13px;margin:16px 0 6px;color:var(--foreground);font-weight:600}.list ul{margin:0;padding-left:20px}.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:16px}.trust-strip{display:grid;grid-template-columns:1.3fr repeat(3,minmax(120px,.55fr));gap:10px;margin-bottom:16px}.trust-card{display:block;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;color:inherit;text-decoration:none}.trust-card span{display:block;color:var(--muted-foreground);font-size:12px;font-weight:600;text-transform:uppercase}.trust-card strong{display:block;margin-top:4px;font-weight:650}.trust-card p{margin:6px 0 0;color:var(--muted-foreground)}.trust-card.metric span{font-size:24px;color:var(--foreground);font-weight:650;text-transform:none}.trust-card.metric:hover{border-color:var(--input);background:#fff}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:12px}.action-grid form{display:grid;gap:10px;border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--secondary);min-width:0}.action-grid form input,.action-grid form button{width:100%;min-width:0}.action-grid form button{white-space:normal;overflow-wrap:anywhere}.timeline-item{border-top:1px solid var(--border);padding:12px 0}.timeline-item strong{display:block;font-weight:600}.timeline-item span{color:var(--muted-foreground);font-size:13px}.event-card{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}.event-marker span{display:grid;place-items:center;min-width:36px;height:28px;border-radius:999px;background:var(--muted);color:var(--muted-foreground);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.event-topline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.event-topline strong{font-weight:600}.event-topline span{color:var(--muted-foreground);font-size:12px}.event-body p{margin:6px 0 0}.event-ticket{font-weight:600;color:var(--foreground)}.event-links{display:flex;gap:10px;margin-top:8px}.copy-link{font-size:13px;color:#1d4ed8;text-decoration:none}.copy-link:hover{text-decoration:underline}.match-snippet{background:var(--muted);border-radius:7px;padding:10px}.warning{border-color:#f1c96b;background:#fff9eb}.empty{margin-top:16px}.pager{display:flex;gap:10px;align-items:center;margin:16px 0 0}.pager code{font-size:12px;color:var(--muted-foreground);overflow-wrap:anywhere}@media(max-width:860px){.app-shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}.sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr))}.content{padding:20px 14px}.page-head,.ticket-card a,.event-topline{display:block}.filters form,.detail-grid,.trust-strip,.action-grid{grid-template-columns:1fr}.button{display:inline-block;margin-top:12px}.event-card{grid-template-columns:1fr}}`
+	return `
+/* ===== Design tokens (light) ===== */
+:root{
+--background:oklch(0.9551 0 0);--surface:#ffffff;--surface-2:#f3f4f3;--card:#ffffff;--card-foreground:#24312e;
+--foreground:#24312e;--muted:#eef0ee;--muted-foreground:#59655f;--border:#dce1dd;--border-strong:#b9c7bf;--input:#aebcb4;
+--primary:#14634f;--primary-hover:#0c4d3c;--primary-foreground:#ffffff;--secondary:#ffffff;
+--accent:#e2f0e9;--accent-foreground:#14513f;--ring:#21715b;--focus-glow:rgba(33,113,91,.18);
+--success:#15803d;--success-subtle:#dcfce7;--warning:#93400a;--warning-subtle:#fdf0d5;--destructive:#dc2626;--destructive-hover:#b91c1c;--destructive-subtle:#fde8e8;--destructive-foreground:#ffffff;
+--link:#14634f;
+--shadow-sm:0 1px 2px rgba(20,40,30,.035);
+--shadow-md:0 3px 10px rgba(20,40,30,.07);
+--radius-sm:6px;--radius:10px;--radius-lg:12px;--radius-pill:999px;
+--sidebar-bg:rgba(255,255,255,.85);
+--text-xs:12px;--text-sm:13px;--text-base:14px;--text-lg:16px;--text-xl:20px;--text-2xl:30px;
+--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;
+font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+color-scheme:light;color:var(--foreground);background:var(--background);
+}
+/* ===== Base ===== */
+*{box-sizing:border-box}
+body{margin:0;font-size:var(--text-base);line-height:1.55;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h2{font-size:var(--text-lg);font-weight:600;letter-spacing:-.01em;margin:0 0 var(--space-3)}
+h3{font-weight:600}
+/* ===== Layout ===== */
+.app-shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+.content{max-width:1180px;width:100%;padding:var(--space-8) var(--space-6) 64px}
+/* ===== Sidebar & nav ===== */
+.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:var(--sidebar-bg);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:var(--space-5) var(--space-3);display:flex;flex-direction:column}
+.brand{display:flex;gap:10px;align-items:center;color:inherit;text-decoration:none;margin:2px 8px 26px}
+.brand span{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:var(--primary);color:var(--primary-foreground);font-weight:700;box-shadow:var(--shadow-sm)}
+.brand strong{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.sidebar nav{display:grid;gap:2px}
+.sidebar nav a{display:flex;align-items:center;color:var(--muted-foreground);text-decoration:none;padding:9px 11px;border-radius:8px;font-size:var(--text-base);font-weight:500;transition:background .15s,color .15s}
+.sidebar nav a:hover{background:var(--muted);color:var(--foreground)}
+/* ===== Page header ===== */
+.page-head{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:var(--space-6);padding-bottom:var(--space-5);border-bottom:1px solid var(--border)}
+.page-head h1{margin:6px 0 8px;font-size:var(--text-2xl);line-height:1.1;font-weight:700;letter-spacing:-.02em}
+.page-head p{margin:0;color:var(--muted-foreground);max-width:720px;font-size:var(--text-lg)}
+.eyebrow{text-transform:uppercase;font-size:var(--text-xs);font-weight:600;color:var(--primary);letter-spacing:.08em}
+.actions{display:flex;gap:var(--space-2);align-items:center;flex-shrink:0}
+/* ===== Buttons ===== */
+.button,button{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);text-decoration:none;padding:8px 14px;border-radius:8px;font-weight:600;font-size:var(--text-base);white-space:nowrap;cursor:pointer;box-shadow:var(--shadow-sm);transition:background .15s,border-color .15s,color .15s,box-shadow .15s,opacity .15s,transform .08s}
+.button.secondary,button.secondary{background:var(--surface);color:var(--foreground);border-color:var(--border-strong);box-shadow:none}
+.button:hover:not(:disabled),button:hover:not(:disabled){background:var(--primary-hover);border-color:var(--primary-hover);box-shadow:var(--shadow-md)}
+.button.secondary:hover:not(:disabled),button.secondary:hover:not(:disabled){background:var(--muted);border-color:var(--input);box-shadow:none}
+.button:active:not(:disabled),button:active:not(:disabled){transform:translateY(1px)}
+.button:disabled,button:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:6px}
+/* ===== Panels & forms ===== */
+.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-5);box-shadow:var(--shadow-sm)}
+.panel h2{margin-top:0}
+.filters form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-3);align-items:end}
+label{min-width:0}label>span{display:block;font-size:var(--text-sm);font-weight:600;color:var(--foreground);margin-bottom:6px}
+input:not([type=hidden]),select,textarea{width:100%;min-width:0;min-height:44px;border:1px solid var(--input);border-radius:7px;padding:9px 11px;background:var(--surface);color:var(--foreground);font:inherit;font-size:16px;transition:border-color .15s,box-shadow .15s}
+textarea{resize:vertical}input:focus,select:focus,textarea:focus{border-color:var(--ring);box-shadow:0 0 0 3px var(--focus-glow);outline:2px solid var(--ring);outline-offset:1px}
+small{color:var(--muted-foreground);font-size:var(--text-xs)}label>small{display:block;margin-top:5px}
+.auth-panel{max-width:400px;margin:12vh auto 0;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-8);box-shadow:var(--shadow-md)}
+.auth-panel form{display:grid;gap:var(--space-4)}
+.auth-panel h1{margin-top:0}
+.auth-error{color:var(--destructive);font-weight:600}
+/* ===== Cards & lists ===== */
+.ticket-list,.event-list{display:grid;gap:var(--space-3);margin-top:var(--space-4)}
+.ticket-card,.event-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--space-4);box-shadow:var(--shadow-sm);transition:border-color .15s,box-shadow .15s,transform .1s}
+.ticket-card:hover{border-color:var(--border-strong);background:var(--surface-2)}
+.ticket-card a{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;color:inherit;text-decoration:none}
+.title{font-weight:600;font-size:var(--text-lg);letter-spacing:-.01em}
+.summary{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}
+.empty-text,.event-meta{color:var(--muted-foreground)}
+.meta{display:flex;gap:10px;align-items:baseline;margin:10px 0 0}
+.meta span{min-width:84px;font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted-foreground)}
+.meta strong{font-weight:600;color:var(--foreground)}
+.list h3{font-size:var(--text-sm);margin:16px 0 6px;color:var(--foreground);font-weight:600}
+.list ul{margin:0;padding-left:20px}
+.list li{margin:2px 0}
+/* ===== Badges ===== */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:var(--radius-pill);font-size:11.5px;font-weight:600;letter-spacing:.02em;text-transform:capitalize;background:var(--muted);color:var(--muted-foreground);border:1px solid transparent;line-height:1.7;white-space:nowrap}
+.badge[data-status="in_progress"],.badge[data-status="claimed"]{background:var(--accent);color:var(--accent-foreground)}
+.badge[data-status="done"],.badge[data-status="completed"],.badge[data-status="verified"],.badge[data-status="resolved"]{background:var(--success-subtle);color:var(--success)}
+.badge[data-status="blocked"],.badge[data-status="needs_human"],.badge[data-status="failed"],.badge[data-status="cancelled"],.badge[data-status="archived"]{background:var(--destructive-subtle);color:var(--destructive)}
+.badge[data-status="needs_review"]{background:var(--warning-subtle);color:var(--warning)}
+.badge-type{background:var(--surface-2);color:var(--foreground);text-transform:none}
+.badge-prio{font-variant-numeric:tabular-nums;text-transform:uppercase}
+.badge-prio[data-prio="0"],.badge-prio[data-prio="1"]{background:var(--destructive-subtle);color:var(--destructive)}
+.badge-prio[data-prio="2"]{background:var(--warning-subtle);color:var(--warning)}
+/* ===== Detail & trust strip ===== */
+.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:var(--space-4);align-items:start}.detail-grid>div{display:grid;gap:var(--space-4)}.detail-grid>*{min-width:0}
+.trust-strip{display:grid;grid-template-columns:1.3fr repeat(3,minmax(120px,.55fr));gap:var(--space-3);margin-bottom:var(--space-4)}
+.trust-card{display:block;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--space-4);color:inherit;text-decoration:none;box-shadow:var(--shadow-sm);transition:border-color .15s,box-shadow .15s,transform .1s}
+.trust-card span{display:block;color:var(--muted-foreground);font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.trust-card strong{display:block;margin-top:4px;font-weight:600}
+.trust-card p{margin:6px 0 0;color:var(--muted-foreground)}
+.trust-card.metric span{font-size:var(--text-2xl);color:var(--foreground);font-weight:700;text-transform:none;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+a.trust-card:hover,.trust-card.metric:hover{border-color:var(--border-strong);box-shadow:var(--shadow-md);transform:translateY(-1px)}
+/* ===== Action grid ===== */
+.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-3);margin-top:var(--space-3)}
+.action-grid form{display:grid;gap:10px;border:1px solid var(--border);border-radius:var(--radius);padding:var(--space-3);background:var(--surface-2);min-width:0}
+.action-grid form input,.action-grid form button{width:100%;min-width:0}
+.action-grid form button{white-space:normal;overflow-wrap:anywhere}
+/* ===== Timeline & ledger ===== */
+.timeline-item{border-top:1px solid var(--border);padding:12px 0}
+.timeline-item strong{display:block;font-weight:600}
+.timeline-item span{color:var(--muted-foreground);font-size:var(--text-sm)}
+.event-card{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}
+.event-marker span{display:grid;place-items:center;min-width:36px;height:28px;border-radius:var(--radius-pill);background:var(--accent);color:var(--accent-foreground);font-size:var(--text-xs);font-weight:600;font-variant-numeric:tabular-nums}
+.event-topline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+.event-topline strong{font-weight:600}
+.event-topline span{color:var(--muted-foreground);font-size:var(--text-xs)}
+.event-body p{margin:6px 0 0}
+.event-ticket{font-weight:600;color:var(--foreground)}
+.event-links{display:flex;gap:10px;margin-top:8px}
+.copy-link{font-size:var(--text-sm);color:var(--link);text-decoration:none}
+.copy-link:hover{text-decoration:underline}
+.match-snippet{background:var(--muted);border-radius:8px;padding:10px;color:var(--muted-foreground)}
+.queue-tabs{display:flex;gap:5px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin:22px 0 16px;padding-bottom:8px}.queue-tabs a{padding:9px 12px;min-height:44px;border-radius:7px;color:var(--muted-foreground);text-decoration:none;font-weight:500}.queue-tabs a:hover{background:var(--muted)}.queue-tabs a[aria-current]{background:var(--accent);color:var(--accent-foreground);font-weight:650}
+.agent-setup{margin:12px 0;padding:12px 16px;border:1px dashed var(--border-strong);border-radius:var(--radius);color:var(--muted-foreground);font-size:var(--text-sm)}summary{cursor:pointer;min-height:24px;font-weight:600;color:var(--foreground)}summary:focus-visible{outline:2px solid var(--ring);outline-offset:4px}
+pre{padding:14px;border-radius:var(--radius-sm);background:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}.meta strong,.copy-link,.event-body,.page-head{overflow-wrap:anywhere}.meta strong{min-width:0}
+.create-grid{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:24px;margin-top:24px;align-items:start}.ticket-create{display:grid;gap:22px}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.onboarding{background:var(--surface-2)}.onboarding ol{padding-left:22px;margin-bottom:24px}.onboarding li{padding-left:6px;margin:22px 0}.onboarding p{color:var(--muted-foreground);margin:6px 0}
+.workspace-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:24px}.workspace-card{padding:24px}.workspace-card a{display:grid;gap:20px}.workspace-card .summary{justify-content:flex-start;font-size:var(--text-sm);color:var(--muted-foreground)}.workspace-card .title{font-size:var(--text-xl)}
+.sidebar-note{margin:0 10px 20px;font-size:var(--text-xs);color:var(--muted-foreground)}.sidebar-footer{margin-top:auto;padding:24px 10px 4px;color:var(--muted-foreground);font-size:var(--text-xs)}.sidebar-footer form{margin-top:10px}.sidebar-footer button{font-size:var(--text-sm);width:100%}
+.empty{padding:40px;max-width:760px}.empty p{max-width:560px;margin-bottom:22px}.empty .eyebrow{margin-bottom:10px}.empty h2{font-size:var(--text-xl);color:var(--foreground)}.actions{flex-wrap:wrap}
+@media(max-width:860px){.create-grid,.form-row,.workspace-grid{grid-template-columns:1fr}.sidebar-note{display:none}.sidebar-footer{padding:8px 10px;display:flex;gap:12px;align-items:center;justify-content:space-between}.sidebar-footer form{margin:0}.empty{padding:24px}.trust-strip{grid-template-columns:1fr 1fr}.trust-card:first-child{grid-column:1/-1}.create-grid{gap:16px}.page-head .actions{margin-top:16px}}
+/* ===== Utilities ===== */
+.warning{border-color:var(--warning);background:var(--warning-subtle);color:var(--foreground)}
+.empty{margin-top:16px;color:var(--muted-foreground)}
+.pager{display:flex;gap:10px;align-items:center;margin:16px 0 0}
+.pager code{font-size:var(--text-xs);color:var(--muted-foreground);overflow-wrap:anywhere}
+/* ===== Responsive ===== */
+@media(max-width:860px){.app-shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}.sidebar nav{grid-template-columns:repeat(5,minmax(0,1fr))}.content{padding:20px 14px}.page-head,.ticket-card a,.event-topline{display:block}.summary{justify-content:flex-start;margin-top:8px}.filters form,.detail-grid,.trust-strip,.action-grid{grid-template-columns:1fr}.actions .button{margin-top:12px}.event-card{grid-template-columns:1fr}}
+/* ===== Design tokens (dark) ===== */
+@media(prefers-color-scheme:dark){:root{
+color-scheme:dark;
+--background:oklch(0.2178 0 0);--surface:#232725;--surface-2:#262c29;--card:#232725;--card-foreground:#e8eee9;
+--foreground:#e8eee9;--muted:#303833;--muted-foreground:#acb9b0;--border:#38423c;--border-strong:#526258;--input:#617267;
+--primary:#9ee0bf;--primary-hover:#b9efd3;--primary-foreground:#123c2d;--secondary:#232725;
+--accent:#2c4436;--accent-foreground:#b9efd3;--ring:#9ee0bf;--focus-glow:rgba(158,224,191,.2);
+--success:#4ade80;--success-subtle:#0f2a1b;--warning:#fbbf24;--warning-subtle:#2c2410;--destructive:#f87171;--destructive-hover:#ef4444;--destructive-subtle:#2c1618;--destructive-foreground:#2b0e0e;
+--link:#9ee0bf;
+--shadow-sm:0 1px 2px rgba(0,0,0,.1);--shadow-md:0 3px 10px rgba(0,0,0,.15);
+--sidebar-bg:#1e2320;
+}}`
 }
 
 func accessibilityCSS() string {
 	return `
-.skip-link{position:absolute;left:12px;top:-56px;z-index:10;padding:10px 14px;background:var(--primary);color:var(--primary-foreground);border-radius:7px}.skip-link:focus{top:12px}.sidebar nav a.active{background:var(--accent);color:var(--foreground);font-weight:700;border-left:3px solid var(--primary)}button,.button,.sidebar nav a{min-height:44px;touch-action:manipulation}.filters input,.auth-panel input,.proposed-actions input{min-height:44px;font-size:16px}.destructive{border-color:var(--destructive)!important;background:var(--destructive)!important}.destructive:hover{background:#991b1b!important}@media(max-width:860px){.sidebar nav{grid-template-columns:repeat(3,minmax(0,1fr))}.sidebar nav a{overflow-wrap:anywhere}}@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
+.skip-link{position:absolute;left:12px;top:-56px;z-index:10;padding:10px 14px;background:var(--primary);color:var(--primary-foreground);border-radius:7px}.skip-link:focus{top:12px}.sidebar nav a.active{background:var(--accent);color:var(--accent-foreground);font-weight:600}button,.button,.sidebar nav a{min-height:44px;touch-action:manipulation}.filters input,.auth-panel input,.proposed-actions input{min-height:44px;font-size:16px}.destructive{border-color:var(--destructive)!important;background:var(--destructive)!important;color:var(--destructive-foreground)!important}.destructive:hover{background:var(--destructive-hover)!important}@media(max-width:860px){.sidebar nav{grid-template-columns:repeat(3,minmax(0,1fr))}.sidebar nav a{overflow-wrap:anywhere}}@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
 `
 }

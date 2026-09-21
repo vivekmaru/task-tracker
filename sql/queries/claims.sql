@@ -27,6 +27,21 @@ WITH candidate AS (
           FROM attempts a
           WHERE a.ticket_id = t.id
             AND a.status IN ('failed', 'expired')
+            -- Event order separates retry cycles even when timestamps tie.
+            AND COALESCE((
+                SELECT min(claimed.event_sequence)
+                FROM ticket_events claimed
+                WHERE claimed.attempt_id = a.id
+                  AND claimed.type = 'claimed'
+            ), 0) >= COALESCE((
+                SELECT max(recovery.event_sequence)
+                FROM ticket_events recovery
+                WHERE recovery.ticket_id = t.id
+                  AND (
+                      recovery.type = 'reopened'
+                      OR (recovery.type = 'reviewed' AND recovery.data->>'status' = 'todo')
+                  )
+            ), 0)
       ) < COALESCE((t.retry_policy->>'max_attempts')::integer, 3)
     ORDER BY t.priority ASC, t.created_at ASC
     FOR UPDATE SKIP LOCKED
