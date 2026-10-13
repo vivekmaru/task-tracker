@@ -10,3 +10,7 @@
 ## 2024-09-02 - Missing Indexes on Scope-Level Sorting Queries
 **Learning:** Queries that filter by scope (`workspace_id` and `project_id`) and then sort by date or priority (like `ORDER BY created_at DESC` or `ORDER BY priority ASC, created_at ASC`) require composite indexes spanning both the scope fields and the sorting fields to prevent sorting performance degradation (full table scans or costly sorting of large results) when tables grow large. Examples include `artifacts`, `tickets`, and `webhook_subscriptions`.
 **Action:** Always verify that queries filtering by `workspace_id` and `project_id` and sorting have composite indexes covering both the scope filters and the sort column (e.g., `workspace_id`, `project_id`, `created_at DESC`) to avoid full table scans.
+
+## 2023-10-13 - Scope-level chronological event querying
+**Learning:** For timeline/queue table queries that filter on composite scope keys (`workspace_id`, `project_id`) and sort chronologically (like `ORDER BY event_sequence DESC`), adding a composite index matching exactly this pattern is necessary to avoid relying on backward scans of primary keys or filtering large amounts of unindexed data. This significantly reduced query planning and execution times.
+**Action:** When creating new timeline-style tables that will be queried by scope, always include a composite index covering `workspace_id`, `project_id`, and the sort column (e.g., `event_sequence`, `created_at`, `started_at`).
